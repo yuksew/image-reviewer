@@ -10,7 +10,7 @@
 > （書き込み権限がこのパスに固定されているため、`C:\work\image-reviewer` の作成が拒否される）。
 > 手順は [`docs/design.md`](docs/design.md) §16.2 の 1 を参照。文書内の名前は既に `image-reviewer` にしてある。
 
-- 状態: **P5（判断と比較）・P6（要求と注記）・P4（タグと語釈）が動く。テスト 282 件。** 各段は
+- 状態: **P5（判断と比較）・P6（要求と注記）・P4（タグと語釈）が動く。テスト 285 件。** 各段は
   設計 → Fable の点検 → 小段ごとの実装 → **Fable が実行込みで監査** → 指摘の反映、で進めている
   （P6 は [`docs/p6-morning-report.md`](docs/p6-morning-report.md)、P4 は [`docs/p4-design.md`](docs/p4-design.md) と
   [`docs/p4-design.md`](docs/p4-design.md) の監査・仕分け（`docs/p4-*-audit-report.md` / `docs/p4-*-audit-triage.md`）、
@@ -22,10 +22,11 @@
 ```powershell
 $env:UV_CACHE_DIR = "$PWD\.uv-cache"
 uv sync
+uv sync --extra tagger                      # 内蔵タガー（onnxruntime。任意。入れると `auto` が内蔵を選ぶ）
 uv run image-reviewer scan --root 'C:\work\illust-authoring\.store\anima-dev'
 uv run image-reviewer serve --port 8790     # → http://127.0.0.1:8790
-uv run pytest -q                            # 282 件（P4 まで）
-node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。122 検査）
+uv run pytest -q                            # 285 件（P4 まで）
+node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。129 検査）
 node tools/gui_layout.mjs --base http://127.0.0.1:8790 --count 8          # 比較（3 窓）
 node tools/gui_layout.mjs --base http://127.0.0.1:8790 --screen requests  # 要求の一覧
 node tools/gui_layout.mjs --base http://127.0.0.1:8790 --screen group --group <id>   # まとまりレビュー

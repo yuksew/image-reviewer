@@ -488,6 +488,12 @@ class RecipeExportService:
                 files = con.execute(
                     "SELECT seed, recipe_hash, graph_path, marker FROM recipe_export"
                     " WHERE attempt_id = ? ORDER BY COALESCE(seed, '')", (row["attempt_id"],)).fetchall()
+                # P7-3: 結果と合否（人が付けた物。**書かない**）
+                results = con.execute(
+                    "SELECT r.*, e.seed FROM recipe_export_result r"
+                    " JOIN recipe_export e ON e.id = r.export_id"
+                    " WHERE e.attempt_id = ? ORDER BY r.created_at DESC, r.id DESC",
+                    (row["attempt_id"],)).fetchall()
                 items.append({
                     "attempt_id": row["attempt_id"], "mode": row["mode"],
                     "marker_skip_reason": row["marker_skip_reason"],
@@ -495,6 +501,7 @@ class RecipeExportService:
                     "seed_node": row["seed_node"], "created_at": row["created_at"],
                     "checked": _load(row["checked_json"]),
                     "files": [dict(f) for f in files],
+                    "results": [_result_doc(r) for r in results],
                 })
         return {"recipe_id": recipe_id, "items": items}
 
@@ -672,3 +679,14 @@ def _probe(settings: dict):
     """既定の probe（**本物の ComfyUI**。テストは差し替える）。"""
     from .recipe import ComfyProbe
     return ComfyProbe(settings["url"])
+
+def _result_doc(row) -> dict:
+    """`recipe_export_result` の 1 行（`manifest` ではなく画面向け。§3.6）。"""
+    return {"id": row["id"], "attempt_id": row["attempt_id"], "seed": row["seed"],
+            "prompt_id": row["prompt_id"], "result_asset_id": row["result_asset_id"],
+            "matched_by": row["matched_by"], "result_hash": row["result_hash"],
+            "same_hash": bool(row["same_hash"]), "ssim": row["ssim"],
+            "phash_distance": row["phash_distance"], "changed_fraction": row["changed_fraction"],
+            "mean_abs": row["mean_abs"], "seed_changed": bool(row["seed_changed"]),
+            "verdict": row["verdict"], "verdict_at": row["verdict_at"],
+            "verdict_actor": row["verdict_actor"], "note": row["note"]}

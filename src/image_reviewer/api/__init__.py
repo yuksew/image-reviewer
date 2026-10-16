@@ -87,3 +87,7 @@ def review_error_handler(request: Request, exc: ReviewError) -> JSONResponse:
     if exc.details:
         body["details"] = exc.details
     return JSONResponse(body, status_code=exc.status)
+
+def watcher_of(request: Request):
+    """監視（P7-3）。`app.state` から取る（閉包で掴まない）。"""
+    return request.app.state.watcher

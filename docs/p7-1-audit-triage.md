@@ -19,6 +19,15 @@
 | **G-5-(b)** | グラフ無しの `recipe_hash` | **空の SHA-256 のまま**（表は触らない）。等価判定は `graph_path IS NOT NULL` を条件にする（設計 §0.5・§5.1 に明記） |
 | **G-6-(a)** | `GET /api/recipes` が重い | **要約だけ**返す（`_summary_of()`。`record` / `env` は 1 枚の口）。テストを追加 |
 
-- **確かめたこと**: `uv run --no-sync pytest -q` → **369 passed**、`node tools/gui_smoke.mjs` → **すべて ok**、
-  `tools/probe_p7.py --judge`（実データの複製 263 枚）→ **`exact` 182 / `approx` 1 / `impossible` 80**（**変わっていない**）。
+- **確かめたこと**: `uv run --no-sync pytest -q` → **369 passed**（**28 回連続で緑**。下の注記）、
+  `node tools/gui_smoke.mjs` → **すべて ok**、`tools/probe_p7.py --judge`（実データの複製 263 枚）→
+  **`exact` 182 / `approx` 1 / `impossible` 80**（**変わっていない**）。
 - **残り**: C-1 の短命キャッシュだけ（P7-2 以降）。**D / E / F の指摘は設計の文面とテストの見直しで吸収**した。
+
+> **注記（A-4 の直しで本物の不具合を 1 つ踏んだ）**: 最初、`record()` は**錠の中**から
+> `_ensure_graph_file()` を呼んでいた。その中で `store.locked()` と `store.transaction()` を取るので
+> **錠の入れ子**になり、同時に 2 本入ると片方が `OperationalError` で落ちる（**テストが 4 回に 1 回落ちて発覚**）。
+> 錠の外へ出して直し、**28 回連続で緑**を確認した。**「揺れるテスト」は本物の不具合を見つける**という例
+> （`docs/p6-1b-audit-report.md` の「壊しても落ちないテスト」の裏返し）。
+> あわせて `test_two_posts_at_once_do_not_fail` は **`system_stats` にバリアを入れて「両方が錠の外に居る」**
+> ことを保証する形にした（これが無いと、片方が先に書き終えて**衝突の経路を通らないまま**緑になりうる）。

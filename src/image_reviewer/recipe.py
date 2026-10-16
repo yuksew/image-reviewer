@@ -620,6 +620,7 @@ class RecipeService:
             raise ReviewError(422, "manual_text には英文が要ります", details={"text": "英文が要ります"})
         text = (text or "").strip() or None
         # --- ① 読む（錠だけ）---
+        found = None
         with self.store.locked() as con:
             asset = con.execute("SELECT * FROM asset WHERE id = ?", (asset_id,)).fetchone()
             if asset is None:
@@ -631,13 +632,18 @@ class RecipeService:
             existing = con.execute("SELECT * FROM recipe_record WHERE source_asset_id = ?",
                                    (asset_id,)).fetchone()
             if existing is not None:
-                # **監査 A-4**: グラフのファイルが消えていたら**ここで作り直す**（`POST` だけが書く）。
-                # 無ければそのまま 200 で返す（`_doc_of` が `graph_path: null` にする）
-                return self._ensure_graph_file(existing)
-            paths = [r["path"] for r in con.execute(
-                "SELECT path FROM asset_location WHERE asset_id = ?"
-                " ORDER BY is_primary DESC, path", (asset_id,))]
-            settings = _settings(con)
+                # **錠の外で**作り直す（`_ensure_graph_file` は自分で錠と取引を取るので、
+                # ここで呼ぶと**錠の入れ子**になる。P7-1 の監査の直しで踏んだ）
+                found = dict(existing)
+            else:
+                paths = [r["path"] for r in con.execute(
+                    "SELECT path FROM asset_location WHERE asset_id = ?"
+                    " ORDER BY is_primary DESC, path", (asset_id,))]
+                settings = _settings(con)
+        if found is not None:
+            # **監査 A-4**: グラフのファイルが消えていたら**ここで作り直す**（`POST` だけが書く）。
+            # 無ければそのまま 200 で返す（`_doc_of` が `graph_path: null` にする）
+            return self._ensure_graph_file(found)
         # --- ② 外（PNG を読み、ComfyUI に聞く。**錠の外**）---
         prov = _provenance_of(paths)
         graph = prov.get("graph")

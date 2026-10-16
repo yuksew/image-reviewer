@@ -30,11 +30,13 @@ from .api import requests as requests_api
 from .api import reviews as reviews_api
 from .api import tags as tags_api
 from .api import recipes as recipes_api
+from .api import watcher as watcher_api
 from .api import review_error_handler
 from .export import ExportService
 from .gloss import GlossService
 from .jobs import JobService
 from .recipe_export import RecipeExportService
+from .watcher import ComfyWatcher
 from .recipe import RecipeService
 from .review import ReviewError, ReviewService
 from .review_requests import ReviewRequestService
@@ -80,6 +82,8 @@ def create_app() -> FastAPI:
     recipes_svc = RecipeService(store)
     # P7-2: 書き出し（R12 の中盤）。**ファイルを書くのは POST のときだけ**（`GET` は書かない）
     recipe_exports_svc = RecipeExportService(store, recipes_svc)
+    # P7-3: 監視の最小形（R12 の後半）。**人が開始したときだけ** 2 秒ごとに回る（常駐しない）
+    watcher_svc = ComfyWatcher(store, recipes_svc, recipe_exports_svc)
     exporter.flush_dirty()
 
     @asynccontextmanager
@@ -108,6 +112,7 @@ def create_app() -> FastAPI:
     app.state.gloss = gloss_svc
     app.state.recipes = recipes_svc
     app.state.recipe_exports = recipe_exports_svc
+    app.state.watcher = watcher_svc
     app.add_exception_handler(ReviewError, review_error_handler)
 
     @app.middleware("http")
@@ -137,6 +142,7 @@ def create_app() -> FastAPI:
     # P6-2: 注記（`/api/assets/{id}/annotations` と `/api/annotations/...`）。同じく守りは middleware
     app.include_router(annotations_router)
     app.include_router(tags_api.router)
+    app.include_router(watcher_api.router)
     app.include_router(recipes_api.router)
 
     def _asset_or_404(asset_id: str) -> dict:

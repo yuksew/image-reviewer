@@ -30,6 +30,7 @@ src/image_reviwer/_gui/
 # 検証の使い捨て（監査と実装者が使う。**大きな写しと画面写真**。要るなら各自で作る）
 .tmp-audit-redo/
 .tmp-p6-1a/
+.tmp-p7-0/
 
 # pytest が `%TEMP%` に作れないときに残す物（この環境の制限。**中身は使い捨て**）
 tmp*/

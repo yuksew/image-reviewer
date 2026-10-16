@@ -10,10 +10,11 @@
 > （書き込み権限がこのパスに固定されているため、`C:\work\image-reviewer` の作成が拒否される）。
 > 手順は [`docs/design.md`](docs/design.md) §16.2 の 1 を参照。文書内の名前は既に `image-reviewer` にしてある。
 
-- 状態: **P5（判断と比較）・P6（要求と注記）・P4（タグと語釈）が動く。テスト 285 件。** 各段は
+- 状態: **P5（判断と比較）・P6（要求と注記）・P4（タグと語釈）が動く。P7（条件の記録）は P7-0（表と契約）まで。テスト 309 件。** 各段は
   設計 → Fable の点検 → 小段ごとの実装 → **Fable が実行込みで監査** → 指摘の反映、で進めている
   （P6 は [`docs/p6-morning-report.md`](docs/p6-morning-report.md)、P4 は [`docs/p4-design.md`](docs/p4-design.md) と
   [`docs/p4-design.md`](docs/p4-design.md) の監査・仕分け（`docs/p4-*-audit-report.md` / `docs/p4-*-audit-triage.md`）、
+  P7 は [`docs/p7-design.md`](docs/p7-design.md) と [`docs/p7-0-implementation.md`](docs/p7-0-implementation.md)、
   段の全体は [`docs/handoff.md`](docs/handoff.md)）。
 - 進め方: **DeepSeek が設計書を書く → Claude Code の Fable が点検 → DeepSeek が実装 → Fable が監査**
 
@@ -25,7 +26,7 @@ uv sync
 uv sync --extra tagger                      # 内蔵タガー（onnxruntime。任意。入れると `auto` が内蔵を選ぶ）
 uv run image-reviewer scan --root 'C:\work\illust-authoring\.store\anima-dev'
 uv run image-reviewer serve --port 8790     # → http://127.0.0.1:8790
-uv run pytest -q                            # 285 件（P4 まで）
+uv run pytest -q                            # 309 件（P7-0 まで）
 node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。129 検査）
 node tools/gui_layout.mjs --base http://127.0.0.1:8790 --count 8          # 比較（3 窓）
 node tools/gui_layout.mjs --base http://127.0.0.1:8790 --screen requests  # 要求の一覧
@@ -33,6 +34,7 @@ node tools/gui_layout.mjs --base http://127.0.0.1:8790 --screen group --group <i
 node tools/gui_layout.mjs --base http://127.0.0.1:8790 --screen asset --ids <id>     # 注記とタグ
 node tools/gui_layout.mjs --base http://127.0.0.1:8790 --screen tags       # 語の一覧
 node tools/gui_layout.mjs --base http://127.0.0.1:8790 --screen jobs       # ジョブの進行
+uv run --no-sync --with jsonschema python tools/check_contract_p7.py  # P7 の契約（manifest・review.json・v6）
 uv run python tools/probe_p4.py --engine comfyui   # タグ付けの線 1・2・7（実機）
 uv run python tools/probe_p4.py --gloss            # 語釈の線 4・5・6（実機）
 ```
@@ -48,7 +50,8 @@ uv run python tools/probe_p4.py --gloss            # 語釈の線 4・5・6（�
 断る・判断で閉じる）、注記（矩形・楕円・画像 1 枚へのメモ・座標 JSON・切り出し PNG）、
 タグ（内蔵タガーと ComfyUI 経由。出所つき・手で足す/外す・`#/tags` の一覧と検索・`#/jobs` の進行）、
 日本語の語釈（見えている語だけ訳す・人が直せる・`edited` を守る）まで**
-（監視、条件の記録、タグの統合・改名、本格的な検索は未実装）。
+（**P7 の条件の記録は表と契約（v6 の移行と `schemas/recipe-manifest.schema.json`）まで**。
+記録・書き出し・監視と結果の紐付け・画面は P7-1〜P7-4。タグの統合・改名、本格的な検索は未実装）。
 記録は [`docs/prototype-notes.md`](docs/prototype-notes.md)。実データで確かめた結果もそこにある。
 
 ## 文書
@@ -83,6 +86,12 @@ uv run python tools/probe_p4.py --gloss            # 語釈の線 4・5・6（�
 | [`docs/p5-2-audit-report.md`](docs/p5-2-audit-report.md) | P5-2 の監査報告 | — |
 | [`docs/p5-3-audit-brief.md`](docs/p5-3-audit-brief.md) | P5-3（差分ヒートマップ・似ている順・pHash）の監査の指示書 | — |
 | [`docs/p5-3-audit-report.md`](docs/p5-3-audit-report.md) | P5-3 の監査報告 | — |
+| [`docs/p7-design.md`](docs/p7-design.md) | **P7（条件の記録。R12）の設計**（段の分け方・拘束力のある差分・合格の線 10 本・P3 との依存の扱い） | §12 |
+| [`docs/p7-review-brief.md`](docs/p7-review-brief.md) | P7 の点検の指示書 | — |
+| [`docs/p7-review-report.md`](docs/p7-review-report.md) | P7 の設計の点検報告（**判定: 直してから実装**。A 3 / B 6 / C 9 / D 12 / E 11 / F / G 7） | — |
+| [`docs/p7-review-triage.md`](docs/p7-review-triage.md) | P7 の指摘の仕分け（**すべて採用**。利用者に新しく聞くことは無い） | — |
+| [`docs/p7-0-implementation.md`](docs/p7-0-implementation.md) | **P7-0 の実装の記録**（v6 の 6 表・`recipe-manifest` の契約・`review.json` を変えないことの固定） | — |
+| [`schemas/recipe-manifest.schema.json`](schemas/recipe-manifest.schema.json) | 書き出しの束の契約（draft 2020-12、`abi: 0.1`。§6.1） | — |
 
 - P5 の点検・監査の**生ログ（`docs/p5-review-run.jsonl` / `p5-audit-run.jsonl` / `p5-2-audit-run.jsonl` /
   `p5-3-audit-run.jsonl`。計 約 11.7 MB）は文書表に数えない**。本文は各 `*-report.md` と `*-run-note.md`

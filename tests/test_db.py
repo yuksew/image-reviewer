@@ -394,18 +394,22 @@ def test_new_connection_sees_committed_rows_and_scan_does_not_lose_decisions(tmp
 def test_migrate_v5_creates_the_tag_and_job_tables(tmp_path: Path):
     """v5（P4-0）: `tag` / `asset_tag` / `tag_gloss` / `job` / `job_item` が入る。
 
-    P4 の設計 §2.1。**v1 の DDL から 1 回で v5**・**v4 の DB からも v5**・**3 回呼んでも同じ**。
+    P4 の設計 §2.1。**v1 の DDL から 1 回で最新**・**v4 の DB からも最新**・**3 回呼んでも同じ**。
+
+    版の数字そのものは `db.SCHEMA_VERSION` と比べる（P7-0 で v6 が増えても、このテストが
+    「v5 のままであること」を主張し続けないように。v6 の表は下の v6 のテストが見る）。
     """
-    # (1) v1 から 1 回で v5
+    # (1) v1 から 1 回で最新
     con = db.connect(tmp_path / "from-v1")
     try:
         con.executescript(db.DDL)
         con.execute("PRAGMA user_version = 1")
-        assert db.migrate(con) == db.SCHEMA_VERSION == 5
+        assert db.migrate(con) == db.SCHEMA_VERSION
         tables = {r["name"] for r in con.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {"tag", "asset_tag", "tag_gloss", "job", "job_item"} <= tables
-        assert db.migrate(con) == 5 and db.migrate(con) == 5
+        assert db.migrate(con) == db.SCHEMA_VERSION
+        assert db.migrate(con) == db.SCHEMA_VERSION
         assert db.integrity(con)["foreign_key_violations"] == 0
     finally:
         con.close()
@@ -418,7 +422,7 @@ def test_migrate_v5_creates_the_tag_and_job_tables(tmp_path: Path):
         db._migrate_v3(con)
         db._migrate_v4(con)
         con.execute("PRAGMA user_version = 4")
-        assert db.migrate(con) == 5
+        assert db.migrate(con) == db.SCHEMA_VERSION
         assert "tag" in {r["name"] for r in con.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert db.integrity(con)["foreign_key_violations"] == 0
@@ -540,19 +544,345 @@ def test_migrate_v5_tops_up_the_columns_an_older_v5_lacks(tmp_path: Path):
     try:
         con.executescript(db.DDL)
         con.execute("PRAGMA user_version = 4")
-        db.migrate(con)                                   # まず v5 にする
+        db.migrate(con)                                   # まず最新（v5 の表ができる）にする
         # 「後から列を足す前の v5」を作る
         con.execute("ALTER TABLE tag DROP COLUMN known")
         con.execute("ALTER TABLE asset_tag DROP COLUMN actor")
         con.execute("ALTER TABLE job DROP COLUMN note")
         assert "known" not in {r["name"] for r in con.execute("PRAGMA table_info(tag)")}
 
-        assert db.migrate(con) == db.SCHEMA_VERSION       # 版は 5 のまま（早期 return の道）
+        assert db.migrate(con) == db.SCHEMA_VERSION       # 版は上がらない（早期 return の道）
         assert {"known"} <= {r["name"] for r in con.execute("PRAGMA table_info(tag)")}
         assert {"actor"} <= {r["name"] for r in con.execute("PRAGMA table_info(asset_tag)")}
         assert {"note"} <= {r["name"] for r in con.execute("PRAGMA table_info(job)")}
         # 何度呼んでも安全（列を二度足さない）
         assert db.migrate(con) == db.SCHEMA_VERSION
         assert db.integrity(con)["foreign_key_violations"] == 0
+    finally:
+        con.close()
+
+
+# ---- v6（P7-0。条件の記録と監視の既読位置）----
+
+
+V6_TABLES = ("recipe_record", "recipe_export_attempt", "recipe_export",
+             "recipe_export_result", "preset", "watcher_state")
+
+
+def test_migrate_v6_creates_the_recipe_tables(tmp_path: Path):
+    """v6（P7-0）: 条件の記録の 5 表と `watcher_state` が入る（P7 の設計 §2.1）。
+
+    設計 §8.1 の 24。**(1) v1 の DDL から 1 回で v6**・**(2) v5 から v6**・**(3) 3 回呼んでも同じ**・
+    `integrity()` が綺麗、の 4 つを見る（P6-0・P4-0 の監査と同じ観点）。
+    **新しい表だけ**なので `ALTER TABLE` は使わず、v6 には `_top_up_v6` が無い（早期 return 側で
+    補うものが無いこと）。v5 の 3 列の手当ては v6 でも通る（上のテスト）。
+    """
+    # (1) v1 から 1 回で v6
+    con = db.connect(tmp_path / "from-v1")
+    try:
+        con.executescript(db.DDL)
+        con.execute("PRAGMA user_version = 1")
+        assert db.migrate(con) == db.SCHEMA_VERSION
+        tables = {r["name"] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert set(V6_TABLES) <= tables, f"足りない: {set(V6_TABLES) - tables}"
+        assert db.integrity(con)["schema_version"] == db.SCHEMA_VERSION
+        assert db.integrity(con)["foreign_key_violations"] == 0
+        # (3) 何度呼んでも同じ
+        assert db.migrate(con) == db.SCHEMA_VERSION
+        assert db.migrate(con) == db.SCHEMA_VERSION
+        assert {r["name"] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")} == tables
+    finally:
+        con.close()
+
+    # (2) v5 の DB から v6（実データ .data と同じ道）
+    con = db.connect(tmp_path / "from-v5")
+    try:
+        con.executescript(db.DDL)
+        db._migrate_v2(con)
+        db._migrate_v3(con)
+        db._migrate_v4(con)
+        db._migrate_v5(con)
+        con.execute("PRAGMA user_version = 5")
+        assert "recipe_record" not in {r["name"] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert db.migrate(con) == db.SCHEMA_VERSION
+        assert set(V6_TABLES) <= {r["name"] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert db.integrity(con)["foreign_key_violations"] == 0
+    finally:
+        con.close()
+
+
+def test_recipe_record_is_one_per_asset_and_the_token_is_reusable(tmp_path: Path):
+    """設計 §8.1 の 43（`ux_recipe_source`）と、`client_token` の部分索引（§0.10）。
+
+    **画像 1 枚に 1 記録**（点検 C-1 / G-5。`mode` は行を分ける軸ではない）。索引を外すと
+    2 行目が入ってしまい、`GET /api/assets/{id}/recipe` がどちらを返すか決まらなくなる。
+    `client_token` は NULL なら何行でも、同じ値なら 1 行（部分索引。P6 と同じ形）。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        a = _asset(con, "1" * 64)
+        b = _asset(con, "2" * 64)
+        c = _asset(con, "3" * 64)
+        d = _asset(con, "4" * 64)
+        e = _asset(con, "5" * 64)
+
+        def record(asset_id, mode="pin_text", token=None):
+            con.execute(
+                "INSERT INTO recipe_record(id, source_asset_id, mode, recipe_hash, record_json,"
+                " env_snapshot, status, actor, client_token, created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (db.ulid(), asset_id, mode, "sha256:" + "a" * 64, "{}", "{}",
+                 "exact", "human", token, db.now()))
+
+        record(a)
+        with pytest.raises(sqlite3.IntegrityError):
+            record(a, mode="rerun_graph")              # 同じ画像に 2 つ目（mode を変えても 1 記録）
+        record(b, token="tok-1")
+        with pytest.raises(sqlite3.IntegrityError):
+            record(e, token="tok-1")                   # **別の画像**で同じ token は 1 行
+        # NULL の token は何行でも入る（部分索引）
+        record(c, token=None)
+        record(d, token=None)
+        assert con.execute("SELECT count(*) AS n FROM recipe_record").fetchone()["n"] == 4
+    finally:
+        con.close()
+
+
+def test_recipe_export_needs_exactly_one_of_marker_or_skip_reason(tmp_path: Path):
+    """設計 §8.1 の 35（点検 A-2a）: `marker` と `marker_skip_reason` は**片方だけ**。
+
+    前の版は `marker` が `NOT NULL` で「印を付けられなかった」を表せなかった（§4.7.1 の前提 3 つ）。
+    両方入る／どちらも無い、のどちらも `CHECK` で落ちる。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        a = _asset(con, "5" * 64)
+        con.execute(
+            "INSERT INTO recipe_record(id, source_asset_id, mode, recipe_hash, record_json,"
+            " env_snapshot, status, actor, created_at) VALUES ('rec1', ?, 'pin_text', 'sha256:x',"
+            " '{}', '{}', 'exact', 'human', ?)", (a, db.now()))
+        con.execute(
+            "INSERT INTO recipe_export_attempt(attempt_id, recipe_id, mode, export_dir, created_at)"
+            " VALUES ('attempt01', 'rec1', 'pin_text', 'recipes/rec1/attempt01', ?)", (db.now(),))
+
+        def export(eid, marker, reason, seed="1"):
+            con.execute(
+                "INSERT INTO recipe_export(id, attempt_id, seed, recipe_hash, graph_path, marker,"
+                " marker_skip_reason, created_at) VALUES (?, 'attempt01', ?, 'sha256:x', 'p', ?, ?, ?)",
+                (eid, seed, marker, reason, db.now()))
+
+        export("e1", "repro-attempt01/seed-1", None)                 # 印だけ
+        export("e2", None, "前提2", seed="2")                        # 理由だけ
+        with pytest.raises(sqlite3.IntegrityError):
+            export("e3", "repro-attempt01/seed-3", "前提2", seed="3")  # 両方
+        with pytest.raises(sqlite3.IntegrityError):
+            export("e4", None, None, seed="4")                         # どちらも無い
+        with pytest.raises(sqlite3.IntegrityError):
+            export("e5", None, "前提4", seed="5")                      # 語彙の外
+        assert con.execute("SELECT count(*) AS n FROM recipe_export").fetchone()["n"] == 2
+    finally:
+        con.close()
+
+
+def test_recipe_export_without_a_seed_is_still_unique(tmp_path: Path):
+    """設計 §8.1 の 34（点検 A-2c）: **seed が NULL でも 1 束 1 行**。
+
+    前の版は `UNIQUE(attempt_id, seed)` だったので、`seed IS NULL` の 2 行目が入った
+    （SQLite の UNIQUE は NULL を互いに別物として扱う。実測で確認）。いまは
+    **`COALESCE(seed,'')` の式の索引**なので、seed 無しの束（G-4。印は `…/noseed`）でも効く。
+    索引を外すとこのテストは 2 行になって落ちる。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        a = _asset(con, "6" * 64)
+        con.execute(
+            "INSERT INTO recipe_record(id, source_asset_id, mode, recipe_hash, record_json,"
+            " env_snapshot, status, actor, created_at) VALUES ('rec1', ?, 'pin_text', 'sha256:x',"
+            " '{}', '{}', 'exact', 'human', ?)", (a, db.now()))
+        con.execute(
+            "INSERT INTO recipe_export_attempt(attempt_id, recipe_id, mode, export_dir, created_at)"
+            " VALUES ('noseed01', 'rec1', 'pin_text', 'recipes/rec1/noseed01', ?)", (db.now(),))
+
+        def export(eid):
+            con.execute(
+                "INSERT INTO recipe_export(id, attempt_id, seed, recipe_hash, graph_path, marker,"
+                " created_at) VALUES (?, 'noseed01', NULL, 'sha256:x', 'p', 'repro-noseed01/noseed', ?)",
+                (eid, db.now()))
+
+        export("e1")
+        with pytest.raises(sqlite3.IntegrityError):
+            export("e2")
+        # seed が違えば別の行（seed 違いは 1 束に何本でも）
+        con.execute("INSERT INTO recipe_export(id, attempt_id, seed, recipe_hash, graph_path,"
+                    " marker, created_at) VALUES ('e3','noseed01','1','sha256:x','p',"
+                    " 'repro-noseed01/seed-1', ?)", (db.now(),))
+        assert con.execute("SELECT count(*) AS n FROM recipe_export").fetchone()["n"] == 2
+        # 索引そのものが式の索引であること（`seed IS NULL` を拾える形）
+        sql = con.execute("SELECT sql FROM sqlite_master WHERE name = 'ux_export_attempt_seed'"
+                          ).fetchone()["sql"]
+        assert "COALESCE" in sql.upper(), sql
+    finally:
+        con.close()
+
+
+def test_export_attempt_token_is_unique_and_the_indexes_are_used(tmp_path: Path):
+    """設計 §8.1 の 36（束の再送）と 29（`EXPLAIN QUERY PLAN`）。
+
+    `ux_attempt_token` の部分索引を外すと、同じ `client_token` の再送で**束が 2 つ**できる
+    （＝ファイルも 2 倍できる）。索引が**実際に引かれる**ことは `EXPLAIN QUERY PLAN` で見る
+    （P5 の D1 の教訓: 索引を作っただけで使われていない、を防ぐ）。
+
+    `ux_export_attempt_seed` を引くには **`COALESCE(seed,'')` の形で問い合わせる**必要がある
+    （`seed = ?` だと `ix_export_attempt` に落ちる。実測）。P7-2 はこの形で引く。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        a = _asset(con, "7" * 64)
+        con.execute(
+            "INSERT INTO recipe_record(id, source_asset_id, mode, recipe_hash, record_json,"
+            " env_snapshot, status, actor, created_at) VALUES ('rec1', ?, 'pin_text', 'sha256:x',"
+            " '{}', '{}', 'exact', 'human', ?)", (a, db.now()))
+
+        def attempt(aid, token=None):
+            con.execute(
+                "INSERT INTO recipe_export_attempt(attempt_id, recipe_id, mode, client_token,"
+                " export_dir, created_at) VALUES (?, 'rec1', 'pin_text', ?, ?, ?)",
+                (aid, token, f"recipes/rec1/{aid}", db.now()))
+
+        attempt("attempt01", "tok-1")
+        with pytest.raises(sqlite3.IntegrityError):
+            attempt("attempt02", "tok-1")
+        attempt("attempt03", None)
+        attempt("attempt04", None)                       # NULL は何本でも
+        assert con.execute("SELECT count(*) AS n FROM recipe_export_attempt"
+                           ).fetchone()["n"] == 3
+
+        plans = {
+            "ux_recipe_source": ("SELECT id FROM recipe_record WHERE source_asset_id = ?", 1),
+            "ux_recipe_token": ("SELECT id FROM recipe_record WHERE client_token = ?", 1),
+            "ix_recipe_created": ("SELECT id FROM recipe_record ORDER BY created_at DESC,"
+                                  " id DESC LIMIT 5", 0),
+            "ix_attempt_recipe": ("SELECT attempt_id FROM recipe_export_attempt"
+                                  " WHERE recipe_id = ? ORDER BY created_at DESC", 1),
+            "ux_attempt_token": ("SELECT attempt_id FROM recipe_export_attempt"
+                                 " WHERE client_token = ?", 1),
+            "ux_export_attempt_seed": ("SELECT id FROM recipe_export WHERE attempt_id = ?"
+                                       " AND COALESCE(seed, '') = ?", 2),
+            "ix_result_export": ("SELECT id FROM recipe_export_result WHERE export_id = ?"
+                                 " ORDER BY created_at", 1),
+            "ux_result_asset": ("SELECT id FROM recipe_export_result WHERE export_id = ?"
+                                " AND result_asset_id = ?", 2),
+            "ix_preset_created": ("SELECT id FROM preset ORDER BY created_at DESC, id DESC"
+                                  " LIMIT 5", 0),
+        }
+        for index, (query, n) in plans.items():
+            plan = " ".join(str(r["detail"]) for r in con.execute(
+                "EXPLAIN QUERY PLAN " + query, ("x",) * n))
+            assert index in plan, f"{index} が使われていない: {plan}"
+    finally:
+        con.close()
+
+
+def test_deleting_an_asset_keeps_presets_and_results_but_not_records(tmp_path: Path):
+    """設計 §8.1 の 42（点検 C-3 / G-3）: 画像を消したときの 3 つの振る舞い。
+
+    - `preset.source_asset_id` と `recipe_export_result.result_asset_id` は **`SET NULL`**
+      （画像が消えても「どんな条件で出したか」「結果はどうだったか」は残す）
+    - `recipe_record.source_asset_id` は **RESTRICT**（既定）。記録のある画像は消せない
+      （記録ごと消すか断るかは **P8 の設計**へ申し送り。§2.1 の末尾）。前の版はこれを決めておらず、
+      実測で `FOREIGN KEY constraint failed` になった
+    """
+    con = db.open_db(tmp_path)
+    try:
+        a = _asset(con, "8" * 64)          # 記録のある画像
+        b = _asset(con, "9" * 64)          # プリセットと結果が指す画像
+        con.execute(
+            "INSERT INTO recipe_record(id, source_asset_id, mode, recipe_hash, record_json,"
+            " env_snapshot, status, actor, created_at) VALUES ('rec1', ?, 'pin_text', 'sha256:x',"
+            " '{}', '{}', 'exact', 'human', ?)", (a, db.now()))
+        con.execute(
+            "INSERT INTO recipe_export_attempt(attempt_id, recipe_id, mode, export_dir, created_at)"
+            " VALUES ('attempt01', 'rec1', 'pin_text', 'recipes/rec1/attempt01', ?)", (db.now(),))
+        con.execute(
+            "INSERT INTO recipe_export(id, attempt_id, seed, recipe_hash, graph_path, marker,"
+            " created_at) VALUES ('e1','attempt01','1','sha256:x','p','repro-attempt01/seed-1', ?)",
+            (db.now(),))
+        con.execute(
+            "INSERT INTO recipe_export_result(id, export_id, result_asset_id, matched_by, created_at)"
+            " VALUES ('res1','e1', ?, 'marker', ?)", (b, db.now()))
+        con.execute(
+            "INSERT INTO preset(id, name, source_asset_id, record_json, actor, created_at)"
+            " VALUES ('p1','いつもの', ?, '{}', 'human', ?)", (b, db.now()))
+
+        # 記録のある画像は消せない（RESTRICT）
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("DELETE FROM asset WHERE id = ?", (a,))
+        # 記録の無い画像は消せて、プリセットと結果は残る（SET NULL）
+        con.execute("DELETE FROM asset WHERE id = ?", (b,))
+        assert con.execute("SELECT source_asset_id FROM preset WHERE id = 'p1'"
+                           ).fetchone()["source_asset_id"] is None
+        assert con.execute("SELECT result_asset_id FROM recipe_export_result WHERE id = 'res1'"
+                           ).fetchone()["result_asset_id"] is None
+        assert con.execute("SELECT count(*) AS n FROM preset").fetchone()["n"] == 1
+    finally:
+        con.close()
+
+
+def test_recipe_vocabularies_are_constrained(tmp_path: Path):
+    """語彙は表でも守る（設計 §2.1。家風「`CHECK` を使う」）。
+
+    サービス層をすり抜けても、`mode` / `status` / `actor` / `matched_by` / `verdict` /
+    `verdict_actor` / `final_prompt_source` / `marker_skip_reason` の外の値は入らない。
+
+    **悪い行は 1 つずつ別の画像に当てる。** 同じ画像に続けて入れると `ux_recipe_source` で
+    先に落ちてしまい、`status` / `actor` の `CHECK` を外しても通ってしまう（実測。
+    「壊しても落ちないテスト」の型なので、ここは画像を分ける）。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        shas = iter(f"{i:064d}" for i in range(1, 12))
+        a = _asset(con, next(shas))
+        con.execute(
+            "INSERT INTO recipe_record(id, source_asset_id, mode, recipe_hash, record_json,"
+            " env_snapshot, status, actor, created_at) VALUES ('rec1', ?, 'pin_text', 'sha256:x',"
+            " '{}', '{}', 'exact', 'human', ?)", (a, db.now()))
+
+        def bad(sql, args=()):
+            with pytest.raises(sqlite3.IntegrityError):
+                con.execute(sql, args)
+
+        base = ("INSERT INTO recipe_record(id, source_asset_id, mode, recipe_hash, record_json,"
+                " env_snapshot, status, actor, created_at) VALUES (?, ?, ?, 'sha256:x', '{}',"
+                " '{}', ?, ?, ?)")
+        bad(base, ("r2", _asset(con, next(shas)), "l4", "exact", "human", db.now()))       # mode
+        bad(base, ("r3", _asset(con, next(shas)), "pin_text", "maybe", "human", db.now()))  # status
+        bad(base, ("r4", _asset(con, next(shas)), "pin_text", "exact", "robot", db.now()))  # actor
+        con.execute("UPDATE recipe_record SET final_prompt_source = 'png_literal' WHERE id='rec1'")
+        bad("UPDATE recipe_record SET final_prompt_source = 'guessed' WHERE id = 'rec1'")
+        bad("INSERT INTO recipe_export_attempt(attempt_id, recipe_id, mode, marker_skip_reason,"
+            " export_dir, created_at) VALUES ('a2','rec1','pin_text','前提4','p',?)", (db.now(),))
+        con.execute("INSERT INTO recipe_export_attempt(attempt_id, recipe_id, mode, export_dir,"
+                    " created_at) VALUES ('attempt01','rec1','pin_text','p',?)", (db.now(),))
+        con.execute("INSERT INTO recipe_export(id, attempt_id, seed, recipe_hash, graph_path,"
+                    " marker, created_at) VALUES ('e1','attempt01','1','sha256:x','p','m', ?)",
+                    (db.now(),))
+        res = ("INSERT INTO recipe_export_result(id, export_id, matched_by, verdict,"
+               " verdict_actor, created_at) VALUES (?, 'e1', ?, ?, ?, ?)")
+        bad(res, ("x1", "guess", None, None, db.now()))                 # matched_by
+        bad(res, ("x2", "marker", "good", None, db.now()))              # verdict
+        bad(res, ("x3", "marker", "same", "robot", db.now()))           # verdict_actor
+        con.execute(res, ("x4", "marker", "close", "human", db.now()))
+        # `same_hash` / `seed_changed` の既定は 0
+        row = con.execute("SELECT same_hash, seed_changed, verdict_at FROM recipe_export_result"
+                          " WHERE id = 'x4'").fetchone()
+        assert (row["same_hash"], row["seed_changed"], row["verdict_at"]) == (0, 0, None)
+        # `watcher_state.enabled` の既定は 0（勝手に ComfyUI を叩かない。設計 §0.9）
+        con.execute("INSERT INTO watcher_state(name) VALUES ('comfyui')")
+        assert con.execute("SELECT enabled, baseline_create_time FROM watcher_state"
+                           ).fetchone()["enabled"] == 0
     finally:
         con.close()

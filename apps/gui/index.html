@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="dark" data-density="normal">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>image-reviewer</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div id="app">
+  <div class="proto">
+    <strong>プロトタイプ</strong> — 閲覧と来歴の表示、比較（並べる / 来歴の差分表 / 同期ズーム /
+    差分ヒートマップ / 似ている順）、<b>要求の一覧とまとまりの判断</b>まで。
+    注記、タグ付け、監視、条件の記録はまだ入っていません（設計は docs/ にあります）。
+  </div>
+
+  <div class="topbar">
+    <span class="name">image-reviewer</span>
+    <span class="stat" id="stat-brief">—</span>
+    <span class="pending" id="stat-pending"></span>
+    <!-- P6-1b: 要求の件数（0 なら出さない）。押すと `#/requests`。`frontend-design.md` §4.5 -->
+    <a class="pending req-badge" id="stat-requests" href="#/requests" hidden></a>
+    <!-- P4-3: タグ付けの進行と完了（`#/jobs`。§5.5）。0 件なら出さない -->
+    <a class="pending job-badge" id="stat-jobs" href="#/jobs" hidden></a>
+    <span class="spacer"></span>
+    <button id="btn-provenance" title="来歴のある画像 / ない画像を切り替える">来歴: すべて</button>
+    <button id="btn-density">密度: 普</button>
+    <button id="btn-theme">テーマ: 暗幕</button>
+    <button id="btn-capture" title="ComfyUI の /history から英訳を捕獲する（監視の代わり）">訳を捕獲</button>
+    <button id="btn-scan" title="登録済みのフォルダを走査し直す">再走査</button>
+  </div>
+
+  <div class="body">
+    <div class="rail">
+      <h2>入れ物</h2>
+      <div class="item on" data-filter="all"><span>すべて</span><span class="n" id="c-all">0</span></div>
+      <div class="item" data-filter="with"><span>来歴あり</span><span class="n" id="c-with">0</span></div>
+      <div class="item" data-filter="without"><span>来歴なし</span><span class="n" id="c-without">0</span></div>
+      <h2>種別</h2>
+      <div class="item" data-filter="kind:generated"><span>生成物</span><span class="n" id="c-gen">0</span></div>
+      <div class="item" data-filter="kind:photo"><span>写真・その他</span><span class="n" id="c-photo">0</span></div>
+      <h2>モデル</h2>
+      <div id="models"></div>
+      <h2>走査したフォルダ</h2>
+      <div id="roots" class="stat" style="padding:0 12px"></div>
+    </div>
+
+    <div class="sheet" id="sheet">
+      <div class="rows" id="rows"></div>
+      <div class="empty" id="sheet-empty" hidden>この入れ物にはまだ画像がありません。走査するフォルダを追加すると、ここに並びます。</div>
+    </div>
+
+    <div class="detail hidden" id="detail"></div>
+  </div>
+
+  <div class="bottombar">
+    <span id="bar-count">—</span>
+    <span id="bar-shown"></span>
+    <span class="spacer" style="flex:1"></span>
+    <span id="bar-pick">選択 0 枚</span>
+    <button id="btn-compare" title="Ctrl / Shift + クリックで選んだ画像を並べて比べる（2〜8 枚）">比較を開く</button>
+    <span id="bar-hint">クリックで来歴を表示 / Ctrl + クリックで比較に選ぶ</span>
+  </div>
+
+  <!-- 要求の一覧（P6-1b）。`#/requests?state=all&open=<id>` で入る。
+       詳細は**別画面を作らず、その場で開く**（設計 p6-design.md §5.2） -->
+  <div id="requests">
+    <div class="topbar">
+      <a class="back" href="#">← 一覧</a>
+      <span class="name">要求</span>
+      <span class="stat" id="req-brief">—</span>
+      <span class="spacer"></span>
+      <span class="req-tabs" id="req-tabs"></span>
+      <button id="req-again" title="もう一度読む">再読込</button>
+    </div>
+    <div class="req-list" id="req-list"></div>
+    <div class="empty" id="req-empty" hidden></div>
+    <div class="req-help">
+      エージェントが投げた要求をここでさばきます。<b>開いて決める</b>でまとまりレビューへ入り、
+      決めると要求は閉じます。<b>断る</b>には理由が要ります（エージェントが次の手を決められます）。
+      <b>あとで</b>は何も書きません。
+    </div>
+  </div>
+
+  <!-- まとまりレビュー（`#/group/<id>`。P6-1b の最小形）。
+       要求から来ていないまとまりでも同じ画面を使う（設計 p6-design.md §5.1b） -->
+  <div id="group">
+    <div class="topbar">
+      <a class="back" href="#/requests">← 要求</a>
+      <span class="name" id="group-title">まとまり</span>
+      <span class="stat" id="group-brief">—</span>
+      <span class="spacer"></span>
+      <button id="group-later" title="何も書かずに要求の一覧へ戻る（判断は消しません）">あとで</button>
+    </div>
+    <div class="grp-stage" id="group-stage"></div>
+    <div class="grp-foot">
+      <div class="grp-strip" id="group-strip"></div>
+      <div class="grp-actions">
+        <label class="grp-reason">ボツの理由
+          <select id="group-reason"><option value="">理由を選ぶ</option></select>
+        </label>
+        <label class="grp-reason">キープの理由（任意）
+          <select id="group-keep-reason"><option value="">選ばない</option></select>
+        </label>
+        <button id="group-decide">この 1 枚に決める</button>
+        <button id="group-allreject">全部ボツ</button>
+        <button id="group-zoom" title="選んだ 1 枚を拡大で開く（そこで印を付けられます）">選んだ 1 枚を拡大で開く</button>
+      </div>
+      <div class="grp-note" id="group-note" hidden></div>
+      <div class="grp-help">
+        <b>印を付けてから決める</b>のが本筋です（「選んだ 1 枚を拡大で開く」→ 注記）。
+        ボツには理由が要ります（枚ごと・まとまり全体とも）。<b>あとで</b>は判断を書きません。
+        マウスだけで完結します（キーは補助）。
+      </div>
+    </div>
+  </div>
+
+  <!-- 語の一覧（P4-3）。`#/tags?q=...&known=1|0|all`。
+       語を選ぶと右で語釈を確認・修正できる（設計 p4-design.md §5.2） -->
+  <div id="tags">
+    <div class="topbar">
+      <a class="back" href="#">← 一覧</a>
+      <span class="name">タグ</span>
+      <span class="stat" id="tags-brief">—</span>
+      <span class="spacer"></span>
+      <form id="tags-search" class="tl-search">
+        <input id="tags-q" type="search" placeholder="語で絞る（前方一致）" autocomplete="off">
+        <button type="submit">絞る</button>
+      </form>
+      <button id="tags-known" title="語彙にある語 / 語彙外 / すべて を切り替える">表示: 語彙あり</button>
+      <button id="tags-translate" title="語釈の無い語を 20 語まで訳す">訳す（20 語まで）</button>
+    </div>
+    <div class="tl-body">
+      <div class="tl-list" id="tags-list"></div>
+      <div class="tl-detail" id="tags-detail"></div>
+    </div>
+    <div class="tl-job">
+      <b>一括タグ付け</b>
+      <label>枚数 <input id="tl-job-limit" type="number" min="0" value="0" style="width:5em"> <span class="stat">0 はすべて</span></label>
+      <label>方式
+        <select id="tl-job-engine">
+          <option value="auto">おまかせ</option>
+          <option value="builtin">内蔵</option>
+          <option value="comfyui">ComfyUI</option>
+        </select>
+      </label>
+      <label><input id="tl-job-force" type="checkbox"> 付いていても付け直す</label>
+      <button id="tags-start">タグ付けを始める</button>
+      <span class="stat" id="tl-job-msg"></span>
+    </div>
+    <div class="tl-help">
+      件数の多い順に出ます。<b>既定は語彙（Danbooru）にある語だけ</b>で、`語彙外` を選ぶと PNG の自然文から来た語も見られます。
+      語釈は<b>自動</b>です。直すと `edited` が立ち、訳し直しでも上書きされません。
+    </div>
+  </div>
+
+  <!-- ジョブ（P4-3）。`#/jobs`。開いている間だけ 2 秒ごとに更新する（設計 §5.3） -->
+  <div id="jobs">
+    <div class="topbar">
+      <a class="back" href="#" id="jobs-back">← 一覧</a>
+      <span class="name">ジョブ</span>
+      <span class="stat" id="jobs-brief">—</span>
+      <span class="spacer"></span>
+      <a class="back" href="#/tags">タグへ</a>
+    </div>
+    <div class="jb-list" id="jobs-list"></div>
+    <div class="jb-help">
+      タグ付けの進行です。<b>中断</b>は 1 枚ごとに効きます。失敗した枚は理由つきで出るので、
+      <b>もう一度</b>で失敗した分だけやり直せます。終わったジョブは履歴として残ります。
+    </div>
+  </div>
+
+  <!-- 比較（P5-2 / P5-3）。`#/compare?ids=a,b&base=<id>` で入る。計算はサーバが済ませてある -->
+  <div id="compare">
+    <div class="topbar">
+      <a class="back" href="#">← 一覧</a>
+      <span class="name">比較</span>
+      <span class="stat" id="cmp-brief">—</span>
+      <span class="spacer"></span>
+      <button id="cmp-order" title="並び順を切り替える（r）: 入力順 / seed 順 / 似ている順">並び: 入力順</button>
+      <button id="cmp-heat" title="差分ヒートマップを出す（d）">差分ヒートマップ</button>
+      <button id="cmp-same" title="同じ行を出す / 畳む（m）">同じ行: 畳む</button>
+      <button id="cmp-sync" title="同期ズームの on / off（z）">同期ズーム: 入</button>
+      <button id="cmp-one" title="等倍に戻す（0）">等倍</button>
+      <span class="stat" id="cmp-zoom">1.00×</span>
+    </div>
+    <div class="cmp-stage" id="cmp-stage"></div>
+    <!-- P5-3: 差分ヒートマップ（要求のたびにサーバが作る。保存しない） -->
+    <div class="cmp-heatwrap" id="cmp-heatwrap" hidden>
+      <div class="cmp-heatbar">
+        <span class="pair" id="cmp-heatpair">—</span>
+        <span id="cmp-heatmetrics"></span>
+        <span class="spacer"></span>
+        <button id="cmp-heatclose">閉じる</button>
+      </div>
+      <div class="cmp-heatimg" id="cmp-heatimg"></div>
+    </div>
+    <!-- 差分ヒートマップを出せない理由（1 行。`comparison.md` §2.3 / §5.3）と、
+         **規則の外でも出す口**（点検 G6）。監査 A1: 強制の口は隠れる包み（`d` キーでしか
+         開かない `#cmp-heatwrap`）の中に置かず、**理由の 1 行の隣**に出す。
+         こうするとキーを知らなくてもマウスだけで届く（`comparison.md` §6） -->
+    <div class="cmp-heatwhy-line">
+      <div class="cmp-heatwhy" id="cmp-heatwhy"></div>
+      <button id="cmp-heatforce" hidden>強制して出す</button>
+    </div>
+    <div class="cmp-diff" id="cmp-diff"></div>
+    <div class="cmp-help">
+      ホイールで拡大（0.5〜8 倍）/ ドラッグで移動 / ダブルクリックで等倍。
+      タイルの<b>「基準にする」</b>を押すと、その枚を基準に他を見ます（<b>上端の青い帯</b>が基準）。
+      <b>差分ヒートマップ</b>は同じ seed か pHash 距離が近い組でだけ自動で出ます
+      （出せないときは理由を 1 行で出し、<b>強制して出す</b>で見られます）。
+      キー: <b>1</b>〜<b>8</b> 選択、<b>b</b> 選択中を基準、<b>d</b> 差分、<b>r</b> 並び順、
+      <b>z</b> 同期、<b>m</b> 同じ行、<b>+</b> <b>-</b> <b>0</b> 倍率、<b>Esc</b> 閉じる。
+      差分と指標はサーバ（<code>/api/compare</code>）が計算したものをそのまま描いています。
+    </div>
+  </div>
+</div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

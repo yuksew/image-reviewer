@@ -1,0 +1,46 @@
+# データ置き場（既定）
+.data/
+
+# uv のキャッシュ（サンドボックス下では既定の場所に書けないためリポジトリ内へ向ける）
+.uv-cache/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# pytest の失敗が残した片付け（この環境の制限でエージェントからは削除できない。利用者が消せる）
+.pytest-tmp/
+pytest-cache-files-*/
+tests/.tmp/
+
+# 前面
+node_modules/
+apps/gui/dist/
+src/image_reviwer/_gui/
+
+# 一時
+*.tmp
+
+# 控え（移行の前に取る。**データ置き場の中身なので入れない**）
+.backup/
+
+# 検証の使い捨て（監査と実装者が使う。**大きな写しと画面写真**。要るなら各自で作る）
+.tmp-audit-redo/
+.tmp-p6-1a/
+
+# pytest が `%TEMP%` に作れないときに残す物（この環境の制限。**中身は使い捨て**）
+tmp*/
+
+# Windows のジャンクション（**スキルの原本は `.agents/skills/`**。
+# ジャンクションをそのまま入れると中身が二重になるので、写しの側は入れない）
+.claude/skills/
+
+# ログ
+*.log
+
+# OS
+Thumbs.db
+desktop.ini

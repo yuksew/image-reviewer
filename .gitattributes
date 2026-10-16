@@ -1,0 +1,15 @@
+# 改行は LF に固定する（Windows でも作業ツリーのまま入れる）
+* text=auto eol=lf
+
+# 画像・DB は触らない
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.onnx binary
+*.safetensors binary
+*.sqlite3 binary
+
+# 画面写真や一時物は入らない（.gitignore と揃える）
+*.log -text

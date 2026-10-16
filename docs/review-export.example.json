@@ -1,0 +1,312 @@
+{
+  "schema": "urn:image-reviewer:schema:review-export",
+  "abi": "0.1",
+  "generated_at": "2026-10-14T02:15:00Z",
+  "generator": { "name": "image-reviewer", "version": "0.1.0" },
+  "scope": { "kind": "group", "id": "01JGRP0000000000000000001" },
+  "reason_codes": [
+    { "id": "rc.keep.as_intended", "label": "意図どおり", "applies_to": "keep" },
+    { "id": "rc.reject.body", "label": "破綻（体・関節・結合）", "applies_to": "reject" },
+    { "id": "rc.reject.character", "label": "キャラが違う（別人化）", "applies_to": "reject" },
+    { "id": "rc.reject.all", "label": "まとまりごとボツ", "applies_to": "reject" }
+  ],
+  "groups": [
+    {
+      "id": "01JGRP0000000000000000001",
+      "title": "同じ指示で出した候補（8 枚）",
+      "kind": "batch",
+      "source": "comfyui",
+      "source_ref": "4f1c9a2e-8b77-4a11-9d3e-2b6f0c1a5e77",
+      "policy": "pick_one",
+      "state": "decided",
+      "decision": "selected",
+      "selected_asset_ids": ["01JAST0000000000000000003"],
+      "reason_code_id": "rc.keep.as_intended",
+      "reason_label": "意図どおり",
+      "note": "狙った構図で、体のつながりも素直。",
+      "created_at": "2026-10-13T23:40:00Z",
+      "decided_at": "2026-10-14T02:10:00Z",
+      "decided_by": "human",
+      "items": [
+        {
+          "asset_id": "01JAST0000000000000000001",
+          "verdict": "reject",
+          "group_decision": "not_selected",
+          "reason_code_id": "rc.reject.body",
+          "reason_label": "破綻（体・関節・結合）",
+          "note": "右腕が胴に溶けている"
+        },
+        {
+          "asset_id": "01JAST0000000000000000002",
+          "verdict": "reject",
+          "group_decision": "not_selected",
+          "reason_code_id": "rc.reject.character",
+          "reason_label": "キャラが違う（別人化）",
+          "note": null
+        },
+        {
+          "asset_id": "01JAST0000000000000000003",
+          "verdict": "keep",
+          "group_decision": "selected",
+          "reason_code_id": "rc.keep.as_intended",
+          "reason_label": "意図どおり",
+          "note": null
+        }
+      ]
+    },
+    {
+      "id": "01JGRP0000000000000000002",
+      "title": "まだ決めていないまとまり（2 枚）",
+      "kind": "manual",
+      "source": "manual",
+      "source_ref": null,
+      "policy": "pick_one",
+      "state": "open",
+      "decision": null,
+      "selected_asset_ids": [],
+      "reason_code_id": null,
+      "reason_label": null,
+      "note": null,
+      "created_at": "2026-10-15T01:00:00Z",
+      "decided_at": null,
+      "decided_by": null,
+      "items": [
+        {
+          "asset_id": "01JAST0000000000000000009",
+          "verdict": null,
+          "group_decision": null,
+          "reason_code_id": null,
+          "reason_label": null,
+          "note": null
+        },
+        {
+          "asset_id": "01JAST0000000000000000002",
+          "verdict": "reject",
+          "group_decision": null,
+          "reason_code_id": "rc.reject.character",
+          "reason_label": "キャラが違う（別人化）",
+          "note": null
+        }
+      ]
+    }
+  ],
+  "assets": [
+    {
+      "id": "01JAST0000000000000000003",
+      "kind": "generated",
+      "review_state": "kept",
+      "verdict": "keep",
+      "reason_code_id": "rc.keep.as_intended",
+      "reason_label": "意図どおり",
+      "note": null,
+      "decided_at": "2026-10-14T02:10:00Z",
+      "decided_by": "human",
+      "group_ids": ["01JGRP0000000000000000001"],
+      "tags": [
+        { "name": "1girl", "category": 0, "category_name": "general", "score": 0.97, "source": "wd14" },
+        { "name": "school uniform", "category": 0, "category_name": "general", "score": null, "source": "png" }
+      ],
+      "external_ref": {
+        "kind": "comfyui",
+        "ref": "naedoko_00403_.png",
+        "url": null,
+        "prompt_id": "4f1c9a2e-8b77-4a11-9d3e-2b6f0c1a5e77"
+      },
+      "provenance": {
+        "model": "anima-turbo-v1.1.safetensors",
+        "loras": ["BuAnime_NSFW_Style_Anima_BuAnimeV2"],
+        "vae": "qwen_image_vae.safetensors",
+        "sampler": "er_sde",
+        "scheduler": "beta",
+        "seed": "338134650120909",
+        "steps": 10,
+        "cfg": 1.0,
+        "denoise": 1.0,
+        "width": 768,
+        "height": 1360,
+        "prompt_id": "4f1c9a2e-8b77-4a11-9d3e-2b6f0c1a5e77",
+        "has_workflow_graph": false
+      },
+      "prompts": {
+        "ja_text": "教室で制服の少女が窓の外を見ている。昼、逆光。",
+        "ja_source": "png_primitive",
+        "en_text": null,
+        "en_source": null,
+        "en_is_rederived": false,
+        "en_engine": null
+      },
+      "sha256": "af786850e387550fdab836ed7e6dc881de23001b5c0f2b3a2c8f4b7d9e1a2b3c",
+      "missing": false,
+      "duplicate_of": null,
+      "reproduction": null,
+      "locations": null
+    },
+    {
+      "id": "01JAST0000000000000000001",
+      "review_state": "rejected",
+      "verdict": "reject",
+      "reason_code_id": "rc.reject.body",
+      "reason_label": "破綻（体・関節・結合）",
+      "note": "右腕が胴に溶けている",
+      "decided_at": "2026-10-14T02:10:00Z",
+      "decided_by": "human",
+      "group_ids": ["01JGRP0000000000000000001"],
+      "tags": [
+        { "name": "1girl", "category": 0, "category_name": "general", "score": 0.95, "source": "wd14" }
+      ],
+      "external_ref": {
+        "kind": "comfyui",
+        "ref": "naedoko_00401_.png",
+        "url": null,
+        "prompt_id": "4f1c9a2e-8b77-4a11-9d3e-2b6f0c1a5e77"
+      },
+      "provenance": {
+        "model": "anima-turbo-v1.1.safetensors",
+        "loras": null,
+        "vae": "qwen_image_vae.safetensors",
+        "sampler": "er_sde",
+        "scheduler": "beta",
+        "seed": "998211003122",
+        "steps": 10,
+        "cfg": 1.0,
+        "denoise": 1.0,
+        "width": 768,
+        "height": 1360,
+        "prompt_id": "4f1c9a2e-8b77-4a11-9d3e-2b6f0c1a5e77",
+        "has_workflow_graph": false
+      },
+      "prompts": {
+        "ja_text": null,
+        "ja_source": null,
+        "en_text": "1girl, solo, school uniform, classroom, day",
+        "en_source": "png_literal",
+        "en_is_rederived": false,
+        "en_engine": null
+      },
+      "sha256": "bf786850e387550fdab836ed7e6dc881de23001b5c0f2b3a2c8f4b7d9e1a2b3c",
+      "missing": false,
+      "duplicate_of": null,
+      "reproduction": null,
+      "locations": null
+    },
+    {
+      "id": "01JAST0000000000000000002",
+      "review_state": "rejected",
+      "verdict": "reject",
+      "reason_code_id": "rc.reject.character",
+      "reason_label": "キャラが違う（別人化）",
+      "note": null,
+      "decided_at": "2026-10-14T02:10:00Z",
+      "decided_by": "human",
+      "group_ids": ["01JGRP0000000000000000001"],
+      "tags": [
+        { "name": "1girl", "category": 0, "category_name": "general", "score": 0.98, "source": "wd14" },
+        { "name": "solo", "category": 0, "category_name": "general", "score": 0.91, "source": "wd14" },
+        { "name": "classroom", "category": 0, "category_name": "general", "score": null, "source": "png" }
+      ],
+      "external_ref": {
+        "kind": "comfyui",
+        "ref": "naedoko_00402_.png",
+        "url": null,
+        "prompt_id": "4f1c9a2e-8b77-4a11-9d3e-2b6f0c1a5e77"
+      },
+      "provenance": {
+        "model": "anima-turbo-v1.1.safetensors",
+        "loras": ["BuAnime_NSFW_Style_Anima_BuAnimeV2"],
+        "vae": "qwen_image_vae.safetensors",
+        "sampler": "er_sde",
+        "scheduler": "beta",
+        "seed": "338134650120909",
+        "steps": 10,
+        "cfg": 1.0,
+        "denoise": 1.0,
+        "width": 768,
+        "height": 1360,
+        "prompt_id": "4f1c9a2e-8b77-4a11-9d3e-2b6f0c1a5e77",
+        "has_workflow_graph": true
+      },
+      "prompts": {
+        "ja_text": "教室で制服の少女が窓の外を見ている。昼、逆光。",
+        "ja_source": "png_primitive",
+        "en_text": "1girl, solo, school uniform, classroom, looking out the window, day, backlighting, anime coloring",
+        "en_source": "comfyui_history",
+        "en_is_rederived": false,
+        "en_engine": "qwen3vl_8b_int8_convrot.safetensors"
+      },
+      "sha256": "3f786850e387550fdab836ed7e6dc881de23001b5c0f2b3a2c8f4b7d9e1a2b3c",
+      "missing": false,
+      "duplicate_of": null,
+      "reproduction": {
+        "status": "approx",
+        "mode": "pin_text",
+        "recipe_hash": "sha256:9c1f0e7b2a4d6c8e0f1a3b5d7e9c1a3b5d7e9f1a3b5d7e9c1a3b5d7e9f1a3b5d",
+        "reasons": ["hash_mismatch", "node_missing"],
+        "runs": [
+          {
+            "id": "01JRUN0000000000000000001",
+            "created_at": "2026-10-14T03:02:00Z",
+            "seed": "338134650120909",
+            "attempt_id": "01JATT0000000000000000001",
+            "marker": "repro-01JATT0000000000000000001/seed-338134650120909",
+            "matched_by": "marker",
+            "result_asset_id": "01JAST000000000000000000a",
+            "same_hash": false,
+            "ssim": 0.978,
+            "phash_distance": 2,
+            "changed_fraction": 0.041,
+            "mean_abs": 2.7,
+            "verdict": "close",
+            "note": "手の形が少し違う。塗りと構図は一致。"
+          }
+        ]
+      },
+      "locations": null
+    },
+    {
+      "id": "01JAST0000000000000000009",
+      "kind": "reference",
+      "review_state": "unreviewed",
+      "verdict": null,
+      "reason_code_id": null,
+      "reason_label": null,
+      "note": null,
+      "decided_at": null,
+      "decided_by": null,
+      "group_ids": [],
+      "tags": [],
+      "external_ref": null,
+      "provenance": null,
+      "prompts": null,
+      "sha256": null,
+      "missing": true
+    }
+  ],
+  "requests": [
+    {
+      "id": "01JREQ0000000000000000001",
+      "group_id": "01JGRP0000000000000000001",
+      "state": "done",
+      "ask": "この 8 枚から 1 枚選んでほしい",
+      "conditions": ["左手の形", "背景の窓の位置"],
+      "origin": "作品A / カット03",
+      "wants": ["selected_ids", "reason", "annotations"],
+      "ai": {
+        "pick_asset_id": "01JAST0000000000000000003",
+        "note": "手が素直で、窓の位置も合っている"
+      },
+      "created_at": "2026-10-13T23:41:00Z",
+      "closed_at": "2026-10-14T02:10:00Z",
+      "closed_by": "human",
+      "decline_note": null,
+      "superseded_by": null,
+      "response": {
+        "selected_asset_ids": ["01JAST0000000000000000003"],
+        "reason_code_id": "rc.keep.as_intended",
+        "reason_label": "意図どおり",
+        "note": "狙った構図で、体のつながりも素直。",
+        "annotations": ["01JANN0000000000000000001"]
+      }
+    }
+  ],
+  "path_map": null
+}

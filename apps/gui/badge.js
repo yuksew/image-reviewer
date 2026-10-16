@@ -1,0 +1,143 @@
+// 要求の件数と、タブのタイトル（P6-1b）
+// 設計: docs/p6-design.md §5.4（件数と知らせ方）・§0.10（画面を開いている間だけ 5 秒ごとに取得）、
+//       docs/frontend-design.md §4.5（件数と通知）
+//
+// 約束:
+// - **画面を奪わない。** 要求が来ても画面を切り替えない（件数とタブのタイトルだけ。§5.1）
+// - **音は使わない**（`design.md` §16.1）
+// - SSE は作らない（`p5-design.md` §0.1）。**開いている間だけ** 5 秒ごとに
+//   `GET /api/review-requests?state=open&count_only=1` を叩く（一覧そのものは取らない。§0.10）
+// - このモジュールは**読み込んだだけでは何も始めない**（`wireBadge()` を呼んだときだけ）。
+//   テスト（`tools/gui_smoke.mjs`）がタイマーを残さないため
+
+const COUNT_API = '/api/review-requests?state=open&count_only=1';
+const JOBS_API = '/api/jobs?limit=5';       // P4-3: 進行と完了（§5.5）
+const TITLE_BASE = 'image-reviewer';       // `(3) image-reviewer` の土台（§5.4）
+const POLL_MS = 5000;
+const DONE_NOTICE_MS = 60000;              // 「終わりました」を出しておく長さ
+
+const $ = (id) => document.getElementById(id);
+
+let timer = null;
+let lastStates = new Map();                // job_id → state（実行中 → 完了 の移り変わりを見る）
+let doneNotice = null;                     // {at, text}
+let lastSeenAt = 0;                        // 前回の周期の時刻（短いジョブの完了を拾う。監査 C-3）
+let notified = new Set();                  // 「終わりました」を出した job（二度言わない）
+
+// バーの `要求 3`（0 なら出さない。`--accent` の文字。`frontend-design.md` §4.5）
+export function renderBadge(count) {
+  const el = $('stat-requests');
+  if (!el) return;
+  const n = Number(count) || 0;
+  el.textContent = n > 0 ? `要求 ${n}` : '';
+  el.hidden = n <= 0;
+}
+
+// タブのタイトルを `(3) image-reviewer` にする（0 なら素の名前。§5.4）
+export function applyTitle(count) {
+  const n = Number(count) || 0;
+  if (typeof document !== 'undefined') {
+    document.title = n > 0 ? `(${n}) ${TITLE_BASE}` : TITLE_BASE;
+  }
+}
+
+export function renderCount(count) {
+  renderBadge(count);
+  applyTitle(count);
+}
+
+async function fetchCount() {
+  try {
+    const res = await fetch(COUNT_API);
+    if (!res.ok) return;
+    const body = await res.json();
+    renderCount((body.counts || {}).open ?? 0);
+  } catch (error) {
+    // 件数が取れないだけで画面は止めない（次の周期で再挑戦する）
+  }
+}
+
+// ---- P4-3: ジョブの進行と完了（`p4-design.md` §5.5）----
+//
+// - 進行中: 「タグ付け中 12 / 263」（押すと `#/jobs`）
+// - 終わった直後: 「タグ付けが終わりました（263 枚）」を 60 秒だけ（**音は使わない**）
+// - **画面を開いている間だけ**見る（5 秒ごと。SSE は作らない）
+
+export function renderJobBadge(jobs, now = Date.now()) {
+  const el = $('stat-jobs');
+  if (!el) return;
+  const items = jobs || [];
+  const active = items.filter((j) => j.state === 'running' || j.state === 'queued');
+  // **P4-3 の監査 C-3**: 前回の周期以降に `finished_at` が入った `done` も知らせる。
+  // 以前は「`running` を見たことがある job」だけだったので、**5 秒より短いジョブ
+  // （画面の「語を足す」の後の 1 枚など）は「終わりました」が出なかった**。
+  const since = lastSeenAt || now;          // 初回は「いま」から（古い完了で知らせない）
+  lastSeenAt = now;
+  for (const job of items) {
+    const before = lastStates.get(job.id);
+    const sawActive = before === 'running' || before === 'queued';
+    const finishedNow = job.state === 'done' && job.finished_at
+      && Date.parse(job.finished_at) >= since;
+    if (job.state === 'done' && !notified.has(job.id) && (sawActive || finishedNow)) {
+      const total = (job.progress || {}).total || 0;
+      doneNotice = { at: now, text: `タグ付けが終わりました（${total} 枚）` };
+      notified.add(job.id);
+    }
+    lastStates.set(job.id, job.state);
+  }
+  let text = '';
+  let cls = '';
+  if (active.length) {
+    const job = active[0];
+    const done = (job.progress || {}).done || 0;
+    const total = (job.progress || {}).total || 0;
+    text = `タグ付け中 ${done} / ${total}`;
+    cls = 'on';
+  } else if (doneNotice && now - doneNotice.at < DONE_NOTICE_MS) {
+    text = doneNotice.text;
+    cls = 'done';
+  } else {
+    doneNotice = null;
+  }
+  el.textContent = text;
+  el.hidden = !text;
+  el.classList.toggle('job-on', cls === 'on');
+  el.classList.toggle('job-done', cls === 'done');
+}
+
+async function fetchJobs() {
+  try {
+    const res = await fetch(JOBS_API);
+    if (!res.ok) return;
+    const body = await res.json();
+    renderJobBadge(body.items || []);
+  } catch (error) {
+    // 進行が取れないだけ（次の周期で再挑戦する）
+  }
+}
+
+// 画面を開いている間だけ回す。`stop` を呼ぶか、タブを閉じれば止まる
+export function wireBadge({ pollMs = POLL_MS } = {}) {
+  stopBadge();
+  fetchCount();
+  fetchJobs();
+  if (pollMs > 0) {
+    timer = setInterval(() => { fetchCount(); fetchJobs(); }, pollMs);
+  }
+}
+
+export function stopBadge() {
+  if (timer !== null) {
+    clearInterval(timer);
+    timer = null;
+  }
+}
+
+// テストのために状態を戻す（タイマーは残さない）
+export function resetBadge() {
+  stopBadge();
+  lastStates = new Map();
+  doneNotice = null;
+  lastSeenAt = 0;
+  notified = new Set();
+}

@@ -1,0 +1,577 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:image-reviewer:schema:review-export",
+  "title": "image-reviewer review export",
+  "description": "他ツールがレビュー結果を参照するための版付き契約。GET /api/export/review.json と <data>/export/review.json が同じ形を返す。配列の順は安定（他ツールがハッシュで差分を取れる）。要求（requests）も入るが、決定だけの書き出しでは省ける（任意）。",
+  "x-abi": "0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "abi", "generated_at", "generator", "reason_codes", "groups", "assets"],
+  "properties": {
+    "schema": {
+      "const": "urn:image-reviewer:schema:review-export",
+      "description": "この文書の種類。読む側はこれで判定する。"
+    },
+    "abi": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$",
+      "description": "契約の版。形を変えるときは上げる。読む側はこれで分岐できる。0.1 は設計段階（未実装）のため、実装までの変更では版を上げずに直す。"
+    },
+    "generated_at": {
+      "$ref": "#/$defs/Timestamp"
+    },
+    "generator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "image-reviewer" },
+        "version": { "type": "string" }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "どの範囲を書き出したか。全件なら kind=all。asset=画像 1 枚に絞った読み取り専用の書き出し。",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "どの範囲を書き出したか。request=エージェントの要求 1 件に絞った書き出し。asset=画像 1 枚に絞った**読み取り専用**の書き出し（`GET /api/export/review.json?scope=asset:<id>`。点検 G11。ファイルは書かないので、`<data>/export/` には何も残らない）。",
+          "enum": ["all", "group", "folder", "request", "asset"]
+        },
+        "id": {
+          "type": ["string", "null"],
+          "description": "kind=all のときは null。それ以外は対象の id。"
+        }
+      }
+    },
+    "reason_codes": {
+      "type": "array",
+      "description": "理由のマスタのうち、**この文書が実際に参照しているもの**だけ（`reason_code_id` を持つ欄から解決できる）。全マスタではない（監査 C1。全マスタを載せると、改名したときに参照していないファイルだけが旧名を持ち続ける）。**参照が 1 つも無ければ空配列**になる（例: 判断の無い画像だけの `scope=asset:`）。表示に使う名前は各要素の `reason_label` が正。",
+      "items": { "$ref": "#/$defs/ReasonCode" }
+    },
+    "groups": {
+      "type": "array",
+      "description": "レビューのまとまり。まとまりの中で何を選び、何を落としたか。",
+      "items": { "$ref": "#/$defs/Group" }
+    },
+    "assets": {
+      "type": "array",
+      "description": "画像ごとの現在の判断。判断の無い画像は review_state=unreviewed。",
+      "items": { "$ref": "#/$defs/Asset" }
+    },
+    "requests": {
+      "type": "array",
+      "description": "エージェントからのレビュー要求（design.md §9.6）。決定だけでなく、誰が何を求めたかもファイルだけで読めるようにする。要求が無いときは省くか空配列にする（required には入れない。決定だけの書き出しも同じ契約で通る）。",
+      "items": { "$ref": "#/$defs/ReviewRequest" }
+    },
+    "path_map": {
+      "type": ["object", "null"],
+      "description": "asset_id -> 実ファイルの絶対パス。include_paths=true のときだけ入る。既定は null（パスを出さない）。",
+      "additionalProperties": { "type": ["string", "null"] }
+    }
+  },
+  "$defs": {
+    "Timestamp": {
+      "type": "string",
+      "description": "RFC 3339（UTC、末尾 Z）。",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "AssetId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "このツール内で不変の画像 ID。"
+    },
+    "GroupId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "ReasonCodeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "ReviewState": {
+      "type": "string",
+      "description": "現在の判断。unreviewed は未判断。画面の言葉は「キープ / ボツ」。",
+      "enum": ["unreviewed", "kept", "rejected"]
+    },
+    "Verdict": {
+      "type": "string",
+      "description": "台帳に書かれた判断。keep=キープ、reject=ボツ、clear=判断の取り消し。",
+      "enum": ["keep", "reject", "clear"]
+    },
+    "GroupDecision": {
+      "type": ["string", "null"],
+      "description": "まとまりの中での位置づけ。selected=選ばれた、not_selected=同じまとまりの他の枚が選ばれた、all_rejected=まとまりごとボツ。",
+      "enum": ["selected", "not_selected", "all_rejected", null]
+    },
+    "ExternalRef": {
+      "type": ["object", "null"],
+      "description": "この画像がどこから来たか。無ければ null。",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "comfyui=ComfyUI の生成物。url=URL から取り込んだ画像。manual=手で登録した画像。",
+          "enum": ["comfyui", "url", "manual"]
+        },
+        "ref": { "type": ["string", "null"], "description": "取り込み元での識別子（生成の識別子、ファイル名など）。" },
+        "url": { "type": ["string", "null"], "description": "kind=url のときの出所 URL。" },
+        "prompt_id": { "type": ["string", "null"], "description": "kind=comfyui のときの ComfyUI の生成識別子。" }
+      }
+    },
+    "Tag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source"],
+      "properties": {
+        "name": { "type": "string" },
+        "category": {
+          "type": ["integer", "null"],
+          "description": "Danbooru の分類。0=general, 1=artist, 3=copyright, 4=character, 5=meta。不明は null。"
+        },
+        "category_name": { "type": ["string", "null"] },
+        "score": {
+          "type": ["number", "null"],
+          "description": "タガーが付けたときの確からしさ。0..1。手入力や PNG 由来は null。"
+        },
+        "source": {
+          "type": "string",
+          "enum": ["png", "wd14", "manual"],
+          "description": "png=生成に使った語、wd14=タガーが読んだ語、manual=人が付けた語。**出所ごとに 1 行**（同じ語が 2 つの出所にあれば 2 行。P4）。"
+        },
+        "known": {
+          "type": ["boolean", "null"],
+          "description": "**タグの語彙（Danbooru の CSV）にある語か**（P4 の決定 Q1）。false は PNG の自然文から来た語など。検索の既定は true だけに当てる。"
+        },
+        "gloss": {
+          "type": ["string", "null"],
+          "description": "日本語の語釈（P4。R3）。**無ければ null**。人が直した値もここに入る。"
+        },
+        "gloss_edited": {
+          "type": ["boolean", "null"],
+          "description": "語釈を**人が直した**か（P4）。true の語は訳し直しで上書きしない。語釈が無ければ null。"
+        }
+      }
+    },
+    "Provenance": {
+      "type": ["object", "null"],
+      "description": "生成の来歴。JPEG などでグラフが無い場合は null。",
+      "additionalProperties": false,
+      "properties": {
+        "model": { "type": ["string", "null"] },
+        "loras": { "type": ["array", "null"], "items": { "type": "string" } },
+        "vae": { "type": ["string", "null"] },
+        "sampler": { "type": ["string", "null"] },
+        "scheduler": { "type": ["string", "null"] },
+        "seed": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+$",
+          "description": "10 進の文字列で持つ。64bit の seed は JavaScript の JSON.parse で 2^53 を超えると丸められるため、数値で出さない（runs[].seed と同じ扱い）。"
+        },
+        "steps": { "type": ["integer", "null"] },
+        "cfg": { "type": ["number", "null"] },
+        "denoise": { "type": ["number", "null"] },
+        "width": { "type": ["integer", "null"] },
+        "height": { "type": ["integer", "null"] },
+        "prompt_id": { "type": ["string", "null"] },
+        "has_workflow_graph": {
+          "type": "boolean",
+          "description": "ComfyUI の UI 形式の完全なグラフを持つか。API 形式のみなら false。"
+        }
+      }
+    },
+    "Prompts": {
+      "type": ["object", "null"],
+      "description": "日本語原文と英訳。英訳は出所を必ず添える（当時の訳か、後から訳し直したか）。",
+      "additionalProperties": false,
+      "properties": {
+        "ja_text": { "type": ["string", "null"] },
+        "ja_source": {
+          "type": ["string", "null"],
+          "enum": ["png_primitive", "workflow_node", "sidecar", "manual", null]
+        },
+        "en_text": { "type": ["string", "null"] },
+        "en_source": {
+          "type": ["string", "null"],
+          "description": "png_literal=PNG に literal で入っていた最終プロンプト。comfyui_history/sidecar=そのとき実際に使われた訳。textgenerate/ollama=後から訳し直したもの。manual=人が書いた訳。",
+          "enum": ["png_literal", "comfyui_history", "sidecar", "textgenerate", "ollama", "manual", null]
+        },
+        "en_is_rederived": {
+          "type": "boolean",
+          "description": "true なら当時の訳ではなく後から訳し直したもの。読む側は原文と同格に扱わない。"
+        },
+        "en_engine": { "type": ["string", "null"] }
+      }
+    },
+    "ReasonCode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "applies_to"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ReasonCodeId" },
+        "label": { "type": "string", "description": "人が読む理由。ID だけでは意味が分からない読む側のために必ず入れる。" },
+        "applies_to": { "type": "string", "enum": ["keep", "reject", "both"] }
+      }
+    },
+    "AssetKind": {
+      "type": "string",
+      "description": "画像の種別。自動で判定し、人が直せる。generated=自分の生成物、reference=参考資料（他の人の絵）、photo=写真・スクリーンショット。",
+      "enum": ["generated", "reference", "photo"]
+    },
+    "Asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "review_state"],
+      "properties": {
+        "id": { "$ref": "#/$defs/AssetId" },
+        "kind": {
+          "description": "画像の種別。他ツールが「自分の生成物だけ」を絞れるように出す（点検 G3）。",
+          "oneOf": [{ "$ref": "#/$defs/AssetKind" }, { "type": "null" }]
+        },
+        "review_state": { "$ref": "#/$defs/ReviewState" },
+        "verdict": {
+          "type": ["string", "null"],
+          "description": "現在の判断に対応する台帳の verdict。未判断なら null。",
+          "enum": ["keep", "reject", null]
+        },
+        "reason_code_id": { "type": ["string", "null"] },
+        "reason_label": {
+          "type": ["string", "null"],
+          "description": "reason_code_id を解決した表示用の文字列。読む側がマスタを引かなくても読めるようにする。"
+        },
+        "note": { "type": ["string", "null"], "description": "自由メモ。無ければ null（空文字にしない）。" },
+        "decided_at": {
+          "anyOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }],
+          "description": "この画像の判断を記録した時刻。未判断なら null。"
+        },
+        "decided_by": { "type": ["string", "null"], "enum": ["human", "agent", null] },
+        "group_ids": { "type": "array", "items": { "$ref": "#/$defs/GroupId" } },
+        "tags": { "type": "array", "items": { "$ref": "#/$defs/Tag" } },
+        "external_ref": { "$ref": "#/$defs/ExternalRef" },
+        "provenance": { "$ref": "#/$defs/Provenance" },
+        "prompts": { "$ref": "#/$defs/Prompts" },
+        "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "missing": {
+          "type": "boolean",
+          "description": "参照先のファイルが見つからない状態か。判断は残っている。"
+        },
+        "duplicate_of": {
+          "type": ["string", "null"],
+          "description": "重複として整理したときの代表の asset_id。重複でなければ null。"
+        },
+        "reproduction": {
+          "$ref": "#/$defs/Reproduction",
+          "description": "再現を試した結果。試していなければ null。"
+        },
+        "locations": {
+          "type": ["array", "null"],
+          "description": "内容が実在する場所。include_paths=true のときだけ入る。既定は null。",
+          "items": { "$ref": "#/$defs/Location" }
+        }
+      }
+    },
+    "Location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind"],
+      "properties": {
+        "path": { "type": "string" },
+        "kind": { "type": "string", "enum": ["reference", "managed"] },
+        "primary": { "type": "boolean" },
+        "missing": { "type": "boolean", "description": "この場所で見つからないか。" }
+      }
+    },
+    "Reproduction": {
+      "type": ["object", "null"],
+      "description": "再現の可否と、試した結果。status は「条件が同一か」を表し、画素の一致を意味しない。",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "exact=生成に渡る条件がすべて揃い記録と一致。approx=再現できるが条件の一部が不明・不一致。impossible=再現できない。",
+          "enum": ["exact", "approx", "impossible"]
+        },
+        "mode": {
+          "type": ["string", "null"],
+          "description": "pin_text=捕獲した英文を固定（決定的）。rerun_graph=グラフごと再実行（訳が変わりうる）。manual_text=人が訳を入れた。",
+          "enum": ["pin_text", "rerun_graph", "manual_text", null]
+        },
+        "recipe_hash": { "type": ["string", "null"], "description": "生成に渡る値だけを正規化した部分集合の hash。判断やカタログを変えても変わらない。" },
+        "reasons": {
+          "type": "array",
+          "description": "approx / impossible の理由。",
+          "items": {
+            "type": "string",
+            "enum": [
+              "missing", "unresolved", "node_missing", "version_differs", "hash_mismatch",
+              "measured_differs", "text_not_captured", "llm_nondeterministic", "gpu_differs", "manual_step"
+            ]
+          }
+        },
+        "attempt_id": {
+          "type": ["string", "null"],
+          "description": "この再現の書き出し（export）を識別する試行 id。どの書き出しの結果かを、契約だけで突き合わせられるようにする。"
+        },
+        "marker": {
+          "type": ["string", "null"],
+          "description": "この書き出しでグラフに書き込んだ印。例: repro-<attempt_id>/seed-<seed>。印を付けられない書き出しでは null。"
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "created_at"],
+            "properties": {
+              "id": { "type": "string" },
+              "created_at": { "$ref": "#/$defs/Timestamp" },
+              "seed": {
+                "type": ["string", "null"],
+                "pattern": "^[0-9]+$",
+                "description": "この書き出しに使った seed（10 進の文字列）。64bit の seed は SQLite の符号付き INTEGER を超えるため、数値ではなく文字列で持つ。"
+              },
+              "attempt_id": {
+                "type": ["string", "null"],
+                "description": "この書き出しを識別する試行 id。Reproduction.attempt_id と同じ意味。"
+              },
+              "marker": {
+                "type": ["string", "null"],
+                "description": "この書き出しでグラフに書き込んだ印。例: repro-<attempt_id>/seed-<seed>。"
+              },
+              "matched_by": {
+                "type": ["string", "null"],
+                "description": "出来た画像をこの試行に結び付けた根拠。marker=グラフに書いた印、manual=人が指定した、conditions=条件が一致した。",
+                "enum": ["marker", "manual", "conditions", null]
+              },
+              "result_asset_id": { "type": ["string", "null"], "description": "再現で生成された画像。元の画像は書き換えない。" },
+              "same_hash": { "type": "boolean" },
+              "ssim": { "type": ["number", "null"] },
+              "phash_distance": { "type": ["integer", "null"] },
+              "changed_fraction": { "type": ["number", "null"] },
+              "mean_abs": { "type": ["number", "null"] },
+              "verdict": {
+                "type": ["string", "null"],
+                "description": "人の合否。閾値はコードに埋めない。",
+                "enum": ["same", "close", "different", "failed", null]
+              },
+              "note": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "GroupItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "まとまりの 1 枚。**`open` のまとまりも書き出す**（判断のたびに書くため）ので、未判断の枚があり得る。そのとき `verdict` は null（点検 B3 で直した。以前は null を許さず、open なまとまりを書けなかった）。",
+      "required": ["asset_id", "verdict"],
+      "properties": {
+        "asset_id": { "$ref": "#/$defs/AssetId" },
+        "verdict": {
+          "description": "この枚の判断。open で未判断なら null。",
+          "enum": ["keep", "reject", "clear", null]
+        },
+        "group_decision": { "$ref": "#/$defs/GroupDecision" },
+        "reason_code_id": { "type": ["string", "null"] },
+        "reason_label": {
+          "type": ["string", "null"],
+          "description": "**書き出し時点の** label（理由のマスタを改名すると以後の書き出しでは変わる。点検 G8）。"
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "Group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "policy", "state"],
+      "properties": {
+        "id": { "$ref": "#/$defs/GroupId" },
+        "title": { "type": ["string", "null"] },
+        "kind": {
+          "type": "string",
+          "description": "まとまりの作り。batch=同じ生成から出た群、request=エージェントの要求から作られた群、duplicate=重複の整理、variation=差分、manual/folder。",
+          "enum": ["manual", "folder", "batch", "variation", "duplicate", "request"]
+        },
+        "source": {
+          "type": "string",
+          "description": "まとまりがどこから来たか。request=エージェントの要求から、watcher=監視で取り込んだ生成から。",
+          "enum": ["manual", "comfyui", "watcher", "request"]
+        },
+        "source_ref": { "type": ["string", "null"] },
+        "policy": {
+          "type": "string",
+          "description": "pick_one=1 枚だけ選ぶ。pick_many=複数選べる。all_reject_only=ボツのみ。",
+          "enum": ["pick_one", "pick_many", "all_reject_only"]
+        },
+        "state": { "type": "string", "enum": ["open", "decided"] },
+        "superseded_by": {
+          "type": ["string", "null"],
+          "description": "要求の差し替えで閉じたまとまりの印（新しい要求の id）。**判断が 1 つも無いまとまりにだけ**入る（点検 A3）。入っているまとまりは既定の書き出しに出さない（`include_superseded` で出す）。"
+        },
+        "decision": {
+          "type": ["string", "null"],
+          "description": "decided のときの結論。selected=1 枚以上選んだ、all_rejected=まとまりごとボツ。**open なら null**（点検 B3）。",
+          "enum": ["selected", "all_rejected", null]
+        },
+        "selected_asset_ids": {
+          "type": "array",
+          "description": "**open なら空配列**（点検 B3。以前は必須の配列で、open でも何かを入れる必要があった）。",
+          "items": { "$ref": "#/$defs/AssetId" }
+        },
+        "reason_code_id": {
+          "type": ["string", "null"],
+          "description": "まとまり全体に対する理由。all_rejected のときは必ず入る。"
+        },
+        "reason_label": { "type": ["string", "null"] },
+        "note": { "type": ["string", "null"] },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "decided_at": {
+          "anyOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }],
+          "description": "このまとまりを決定した時刻。未決定なら null。"
+        },
+        "decided_by": { "type": ["string", "null"], "enum": ["human", "agent", null] },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/GroupItem" } }
+      }
+    },
+    "AnnotationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "このツール内で不変の注記 ID。"
+    },
+    "Annotation": {
+      "type": "object",
+      "description": "画像の上の印（design.md §5.6 の annotation）。座標は 0〜1 の割合なので、画像の大きさが変わっても使える。",
+      "additionalProperties": false,
+      "required": ["id", "asset_id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/AnnotationId" },
+        "asset_id": { "$ref": "#/$defs/AssetId" },
+        "shape": {
+          "type": ["string", "null"],
+          "description": "rect=矩形、ellipse=楕円。",
+          "enum": ["rect", "ellipse", null]
+        },
+        "x": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "左上の x（0〜1）。" },
+        "y": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "左上の y（0〜1）。" },
+        "w": { "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1, "description": "幅（0〜1。0 より大きい）。" },
+        "h": { "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1, "description": "高さ（0〜1。0 より大きい）。" },
+        "body": { "type": ["string", "null"], "description": "メモ。無ければ null（空文字にしない）。" },
+        "actor": {
+          "type": ["string", "null"],
+          "description": "付けた人。human / agent。",
+          "enum": ["human", "agent", null]
+        },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "group_id": { "type": ["string", "null"], "description": "どのまとまりのレビューで付けたか。無ければ null。" }
+      }
+    },
+    "ReviewRequestState": {
+      "type": "string",
+      "description": "要求の状態。open=まだ開いている。done=人が判断して閉じた。declined=人が断った。superseded=同じ対象の新しい要求に差し替えられた。",
+      "enum": ["open", "done", "declined", "superseded"]
+    },
+    "ReviewRequestResponse": {
+      "type": ["object", "null"],
+      "description": "人が決めた内容。state が open のときは null。",
+      "additionalProperties": false,
+      "properties": {
+        "selected_asset_ids": {
+          "type": "array",
+          "description": "選ばれた画像。1 枚も選ばなかったときは空配列。",
+          "items": { "$ref": "#/$defs/AssetId" }
+        },
+        "reason_code_id": { "type": ["string", "null"] },
+        "reason_label": {
+          "type": ["string", "null"],
+          "description": "reason_code_id を解決した表示用の文字列。読む側がマスタを引かなくても読めるようにする。"
+        },
+        "note": { "type": ["string", "null"], "description": "自由メモ。無ければ null（空文字にしない）。" },
+        "annotations": {
+          "type": "array",
+          "description": "注記。ID（文字列）でも、注記の実体（オブジェクト）でも受ける。**判断の後に付いた注記も入る**（読むときに導出する。点検 B3。答えが不変だと決め打ちしない）。",
+          "items": {
+            "anyOf": [
+              { "$ref": "#/$defs/AnnotationId" },
+              { "$ref": "#/$defs/Annotation" }
+            ]
+          }
+        }
+      }
+    },
+    "ReviewRequest": {
+      "type": "object",
+      "description": "エージェントからのレビュー要求（design.md §9.6 の POST /api/review-requests と §5.6 の review_request 表）。投げてすぐ返り、人が判断すると閉じる。エージェントは GET /api/review-requests/{id} をポーリングして結果を得るので、その結果を契約ファイルだけでも読めるようにする。",
+      "additionalProperties": false,
+      "required": ["id", "group_id", "state", "created_at"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "group_id": {
+          "$ref": "#/$defs/GroupId",
+          "description": "対象のまとまり。groups[] の id を指す。"
+        },
+        "state": { "$ref": "#/$defs/ReviewRequestState" },
+        "target_key": {
+          "type": ["string", "null"],
+          "description": "エージェントが付ける任意の鍵。同じ鍵の open は差し替える（点検 C1 で契約に足した）。"
+        },
+        "actor": {
+          "type": ["string", "null"],
+          "description": "要求を出した人（自己申告。agent / human）。点検 C1 で契約に足した。",
+          "enum": ["human", "agent", null]
+        },
+        "ask": { "type": ["string", "null"], "description": "エージェントの用件（1 行）。" },
+        "conditions": {
+          "type": "array",
+          "description": "何をもって良いとするか（自由文）。画面では見出しとして出す。",
+          "items": { "type": "string" }
+        },
+        "origin": {
+          "type": ["string", "null"],
+          "description": "どこから来たか（自由文。例: 作品A / カット03）。"
+        },
+        "wants": {
+          "type": "array",
+          "description": "応答に求めるもの（例: selected_ids / reason / annotations）。",
+          "items": { "type": "string" }
+        },
+        "ai": {
+          "type": ["object", "null"],
+          "description": "AI の下書き判断。無ければ null。人が確定した後も消さない（AI の推しと人の判断を両方残す）。",
+          "additionalProperties": false,
+          "properties": {
+            "pick_asset_id": { "type": ["string", "null"], "description": "AI が推した 1 枚。" },
+            "note": { "type": ["string", "null"], "description": "AI の理由・コメント。" },
+            "pick_index": {
+              "type": ["integer", "null"],
+              "minimum": 1,
+              "description": "推した 1 枚が**対象の何番目か**（1 始まり。まとまりの並び順）。画面が「AI の推し: 3 番」を 1 回の取得で出せるようにする（P6-1b の監査）。対象の外・分からないときは null。"
+            }
+          }
+        },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "closed_at": {
+          "anyOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }],
+          "description": "閉じた時刻。開いている間は null。"
+        },
+        "closed_by": { "type": ["string", "null"], "description": "誰が閉じたか（自己申告。human / agent）。" },
+        "decline_note": {
+          "type": ["string", "null"],
+          "description": "断った理由。エージェントが次を決められるように入れる。"
+        },
+        "superseded_by": {
+          "type": ["string", "null"],
+          "description": "同じ対象の新しい要求で差し替えたときの、新しい要求の id。差し替えられていなければ null。"
+        },
+        "response": { "$ref": "#/$defs/ReviewRequestResponse" }
+      }
+    }
+  }
+}

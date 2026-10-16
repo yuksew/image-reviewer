@@ -1,0 +1,32 @@
+[project]
+name = "image-reviewer"
+version = "0.0.1"
+description = "ローカルの画像を登録・閲覧・レビューするツール（設計 + プロトタイプ）"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pillow>=10.0",
+    # 点検 G3: SSIM と位置合わせに要る。**実測 F2**（`tools/probe_p5.py`）で
+    # Pillow の `F` モードに `GaussianBlur` / `Image.blend` が効かないと分かったので、
+    # Pillow だけでは SSIM を書けない（P5-3 で追加。これが P5 で最初の追加依存）
+    "numpy>=1.26",
+]
+
+[project.scripts]
+image-reviewer = "image_reviewer.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/image_reviewer"]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 既定の一時フォルダ機構を使わない（この環境のファイル制限に当たるため、tests/conftest.py が用意する）
+addopts = "-p no:cacheprovider -p no:tmpdir"

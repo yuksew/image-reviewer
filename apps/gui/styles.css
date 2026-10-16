@@ -1,0 +1,646 @@
+/* image-reviewer プロトタイプ
+   設計: docs/frontend-design.md
+   - 地色は中立の灰（絵の色判断を歪めない）
+   - フレームは隙間なく接する（フィルム）。影・角丸・カードを使わない
+   - 書体は BIZ UDPGothic（Windows 同梱）。語釈だけ BIZ UDPMincho
+   - 意味の色は キープ / ボツ / 注意 の 3 つだけ
+*/
+
+:root {
+  --paper: #161719;
+  --surface: #1f2124;
+  --seam: #0c0d0e;
+  --ink: #e7e8ea;
+  --ink-muted: #92969d;
+  --line: #2c2e32;
+  --accent: #54b6c2;
+  --keep: #5fa98c;
+  --drop: #c9705f;
+  --warn: #c9a03f;
+  --frame: 200px;
+}
+
+:root[data-theme="light"] {
+  --paper: #efeff0;
+  --surface: #fafafa;
+  --seam: #c6c7ca;
+  --ink: #1a1c20;
+  --ink-muted: #666a72;
+  --line: #d8d9dc;
+  --accent: #0f6c78;
+  --keep: #2c6b57;
+  --drop: #93382c;
+  --warn: #8a6410;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "BIZ UDPGothic", "BIZ UDGothic", "Yu Gothic UI", sans-serif;
+  font-size: 13px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+#app { display: flex; flex-direction: column; height: 100%; }
+
+/* ---- 上部バー ---- */
+.topbar {
+  display: flex; align-items: center; gap: 12px;
+  height: 44px; padding: 0 12px;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+.topbar .name { font-weight: 700; letter-spacing: .02em; }
+.topbar .spacer { flex: 1; }
+.topbar .stat { color: var(--ink-muted); font-size: 12px; }
+.topbar button, .topbar select {
+  font: inherit; color: var(--ink); background: transparent;
+  border: 1px solid var(--line); border-radius: 0; padding: 3px 8px; cursor: pointer;
+}
+.topbar button:hover { border-color: var(--accent); color: var(--accent); }
+.topbar .pending { color: var(--accent); font-size: 12px; }
+
+/* ---- 本体 ---- */
+.body { display: flex; flex: 1; min-height: 0; }
+
+.rail {
+  width: 220px; flex: 0 0 auto; overflow-y: auto;
+  background: var(--surface); border-right: 1px solid var(--line);
+  padding: 10px 0;
+}
+.rail h2 {
+  font-size: 11px; font-weight: 400; color: var(--ink-muted);
+  margin: 12px 12px 6px; letter-spacing: .04em;
+}
+.rail .item {
+  display: flex; justify-content: space-between; gap: 8px;
+  padding: 4px 12px; cursor: pointer; border-left: 2px solid transparent;
+}
+.rail .item:hover { background: var(--paper); }
+.rail .item.on { border-left-color: var(--accent); color: var(--accent); }
+.rail .item .n { color: var(--ink-muted); font-size: 12px; }
+.rail .item.on .n { color: var(--accent); }
+
+/* ---- フィルム（隙間なく接する） ---- */
+.sheet {
+  flex: 1; min-width: 0; overflow-y: auto; padding: 0;
+  background: var(--seam);
+}
+.sheet .rows { display: block; }
+.sheet .empty { padding: 32px; color: var(--ink-muted); background: var(--paper); }
+
+.frame {
+  /* 高さを密度で決め、幅は絵の縦横比に従う（点検 B5: cover で 4 割を切らない）。
+     幅は JS が画像ごとに設定する。 */
+  position: relative; height: var(--frame); width: var(--frame);
+  background: var(--paper); cursor: pointer; overflow: hidden;
+  display: inline-block; vertical-align: top; margin: 0 1px 1px 0;
+}
+.frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.frame .no {
+  position: absolute; top: 0; left: 0; padding: 0 5px;
+  font-size: 11px; line-height: 16px; color: var(--ink);
+  background: color-mix(in srgb, var(--paper) 78%, transparent);
+}
+.frame .wedge {
+  position: absolute; top: 0; right: 0; width: 0; height: 0;
+  border-left: 12px solid transparent; border-top: 12px solid var(--keep); display: none;
+}
+.frame.kept .wedge { display: block; }
+.frame.rejected img { filter: saturate(.35); }
+.frame.rejected::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(to bottom right, transparent 49.6%, var(--drop) 49.6%, var(--drop) 50.4%, transparent 50.4%);
+}
+.frame.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* 来歴なしは「状態」ではないので薄くしない（点検 I9）。--warn の印だけで示す。 */
+.frame .warn {
+  position: absolute; bottom: 2px; left: 2px; width: 6px; height: 6px;
+  background: var(--warn); display: none;
+}
+.frame.no-prov .warn { display: block; }
+.frame .cap {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  font-size: 11px; line-height: 16px; padding: 0 5px;
+  color: var(--ink); background: color-mix(in srgb, var(--paper) 82%, transparent);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: none;
+}
+:root[data-density="sparse"] .frame .cap { display: block; }
+
+/* ---- 詳細 ---- */
+.detail {
+  width: 340px; flex: 0 0 auto; overflow-y: auto;
+  background: var(--surface); border-left: 1px solid var(--line);
+  padding: 12px;
+}
+.detail.hidden { display: none; }
+.detail .preview { width: 100%; background: var(--paper); display: block; }
+.detail h3 { font-size: 13px; margin: 14px 0 6px; }
+.detail table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.detail th {
+  text-align: left; font-weight: 400; color: var(--ink-muted);
+  padding: 2px 8px 2px 0; vertical-align: top; white-space: nowrap;
+}
+.detail td { padding: 2px 0; word-break: break-all; }
+.detail .num { text-align: right; }
+.detail .note { color: var(--warn); font-size: 12px; }
+.detail .mono { font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+.detail textarea {
+  width: 100%; min-height: 90px; font: inherit; color: var(--ink);
+  background: var(--paper); border: 1px solid var(--line); border-radius: 0; padding: 6px;
+}
+.detail h3 .src { font-size: 11px; color: var(--ink-muted); font-weight: 400; margin-left: 6px; }
+.detail code { font-size: 11px; background: var(--paper); padding: 0 3px; }
+.detail .actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.detail .actions a {
+  font-size: 12px; color: var(--accent); text-decoration: none;
+  border: 1px solid var(--line); padding: 3px 8px;
+}
+.detail .actions a:hover { border-color: var(--accent); }
+
+/* ---- タグ（2 行。括弧を使わない） ---- */
+.tag { padding: 3px 0; border-bottom: 1px solid var(--line); }
+.tag .en { font-size: 12px; }
+.tag .ja {
+  font-family: "BIZ UDPMincho", "BIZ UDMincho", "Yu Mincho", serif;
+  font-size: 12px; color: var(--ink-muted);
+}
+.tag .src { font-size: 11px; color: var(--ink-muted); }
+
+/* ---- 下部バー ---- */
+.bottombar {
+  height: 32px; flex: 0 0 auto; display: flex; align-items: center; gap: 16px;
+  padding: 0 12px; background: var(--surface); border-top: 1px solid var(--line);
+  color: var(--ink-muted); font-size: 12px;
+}
+
+/* ---- 位置づけの注意（プロトタイプ） ---- */
+.proto {
+  background: color-mix(in srgb, var(--warn) 18%, var(--surface));
+  border-bottom: 1px solid var(--line);
+  padding: 4px 12px; font-size: 12px;
+}
+
+/* ---- 要求の一覧とまとまりレビュー（P6-1b） ----
+   設計: docs/p6-design.md §5.1 / §5.1b、docs/frontend-design.md §4.4（要求のカード）・
+         §2.4（まとまりレビューの図）・§2.5（原則: 影・角丸・グラデーションを使わない）
+   - 要求の自由文（`ask` / `conditions` / `origin` / `ai_note`）は**エージェントのもの**。
+     見た目で区別できるよう `--ink-muted` を基調にし、`--accent` は操作にだけ使う
+   - フィルムストリップは隙間なく接する（比較と同じ）
+*/
+#requests, #group { display: none; }
+body.requests #app > .proto,
+body.requests #app > .topbar,
+body.requests #app > .body,
+body.requests #app > .bottombar,
+body.grouping #app > .proto,
+body.grouping #app > .topbar,
+body.grouping #app > .body,
+body.grouping #app > .bottombar { display: none; }
+body.requests #requests { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+body.grouping #group { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+#requests .topbar .back, #group .topbar .back {
+  color: var(--ink-muted); text-decoration: none; font-size: 12px;
+  border: 1px solid var(--line); padding: 3px 8px;
+}
+#requests .topbar .back:hover, #group .topbar .back:hover {
+  color: var(--accent); border-color: var(--accent);
+}
+.req-badge { text-decoration: none; }
+.req-badge:hover { text-decoration: underline; }
+
+.req-tabs { display: flex; gap: 0; }
+.req-tab {
+  background: none; border: 1px solid var(--line); color: var(--ink-muted);
+  font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer;
+}
+.req-tab.on { color: var(--accent); border-color: var(--accent); }
+
+/* 一覧（カードは面 1 段。影も角丸も使わない） */
+.req-list { flex: 1; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.req-card {
+  border: 1px solid var(--line); background: var(--surface); padding: 10px 12px;
+  cursor: pointer;
+}
+.req-card:hover { border-color: var(--ink-muted); }
+.req-head { display: flex; align-items: baseline; gap: 10px; }
+.req-ask { font-weight: 700; }
+.req-ago { color: var(--ink-muted); font-size: 12px; margin-left: auto; }
+.req-cond { color: var(--ink-muted); font-size: 12px; margin-top: 4px; }
+.req-origin { color: var(--ink-muted); font-size: 11px; margin-top: 2px; }
+.req-ai { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--accent); }
+.req-ai img { width: 48px; height: 48px; object-fit: contain; background: var(--paper); border: 1px solid var(--line); }
+.req-note { color: var(--ink); }
+.req-draft { color: var(--ink-muted); font-size: 11px; }
+.req-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.req-actions button, .req-decline-send {
+  background: none; border: 1px solid var(--line); color: var(--ink);
+  font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer;
+}
+.req-actions button:hover, .req-decline-send:hover { border-color: var(--accent); color: var(--accent); }
+.req-decline-form { margin-top: 8px; border-left: 2px solid var(--warn); padding-left: 8px; }
+.req-decline-why { color: var(--ink-muted); font-size: 12px; margin-bottom: 4px; }
+.req-decline-note { width: 100%; background: var(--paper); color: var(--ink); border: 1px solid var(--line); font: inherit; font-size: 12px; padding: 4px 6px; }
+.req-decline-send { margin-top: 6px; }
+.req-state { color: var(--ink-muted); font-size: 11px; margin-top: 6px; }
+.req-closed { color: var(--keep); font-size: 12px; margin-top: 6px; }
+.req-declined { color: var(--drop); font-size: 12px; margin-top: 6px; }
+.req-superseded { color: var(--warn); font-size: 12px; margin-top: 6px; }
+.req-superseded a { color: var(--accent); }
+.req-detail { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
+.req-line { font-size: 12px; color: var(--ink); margin-top: 2px; }
+.req-line .k { color: var(--ink-muted); display: inline-block; min-width: 120px; }
+.req-line a { color: var(--accent); }
+.req-help, .grp-help { color: var(--ink-muted); font-size: 11px; padding: 8px 12px; border-top: 1px solid var(--line); }
+
+/* まとまりレビュー（選択中の 1 枚が大きい。等分にしない） */
+.grp-stage { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; background: var(--seam); padding: 8px; }
+.grp-stage img { max-width: 100%; max-height: 100%; object-fit: contain; background: var(--paper); }
+.grp-cap { position: absolute; left: 12px; color: var(--ink-muted); font-size: 12px; }
+/* 選択中の 1 枚の来歴 1 行（P6-1b の監査 C3。`compare.js` のキャプションと同じ作り） */
+.grp-prov { margin-left: 8px; font-size: 11px; }
+.grp-foot { flex: 0 0 auto; border-top: 1px solid var(--line); background: var(--surface); }
+.grp-strip { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px; background: var(--seam); max-height: 120px; overflow: auto; }
+.grp-frame { position: relative; height: 88px; cursor: pointer; background: var(--paper); border-top: 2px solid transparent; }
+.grp-frame img { height: 100%; object-fit: contain; display: block; }
+.grp-frame .no { position: absolute; top: 0; left: 0; padding: 0 4px; font-size: 11px; line-height: 16px; color: var(--ink); background: color-mix(in srgb, var(--paper) 78%, transparent); }
+.grp-frame.selected { border-top-color: var(--accent); }
+.grp-frame.ai-pick::after { content: ''; position: absolute; right: 3px; bottom: 3px; width: 0; height: 0; border-left: 7px solid transparent; border-bottom: 7px solid var(--warn); }
+.grp-frame.kept { outline: 1px solid var(--keep); outline-offset: -1px; }
+.grp-frame.rejected img { filter: saturate(.35); }
+.grp-actions { display: flex; gap: 8px; align-items: center; padding: 8px 12px; flex-wrap: wrap; }
+.grp-reason { color: var(--ink-muted); font-size: 12px; }
+.grp-reason select { background: var(--paper); color: var(--ink); border: 1px solid var(--line); font: inherit; font-size: 12px; padding: 3px 6px; }
+.grp-actions button {
+  background: none; border: 1px solid var(--line); color: var(--ink);
+  font: inherit; font-size: 12px; padding: 4px 12px; cursor: pointer;
+}
+.grp-actions button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.grp-actions button:disabled { color: var(--ink-muted); cursor: default; }
+.grp-note { color: var(--accent); font-size: 12px; padding: 0 12px 6px; }
+
+/* ---- 比較（P5-2。`#/compare?ids=a,b&base=<id>`） ----
+   設計: docs/comparison.md §2.1（並べる）・§2.2（同期ズーム）・§3.1（表）
+   - 絵を切らない（`object-fit: cover` は使わない）。枠の高さは `--frame`（行の高さ）
+   - 面は `--seam` で埋めて、枠を隙間なく並べる（フィルムストリップの見た目）
+*/
+#compare { display: none; }
+body.comparing #app > .proto,
+body.comparing #app > .topbar,
+body.comparing #app > .body,
+body.comparing #app > .bottombar { display: none; }
+body.comparing #compare {
+  display: flex; flex-direction: column; flex: 1; min-height: 0; --frame: 320px;
+}
+#compare .topbar .back {
+  color: var(--ink-muted); text-decoration: none; font-size: 12px;
+  border: 1px solid var(--line); padding: 3px 8px;
+}
+#compare .topbar .back:hover { color: var(--accent); border-color: var(--accent); }
+
+/* 並べる */
+.cmp-stage {
+  display: flex; flex-wrap: wrap; align-content: flex-start; gap: 2px;
+  padding: 6px; background: var(--seam); overflow: auto; flex: 1 1 auto; min-height: 0;
+}
+.cmp-tile { display: flex; flex-direction: column; }
+.cmp-frame {
+  position: relative; height: var(--frame); background: var(--paper);
+  overflow: hidden; cursor: grab; user-select: none;
+}
+.cmp-frame.dragging { cursor: grabbing; }
+.cmp-frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.cmp-zoom { width: 100%; height: 100%; will-change: transform; transform-origin: center center; }
+.cmp-tile.selected .cmp-frame { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cmp-frame .no {
+  position: absolute; top: 0; left: 0; padding: 0 5px; font-size: 11px; line-height: 16px;
+  color: var(--ink); background: color-mix(in srgb, var(--paper) 78%, transparent);
+}
+/* 監査 C1: 基準（`base`）を変える口と、どれが基準かの印。
+   選択（2px の outline）とは別に、上端の 3px の帯で示す（`--accent` を使う） */
+.cmp-tile.is-base .cmp-frame::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: var(--accent); z-index: 2;
+}
+.cmp-frame .cmp-base {
+  position: absolute; left: 0; bottom: 0; z-index: 2; cursor: pointer;
+  font: inherit; font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 0;
+  color: var(--ink); border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--paper) 78%, transparent);
+}
+.cmp-frame .cmp-base:hover { color: var(--accent); border-color: var(--accent); }
+.cmp-tile.is-base .cmp-base { color: var(--accent); border-color: var(--accent); }
+.cmp-frame .cmp-flag {
+  position: absolute; top: 0; right: 0; padding: 0 5px; font-size: 11px; line-height: 16px;
+  background: color-mix(in srgb, var(--paper) 78%, transparent);
+}
+.cmp-frame .cmp-flag.kept { color: var(--keep); }
+.cmp-frame .cmp-flag.rejected { color: var(--drop); }
+.cmp-cap {
+  max-width: 100%; padding: 0 4px; font-size: 11px; line-height: 16px;
+  color: var(--ink-muted); background: var(--surface);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* P5-3: 似ている順のときの pHash 距離（サーバが返した値。画面では数えない） */
+.cmp-frame .cmp-near {
+  position: absolute; right: 0; bottom: 0; padding: 0 5px; font-size: 11px; line-height: 16px;
+  color: var(--accent); background: color-mix(in srgb, var(--paper) 78%, transparent);
+}
+
+/* 監査 A1-(a): `hidden` 属性は `display: flex` に負けるので、必ず効くようにする。
+   `.cmp-heatwrap`（ヒートマップの包み）と `.cmp-stage`（並べる）を `hidden` で隠しているため、
+   この規則が無いと「空の帯」や「隠したはずのタイル」が残る。 */
+[hidden] { display: none !important; }
+
+/* P5-3: 差分ヒートマップ（`comparison.md` §2.3）。
+   画像は **`object-fit: contain`**（切り取らない。`comparison.md` §2.1 と同じ約束） */
+.cmp-heatwrap {
+  display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0;
+  background: var(--paper); border-top: 1px solid var(--line);
+}
+.cmp-heatbar {
+  display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  font-size: 12px; color: var(--ink-muted); border-bottom: 1px solid var(--line);
+}
+.cmp-heatbar .pair { color: var(--ink); }
+.cmp-heatbar .spacer { flex: 1 1 auto; }
+.cmp-heatbar button {
+  font: inherit; font-size: 12px; padding: 1px 8px; cursor: pointer;
+  color: var(--ink); border: 1px solid var(--line); background: var(--surface);
+}
+.cmp-heatbar button:hover { color: var(--accent); border-color: var(--accent); }
+.cmp-heatimg {
+  flex: 1 1 auto; min-height: 0; overflow: auto; display: flex;
+  align-items: center; justify-content: center; padding: 8px;
+}
+.cmp-heatimg img.heat {
+  max-width: 100%; max-height: 100%; width: auto; height: auto;
+  object-fit: contain; display: block; background: var(--paper);
+  image-rendering: auto;
+}
+.cmp-heatimg .heat-no { color: var(--warn); }
+/* 出せない理由は**常に 1 行**出す（§5.3）。監査 A1: その**隣に「強制して出す」**を置く
+   （理由が読めるところに、押せば出せる口がある。`d` キーは補助） */
+.cmp-heatwhy-line {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding-right: 8px;
+  background: var(--surface); border-top: 1px solid var(--line);
+}
+.cmp-heatwhy {
+  flex: 1 1 auto; min-width: 0; padding: 2px 8px; font-size: 11px; line-height: 16px;
+  color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cmp-heatwhy-line button {
+  flex: 0 0 auto; font: inherit; font-size: 11px; padding: 1px 8px; cursor: pointer;
+  color: var(--ink); border: 1px solid var(--line); background: var(--paper);
+}
+.cmp-heatwhy-line button:hover { color: var(--accent); border-color: var(--accent); }
+/* 監査 A1: 出せない組の「差分ヒートマップ」は `disabled` にしない（押すと理由と強制の口が
+   開く）。押せないことは `aria-disabled` とこの見た目で示す（**押せる**ので cursor は pointer） */
+#compare .topbar button.is-off { color: var(--ink-muted); border-style: dashed; }
+#compare .topbar button.is-off:hover { color: var(--accent); border-color: var(--accent); }
+#compare .topbar button:disabled { color: var(--ink-muted); border-style: dashed; cursor: not-allowed; }
+#compare .topbar button:disabled:hover { color: var(--ink-muted); border-color: var(--line); }
+
+/* 来歴の差分表 */
+.cmp-diff { flex: 0 0 auto; max-height: 46%; overflow: auto; background: var(--paper);
+  border-top: 1px solid var(--line); padding: 6px 8px 10px; }
+.cmp-tablewrap { overflow-x: auto; }
+.cmp-table { border-collapse: collapse; font-size: 12px; }
+.cmp-table th, .cmp-table td {
+  border-bottom: 1px solid var(--line); padding: 2px 6px; vertical-align: top;
+  text-align: left; white-space: nowrap; max-width: 340px;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.cmp-table thead th { color: var(--ink-muted); font-weight: 400; text-align: center; }
+.cmp-table thead th img { width: 34px; height: 34px; object-fit: contain; display: block;
+  margin: 2px auto 0; background: var(--paper); }
+.cmp-table thead th .n { font-size: 11px; }
+.cmp-table th.key { color: var(--ink-muted); font-weight: 400; }
+.cmp-table tbody th { color: var(--ink); white-space: nowrap; }
+.cmp-table .k { margin-right: 6px; }
+.cmp-table .tag {
+  font-family: ui-monospace, Consolas, monospace; font-size: 10px; color: var(--ink-muted);
+}
+.cmp-table .badge {
+  margin-left: 6px; font-size: 10px; padding: 0 4px; border: 1px solid var(--line);
+  color: var(--ink-muted);
+}
+.cmp-table .badge.changed { color: var(--warn); border-color: var(--warn); }
+.cmp-table .badge.reweighted { color: var(--accent); border-color: var(--accent); }
+.cmp-table .badge.only_in_some { color: var(--ink-muted); border-style: dashed; }
+/* 監査 B2: 分からない値の行・セル（`same` / `changed` とは別の見え方） */
+.cmp-table .badge.unknown, .cmp-table .badge.incomplete {
+  color: var(--warn); border-color: var(--warn); border-style: dashed;
+}
+.cmp-table td.cell { color: var(--ink-muted); }
+/* 監査 C1（実行込みのやり直し）: 数値のセルは**等幅版の同じ一族**にする。
+   BIZ UDPGothic は `tnum` を持たず、同じ桁数でも幅が揃わない（実測 88.19 対 106.38 px。
+   `font-feature-settings: "tnum"` でも同じ）。BIZ UDGothic は 70 / 70 で揃う。
+   seed の 20 桁を縦に見比べる表なので、ここだけ書体を変える。 */
+.cmp-table td.cell.num {
+  font-family: "BIZ UDGothic", "Yu Gothic UI", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.cmp-table td.cell.changed { color: var(--ink); font-weight: 700; }
+.cmp-table td.cell.reweighted { color: var(--accent); font-weight: 700; }
+.cmp-table td.cell.missing { color: var(--ink-muted); }
+.cmp-table td.cell.unknown { color: var(--warn); }
+.cmp-table td.cell.unknown .partial { color: var(--ink-muted); margin-left: 4px; font-size: 11px; }
+.cmp-table .none { color: var(--line); }
+.cmp-table tr.row.changed th .k, .cmp-table tr.row.reweighted th .k { font-weight: 700; }
+.cmp-table tr.row.unknown th .k, .cmp-table tr.row.incomplete th .k { font-weight: 700; }
+.cmp-note { color: var(--ink-muted); font-size: 12px; padding: 4px 0; }
+
+/* 語の差分・日本語原文の差分（サーバの `prompt_diff` / `ja_diff` をそのまま描く） */
+.cmp-detail { margin-top: 8px; font-size: 12px; }
+.cmp-detail summary { color: var(--ink-muted); cursor: pointer; }
+.cmp-detail summary .src { font-size: 11px; margin-left: 6px; }
+.cmp-line { padding: 1px 0; line-height: 20px; }
+.cmp-line .who {
+  display: inline-block; min-width: 22px; color: var(--ink-muted);
+  font-size: 11px; margin-right: 4px;
+}
+.cmp-line .word { margin-right: 4px; }
+.cmp-line .word.same { color: var(--ink-muted); }
+.cmp-line .word.added { color: var(--keep); }
+.cmp-line .word.removed { color: var(--drop); text-decoration: line-through; }
+.cmp-line .word.moved { color: var(--warn); }
+.cmp-line .word.unknown { color: var(--warn); border: 1px dashed var(--line); padding: 0 4px; }
+.cmp-line .word .w { color: var(--accent); font-size: 11px; }
+.cmp-chars {
+  font-family: "BIZ UDPMincho", "BIZ UDMincho", "Yu Mincho", serif;
+  color: var(--ink-muted); margin-left: 26px;
+}
+.cmp-help {
+  flex: 0 0 auto; padding: 3px 12px; font-size: 11px; color: var(--ink-muted);
+  background: var(--surface); border-top: 1px solid var(--line);
+}
+.bottombar button {
+  font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--line);
+  border-radius: 0; padding: 1px 8px; cursor: pointer;
+}
+.bottombar button:hover { border-color: var(--accent); color: var(--accent); }
+.frame.picked { outline: 2px solid var(--warn); outline-offset: -2px; }
+
+
+/* ---- P6-2: 注記（矩形と楕円）----
+   設計: docs/frontend-design.md §4.3。`--accent` の細い実線。半透明の塗りは使わない（絵を隠すため） */
+.anno-stage { position: relative; display: inline-block; max-width: 100%; line-height: 0; }
+.anno-stage img.preview { display: block; max-width: 100%; }
+.anno-layer { position: absolute; inset: 0; pointer-events: none; }
+.anno-mark {
+  position: absolute; border: 1px solid var(--accent); box-sizing: border-box;
+}
+.anno-mark.ellipse { border-radius: 50%; }
+.anno-mark.draft { border-style: dashed; }
+.anno-mark span {
+  position: absolute; top: -1px; left: -1px; padding: 0 3px; font-size: 10px; line-height: 14px;
+  color: var(--paper); background: var(--accent);
+}
+.anno-box { margin-top: 8px; }
+.anno-bar { display: flex; align-items: center; gap: 6px; margin: 4px 0; flex-wrap: wrap; }
+.anno-bar button, .anno-bar select, .anno-bar input {
+  font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--line);
+  border-radius: 0; padding: 1px 8px;
+}
+.anno-bar button { cursor: pointer; }
+.anno-bar button:hover { border-color: var(--accent); color: var(--accent); }
+.anno-list { display: flex; flex-direction: column; gap: 2px; }
+.anno-row {
+  display: flex; align-items: baseline; gap: 8px; padding: 2px 4px;
+  border-bottom: 1px solid var(--line);
+}
+.anno-row .anno-no { color: var(--ink-muted); min-width: 16px; }
+.anno-row .anno-shape { color: var(--ink-muted); min-width: 34px; }
+.anno-row .anno-body { flex: 1 1 auto; min-width: 0; }
+.anno-row .anno-who { color: var(--ink-muted); font-size: 11px; }
+.anno-row a { color: var(--accent); text-decoration: none; }
+/* 一覧の行が折り返して読みにくくならないように、右の操作は折り返さない（P6-2 の実機で見て直した） */
+.anno-row a, .anno-row button { white-space: nowrap; }
+.anno-row .anno-shape, .anno-row .anno-no, .anno-row .anno-who { white-space: nowrap; }
+
+/* =====================================================================
+   P4-3: タグ（1 枚の欄 / 語の一覧 / ジョブ）
+   設計: docs/p4-design.md §5.1〜§5.5 / docs/frontend-design.md §4.13
+   - 2 行 1 組（英語 / 日本語の語釈）。**語そのものの括弧は消さない**
+   - 出所の印は `--ink-muted` の細い枠、スコアは数字（等幅・tabular）
+   - 語釈の行だけ BIZ UDPMincho（既存の `.tag .ja` と同じ書体）
+   ===================================================================== */
+
+/* ---- 1 枚のタグ欄（`#/asset/<id>` の中） ---- */
+.tg-panel { margin-top: 4px; }
+.tg-brief { font-size: 12px; color: var(--ink-muted); margin-bottom: 6px; }
+.tg-head {
+  font-size: 12px; font-weight: 600; color: var(--ink-muted);
+  margin: 10px 0 2px; padding-bottom: 2px; border-bottom: 1px solid var(--line);
+}
+.tg-row { padding: 3px 0; border-bottom: 1px solid var(--line); }
+.tg-row .en { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.tg-name { word-break: break-all; }
+.tg-row .ja {
+  font-family: "BIZ UDPMincho", "BIZ UDMincho", "Yu Mincho", serif;
+  font-size: 12px; color: var(--ink-muted); padding-left: 10px;
+  display: flex; align-items: center; gap: 8px;
+}
+.tg-none { color: var(--ink-muted); }
+.tg-src {
+  font-size: 10px; color: var(--ink-muted); border: 1px solid var(--line);
+  padding: 0 4px; border-radius: 2px;
+}
+.tg-src-manual { color: var(--accent); border-color: var(--accent); }
+.tg-unknown { font-size: 10px; color: var(--warn); border: 1px dashed var(--warn); padding: 0 4px; }
+.tg-score { font-size: 11px; color: var(--ink-muted); }
+.tg-edited { font-size: 10px; color: var(--accent); border: 1px solid var(--accent); padding: 0 4px; margin-left: 6px; }
+.tg-translate, .tg-remove {
+  font-size: 11px; padding: 0 6px; line-height: 18px;
+  background: transparent; color: var(--ink); border: 1px solid var(--line); border-radius: 2px;
+}
+.tg-translate:hover, .tg-remove:hover { color: var(--accent); border-color: var(--accent); }
+.tg-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.tg-actions button, .tl-detail-actions button {
+  font-size: 12px; padding: 2px 8px; background: transparent; color: var(--ink);
+  border: 1px solid var(--line); border-radius: 2px;
+}
+.tg-actions button:hover:not(:disabled), .tl-detail-actions button:hover { color: var(--accent); border-color: var(--accent); }
+.tg-add { display: flex; align-items: center; gap: 4px; }
+.tg-add input { width: 16em; }
+.tg-msg { font-size: 12px; color: var(--accent); margin-top: 6px; }
+.tg-msg.bad { color: var(--drop); }
+.tg-help { font-size: 11px; color: var(--ink-muted); margin-top: 8px; }
+
+/* ---- 語の一覧（`#/tags`） ---- */
+#tags, #jobs { display: none; }
+body.taglist #app > .proto, body.taglist #app > .topbar,
+body.taglist #app > .body, body.taglist #app > .bottombar,
+body.jobs #app > .proto, body.jobs #app > .topbar,
+body.jobs #app > .body, body.jobs #app > .bottombar { display: none; }
+body.taglist #tags, body.jobs #jobs { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#tags .topbar .back, #jobs .topbar .back {
+  font-size: 12px; color: var(--ink-muted); text-decoration: none;
+  border: 1px solid var(--line); padding: 2px 8px; border-radius: 2px;
+}
+#tags .topbar .back:hover, #jobs .topbar .back:hover { color: var(--accent); border-color: var(--accent); }
+.tl-search { display: flex; gap: 4px; }
+.tl-search input { width: 14em; }
+.tl-body { display: flex; flex: 1; min-height: 0; gap: 0; }
+.tl-list { flex: 1 1 auto; overflow: auto; min-width: 0; border-right: 1px solid var(--line); }
+.tl-head { font-size: 12px; color: var(--ink-muted); padding: 6px 12px; border-bottom: 1px solid var(--line); }
+.tl-row {
+  display: flex; align-items: center; gap: 10px; padding: 4px 12px;
+  border-bottom: 1px solid var(--line); cursor: pointer;
+}
+.tl-row:hover { background: var(--surface); }
+.tl-row.on { border-left: 2px solid var(--accent); }
+.tl-name { flex: 0 1 22em; word-break: break-all; }
+.tl-count { font-size: 11px; color: var(--ink-muted); flex: 0 0 5em; }
+.tl-cat { font-size: 11px; color: var(--ink-muted); flex: 0 0 6em; }
+.tl-gloss {
+  font-family: "BIZ UDPMincho", "BIZ UDMincho", "Yu Mincho", serif;
+  font-size: 12px; color: var(--ink-muted); flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tl-none { font-size: 11px; color: var(--ink-muted); flex: 1 1 auto; }
+.tl-detail { flex: 0 0 30em; padding: 10px 12px; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.tl-detail-name { font-size: 13px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tl-detail textarea { width: 100%; }
+.tl-detail-actions { display: flex; align-items: center; gap: 8px; }
+.tl-job {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 8px 12px; border-top: 1px solid var(--line);
+}
+.tl-help, .jb-help {
+  font-size: 11px; color: var(--ink-muted); padding: 8px 12px;
+  border-top: 1px solid var(--line); line-height: 1.7;
+}
+
+/* ---- ジョブ（`#/jobs`） ---- */
+.jb-list { flex: 1 1 auto; overflow: auto; min-height: 0; }
+.jb-row { padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.jb-row.on { border-left: 2px solid var(--accent); }
+.jb-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.jb-state { font-size: 12px; border: 1px solid var(--line); padding: 0 6px; border-radius: 2px; }
+.jb-running { color: var(--accent); border-color: var(--accent); }
+.jb-done { color: var(--keep); border-color: var(--keep); }
+.jb-failed, .jb-cancelled { color: var(--drop); border-color: var(--drop); }
+.jb-kind { font-size: 11px; color: var(--ink-muted); }
+.jb-count { font-size: 12px; }
+.jb-bar { height: 4px; background: var(--line); margin: 6px 0 4px; }
+.jb-bar span { display: block; height: 100%; background: var(--accent); }
+.jb-cancel, .jb-again {
+  font-size: 11px; padding: 0 6px; line-height: 18px;
+  background: transparent; color: var(--ink); border: 1px solid var(--line); border-radius: 2px;
+}
+.jb-cancel:hover, .jb-again:hover { color: var(--accent); border-color: var(--accent); }
+.jb-failed { margin-top: 6px; font-size: 12px; }
+.jb-failed-list { max-height: 12em; overflow: auto; margin: 4px 0; }
+.jb-fail { display: flex; gap: 8px; font-size: 11px; color: var(--ink-muted); }
+.jb-err { color: var(--drop); }
+
+/* ---- 上部バーのジョブの印（§5.5） ---- */
+.job-badge.job-on { color: var(--accent); }
+.job-badge.job-done { color: var(--keep); }

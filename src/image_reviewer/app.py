@@ -29,10 +29,12 @@ from .api import groups as groups_api
 from .api import requests as requests_api
 from .api import reviews as reviews_api
 from .api import tags as tags_api
+from .api import recipes as recipes_api
 from .api import review_error_handler
 from .export import ExportService
 from .gloss import GlossService
 from .jobs import JobService
+from .recipe import RecipeService
 from .review import ReviewError, ReviewService
 from .review_requests import ReviewRequestService
 from .scan import scan as run_scan
@@ -73,6 +75,8 @@ def create_app() -> FastAPI:
     jobs_svc = JobService(store)
     # P4-2: 語釈（日本語）。**模型は呼んだときだけ**回す（既定は「語釈の無い語だけ」）
     gloss_svc = GlossService(store)
+    # P7-1: 条件の記録（R12 の前半）。**ComfyUI へは環境の写しを取るときだけ GET する**
+    recipes_svc = RecipeService(store)
     exporter.flush_dirty()
 
     @asynccontextmanager
@@ -99,6 +103,7 @@ def create_app() -> FastAPI:
     app.state.annotations = annotations_svc
     app.state.jobs = jobs_svc
     app.state.gloss = gloss_svc
+    app.state.recipes = recipes_svc
     app.add_exception_handler(ReviewError, review_error_handler)
 
     @app.middleware("http")
@@ -128,6 +133,7 @@ def create_app() -> FastAPI:
     # P6-2: 注記（`/api/assets/{id}/annotations` と `/api/annotations/...`）。同じく守りは middleware
     app.include_router(annotations_router)
     app.include_router(tags_api.router)
+    app.include_router(recipes_api.router)
 
     def _asset_or_404(asset_id: str) -> dict:
         asset = store.asset(asset_id)

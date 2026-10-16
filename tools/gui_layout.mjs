@@ -46,6 +46,15 @@ const VIEWPORTS = [[1400, 900], [1200, 800], [1920, 1080]];
 const ONLY = argOf('viewport', null);       // 例: --viewport 1200x800
 const SCREEN = argOf('screen', 'compare');  // compare（既定）| requests | group（P6-1b）
 const GROUP = argOf('group', null);         // --screen group のまとまり id
+
+// **まとまりの id が空だと Chrome を開く前に落ちる**（実際に踏んだ: Node が
+// `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` で落ちて、原因が分からなかった）。
+// **人が読める形で止める**（複製にまとまりが無いときはこれが出る）
+if (SCREEN === 'group' && (!GROUP || GROUP === 'true')) {
+  console.error('--screen group には --group <まとまりの id> が要ります'
+    + '（複製にまとまりが無いときは `/api/groups` が空です。まとまりのある複製を使ってください）');
+  process.exit(2);
+}
 const DUMP = process.argv.includes('--dump');
 const CHROME = argOf('chrome', 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe');
 const PORT = Number(argOf('port', '9334'));
@@ -230,6 +239,15 @@ const MEASURE_ASSET = `(() => {
       const r = panel.getBoundingClientRect();
       return r.top >= 0 && r.top < innerHeight;
     })(),
+    // **P7-4 の監査 A-2**: 条件の記録の入口（rc-link）が**スクロール無しで見える**か。
+    // 前の版は来歴の下（top 1,250 px）で、1,400x900 でも 1,920x1,080 でも見えなかった
+    rcTop: toDetail(document.querySelector('.prov-recipe') || document.querySelector('.rc-link')),
+    rcVisible: (() => {
+      const el = document.querySelector('.rc-link');
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return r.top >= 0 && r.top < innerHeight;
+    })(),
     // **P4-3 の監査（§8.3-3 の作り直し）**: 長い語釈は**折り返すのが正しい**ので、
     // 折り返した行（2 行以上）を除いて「1 行目の語と 2 行目の語釈の組が崩れていない」を見る
     tagHeightSpread: (() => {
@@ -271,6 +289,12 @@ const MEASURE_RECIPE = `(() => {
     rows: panel.querySelectorAll('.rc-attempt').length,
     results: panel.querySelectorAll('.rc-result').length,
     verdictButtons: panel.querySelectorAll('.rc-v').length,
+    // **P7-4 の監査 A-3**: 書き出し時の理由（3 語）が画面に出ているか
+    exportReasons: [...panel.querySelectorAll('.rc-why-export li')].map((li) => String(li.textContent).trim()),
+    // **P7-4 の監査 B-1**: 指標とメモの入力
+    metrics: [...panel.querySelectorAll('.rc-result .rc-flag')].map((s) => String(s.textContent).trim()),
+    noteInputs: panel.querySelectorAll('.rc-note-input').length,
+    manifestLinks: panel.querySelectorAll('a[href*="/manifest"]').length,
     scripts: panel.querySelectorAll('script').length,
     markTop: mark ? Math.round(mark.getBoundingClientRect().top) : null,
     overflow: Math.max(0, (panel.scrollWidth || 0) - (panel.clientWidth || 0)),
@@ -498,6 +522,8 @@ try {
       if (!got.boxVisible) bad.push('入口が見える');
       // **P4-3 の監査 C-1**: タグ欄もスクロール無しで見えること（注記の箱と同じ見方）
       if (!got.tgVisible) bad.push(`タグ欄が見える（tgTop=${got.tgTop}px）`);
+      // **P7-4 の監査 A-2**: 条件の記録の入口が**スクロール無しで見える**
+      if (!got.rcVisible) bad.push(`条件の記録の入口が見える（rcTop=${got.rcTop}px）`);
       // P4-3: タグの欄（設計 §8.3 の 1〜3）
       if (got.tagOverflow !== 0) bad.push('タグ欄が横に溢れない');
       // **折り返した語釈は正しい**ので、折り返しを含む行を除いて比べる（監査 §8.3-3 の作り直し）
@@ -510,6 +536,7 @@ try {
         + `marks=${got.marks} rows=${got.rowsCount} outside=${got.outside} `
         + `listOverflow=${got.listOverflow} boxTop=${got.boxTop}px visible=${got.boxVisible}`
         + ` tgTop=${got.tgTop}px tgVisible=${got.tgVisible}`
+        + ` rcTop=${got.rcTop}px rcVisible=${got.rcVisible}`
         + ` markNos=[${got.markNos.join(',')}] rowNos=[${got.rowNos.join(',')}]`
         + ` タグ: rows=${got.tagRows} overflow=${got.tagOverflow} 高さの差=${got.tagHeightSpread}px`
         + ` 折り返し=${got.tagWrapped}/語名=${got.tagWrappedEn} 印=${got.tagMarks} 語釈=${got.tagWithGloss} script=${got.tagScripts}`
@@ -577,9 +604,47 @@ try {
       if (got.rows <= 0 && !got.empty) bad.push('ジョブの行か空の文が出る');
       if (got.listOverflow !== 0) bad.push('一覧が横に溢れない');
       if (got.wideTop > width) bad.push(`行が画面の幅を超えない（${got.wideTop}px）`);
+      // **P7-4 の監査 A-1**: 監視の「見る / 止める」を**実際に押す**（押さないテストは穴を隠す。
+      // 前の版は actor を送っておらず 403 で、画面には何も出なかった）
+      const press = await evaluate(`(async () => {
+        const btn = document.querySelector('[data-watch="start"], [data-watch="stop"]');
+        if (!btn) return { pressed: false };
+        const what = btn.dataset.watch;
+        const seen = [];
+        const real = window.fetch;
+        window.fetch = async (...args) => {
+          const r = await real(...args);
+          seen.push([String(args[0]), r.status]);
+          return r;
+        };
+        const before = await (await real('/api/watcher')).json();
+        btn.click();
+        await new Promise((r) => setTimeout(r, 1500));
+        window.fetch = real;
+        const after = await (await real('/api/watcher')).json();
+        // **押したら戻す**（見るを押したなら止めるを打つ。検査が環境を変えたままにしない）
+        if (what === 'start' && after.enabled) {
+          await real('/api/watcher/stop', { method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Image-Reviewer-Actor': 'human' }, body: '{}' });
+        }
+        return { pressed: true, what, seen, beforeEnabled: !!before.enabled, afterEnabled: !!after.enabled };
+      })()`);
+      if (!press || !press.pressed) {
+        bad.push('監視のボタンが在る（押して確かめる）');
+      } else {
+        const code = (press.seen.find(([u]) => u.includes('/api/watcher/')) || [])[1];
+        if (code !== 200) bad.push(`監視のボタンが 200 で通る（${code}）`);
+        // **押した向きどおりの状態になる**（窓ごとに前の状態が残るので「変わった」ではなく
+        // 「押した向きと一致する」で見る。止めるは冪等なので 200 で false のままで正しい）
+        const want = press.what === 'start';
+        if (press.afterEnabled !== want) {
+          bad.push(`押した向きの状態になる（${press.what} → enabled=${press.afterEnabled}）`);
+        }
+      }
       if (bad.length) failures++;
       console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} ジョブ: `
         + `rows=${got.rows} empty=${got.empty} listOverflow=${got.listOverflow}`
+        + ` 監視=${press ? `${press.what}→${(press.seen.find(([u]) => u.includes('/api/watcher/')) || [])[1]}` : 'なし'}`
         + ` wideTop=${got.wideTop} brief=${JSON.stringify(got.brief)}`
         + (bad.length ? `  ← ${bad.join(', ')}` : ''));
     }
@@ -617,9 +682,21 @@ try {
       if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
       if (got.scripts !== 0) bad.push(`script 要素を作らない（${got.scripts}）`);
       if (got.badge && got.verdictButtons < 4 && got.results > 0) bad.push('合否のボタンが 4 つ');
+      // **P7-4 の監査 A-3**: 束があるなら**書き出し時の理由**か「条件は揃っています」が出る
+      // （前の版は `checked` を読んでおらず、3 語が画面に一度も出なかった）
+      if (got.rows > 0 && got.exportReasons.length === 0) {
+        bad.push('束に書き出し時の理由を出す（監査 A-3）');
+      }
+      // **P7-4 の監査 B-1**: 結果があるなら指標とメモの入力が出る
+      if (got.results > 0 && (!got.metrics.length || got.noteInputs === 0)) {
+        bad.push(`結果に指標とメモを出す（監査 B-1。metrics=${got.metrics.length} note=${got.noteInputs}）`);
+      }
+      if (got.rows > 0 && got.manifestLinks === 0) bad.push('manifest を開く口を出す（監査 C-1）');
       if (bad.length) failures++;
       console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} 条件: `
         + `badge=${JSON.stringify(got.badge)} rows=${got.rows} results=${got.results}`
+        + ` 書き出しの理由=[${got.exportReasons.join(',')}] 指標=${got.metrics.length} メモ=${got.noteInputs}`
+        + ` manifest=${got.manifestLinks}`
         + ` verdicts=${got.verdictButtons} overflow=${got.overflow} pageOverflow=${got.pageOverflow}`
         + ` scripts=${got.scripts} markTop=${got.markTop}`
         + (bad.length ? `  ← ${bad.join(', ')}` : ''));

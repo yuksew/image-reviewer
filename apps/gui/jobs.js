@@ -90,7 +90,11 @@ export function listHtml(now = Date.now()) {
   return state.items.map((job) => jobHtml(job, now)).join('');
 }
 
-/** **（P7-4 の残し）監視の状態 1 行**（§5.5。`GET /api/watcher` は**書かない**）。 */
+/** **（P7-4 の残し）監視の状態 1 行**（§5.5。`GET` は**書かない**）。
+
+**押した結果の 1 行**（`watchMsg`）もここに出す（**P7-4 の監査 A-1**。無言で終わらせない）。
+**出力先を登録ルートに足すのは人の確認が要る**（**P7-3 の監査 B-2**。黙って足さない）。
+ */
 export function watcherHtml(status = {}) {
   if (!status || typeof status !== 'object') return '';
   const on = Boolean(status.enabled);
@@ -99,6 +103,10 @@ export function watcherHtml(status = {}) {
   const where = status.output_dir
     ? `${status.output_dir_inferred ? '推定した場所' : '設定の場所'}: ${esc(status.output_dir)}`
     : '出力先がまだ分かっていません';
+  const addRoot = status.root_added
+    ? '<span class="note">出力先を登録に足しました</span>'
+    : (status.needs_root
+      ? '<button type="button" data-watch="add-root">出力先を登録に足す</button>' : '');
   return '<div class="watch-row">'
     + `<span class="tag">監視</span>`
     + `<span class="watch-state">${on ? '見ています' : '止まっています'}</span>`
@@ -106,7 +114,9 @@ export function watcherHtml(status = {}) {
     + (on
       ? '<button type="button" data-watch="stop">止める</button>'
       : '<button type="button" data-watch="start">見る</button>')
+    + addRoot
     + (status.last_error ? `<span class="note">${esc(status.last_error)}</span>` : '')
+    + (watchMsg ? `<span class="note bad">${esc(watchMsg)}</span>` : '')
     + '</div>';
 }
 
@@ -130,10 +140,39 @@ async function load() {
   }
 }
 
-/** 監視の開始 / 停止（**人だけ**。`POST` は 403 になりうる）。 */
+/** 監視の開始 / 停止 / 出力先の登録（**人だけ**）。
+
+**P7-4 の監査 A-1**: ここは `X-Image-Reviewer-Actor` を送っていなかったので、口が `agent` と見なして
+**403** になり、**画面には何も出ない**ままだった（`recipe.js` の `post()` は送っている）。
+**actor を送る**ようにし、**失敗したら 1 行で知らせる**（無言で終わらせない）。
+ */
+let watchMsg = '';
+
+/** 監視の操作の**中身**（URL とヘッダ）。**（監査 A-1）actor を必ず送る**。
+
+`gui_smoke` はこれを叩いて**ヘッダに `X-Image-Reviewer-Actor` があるか**を見る
+（**押さないテストは穴を隠す**。前の版はここが抜けていて 403 に誰も気づかなかった）。
+ */
+export function watchRequest(what) {
+  const verb = what === 'stop' ? 'stop' : what === 'add-root' ? 'add-root' : 'start';
+  return {
+    url: `/api/watcher/${verb}`,
+    init: {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Image-Reviewer-Actor': 'human' },
+      body: '{}',
+    },
+  };
+}
+
 async function toggleWatch(what) {
-  const verb = what === 'stop' ? 'stop' : 'start';
-  await fetch(`/api/watcher/${verb}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  const req = watchRequest(what);
+  const res = await fetch(req.url, req.init);
+  const got = await res.json().catch(() => ({}));
+  const detail = got && got.detail;
+  watchMsg = res.ok
+    ? ''
+    : `監視の操作に失敗しました（${res.status}${detail ? `: ${typeof detail === 'string' ? detail : ''}` : ''}）`;
   await load();
 }
 

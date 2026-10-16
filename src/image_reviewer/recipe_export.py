@@ -220,6 +220,9 @@ def apply_export(graph: dict, *, mode: str, text: str | None,
 
     out = copy.deepcopy(graph or {})
     reasons: list[str] = []
+    #: **記録時の語をここに混ぜない**（P7-4 の監査 A-3 / E-2）。`text_not_captured` は
+    #: **記録時の 7 語**なので、書き出しの理由（`checked.reasons`）には入れず**注記**として返す。
+    notes: list[str] = []
     nodes = save_nodes(out)
     seed_node: str | None = None
     others: list[str] = []
@@ -237,8 +240,9 @@ def apply_export(graph: dict, *, mode: str, text: str | None,
             if _literal(value):
                 continue
             if wanted is None:
-                # 貼る英文が無ければ**そのノードは触れない**（理由に残す。書き出しは続ける）
-                reasons.append("text_not_captured")
+                # 貼る英文が無ければ**そのノードは触れない**（注記に残す。書き出しは続ける）
+                if "text_not_captured" not in notes:
+                    notes.append("text_not_captured")
                 continue
             (out[nid].setdefault("inputs", {}))["text"] = wanted
             pinned = True
@@ -261,7 +265,7 @@ def apply_export(graph: dict, *, mode: str, text: str | None,
     if mode == "rerun_graph" and any(str(n.get("class_type")) == "TextGenerate"
                                      for n in out.values() if isinstance(n, dict)):
         reasons.append("llm_nondeterministic")
-    return out, seed_node, others, reasons
+    return out, seed_node, others, reasons, notes
 
 
 def instruction_line(*, other_ksamplers: Sequence[str], marker_skipped: str | None,
@@ -408,11 +412,16 @@ class RecipeExportService:
         export_hashes: dict[str, str] = {}
         marker_value: str | None = None
         reasons: list[str] = []
+        #: **記録時の語**（`text_not_captured` など）は**書き出しの理由に混ぜない**（監査 A-3 / E-2）
+        export_notes: list[str] = []
         per_seed: list[tuple[str | None, str | None, str]] = []      # (seed, 印, グラフのパス)
         seed_files: list[tuple[str | None, str, str | None]] = []    # (seed, ファイル名, 期待の前置き)
         for seed in seed_list:
-            exported, _sn, _others, why = apply_export(graph, mode=mode, text=doc.get("final_prompt"),
-                                                        seed=seed)
+            exported, _sn, _others, why, why_notes = apply_export(
+                graph, mode=mode, text=doc.get("final_prompt"), seed=seed)
+            for note in why_notes:                       # **記録時の語は注記へ**（監査 A-3 / E-2）
+                if note not in export_notes:
+                    export_notes.append(note)
             mark = None
             if skip is None:
                 mark = marker_for(attempt_id, seed)
@@ -451,7 +460,9 @@ class RecipeExportService:
                     " marker_skip_reason, checked_json, manifest_path, export_dir, seed_node,"
                     " created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (attempt_id, recipe_id, mode, client_token, skip,
-                     _dump({**checked, "reasons": reasons}),
+                     # **`checked.reasons` は書き出し時の 3 語だけ**（監査 A-3 / E-2。記録時の語は
+                     # `notes` に入れる＝画面はここだけを見て「書き出しの理由」を出す）
+                     _dump({**checked, "reasons": reasons, "notes": export_notes}),
                      str(out_dir / "manifest.json"), str(out_dir), seed_node, db.now()))
                 for seed, mark, path in per_seed:
                     con.execute(

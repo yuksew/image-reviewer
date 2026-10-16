@@ -541,7 +541,12 @@ def _top_up_v6(con: sqlite3.Connection) -> None:
     if have and "fetched" not in have:
         # 既存の行は「取り込んでいない」＝ 0 で埋まる（この時点で行は 0 件のはずだが、
         # 実データで 1 件でもあれば参照のままだった可能性が高いので 0 が正しい）
-        con.execute("ALTER TABLE recipe_export_result ADD COLUMN fetched INTEGER NOT NULL DEFAULT 0")
+        #
+        # **（再確認 G-5）`CHECK` も付ける**: 付けないと、**新規の v6**（DDL に `CHECK` がある）と
+        # **後から足した v6**（無い）で**同じ版番号なのに形が 2 つ**になる。
+        # SQLite の `ALTER TABLE ADD COLUMN` は列の制約として `CHECK` を受け付ける。
+        con.execute("ALTER TABLE recipe_export_result ADD COLUMN fetched INTEGER NOT NULL DEFAULT 0"
+                    " CHECK (fetched IN (0, 1))")
 
 
 # v6 で作る表（P7 の設計 §2.1。**点検 A-2 / B-3-1 / C-1〜C-4 / G-3〜G-5** を反映した形）。

@@ -12,7 +12,7 @@
 
 const $ = (id) => document.getElementById(id);
 
-const state = { assetId: null, record: null, exports: [], check: null, busy: false, msg: '' };
+const state = { assetId: null, record: null, exports: [], check: null, busy: false, msg: '', level: 'l1' };
 
 /** 記録時の理由（7 語。§0.6）。**書き出し時の 3 語はここに入れない**。 */
 export const REASON_LABEL = {
@@ -81,43 +81,96 @@ export function checkHtml(check) {
     : `<span class="rc-bad">印を付けずに書き出します（${esc(check.marker_skip_reason || '前提が外れています')}）</span>`;
   const nodes = (check.save_nodes || []).length;
   const unresolved = (check.unresolved || []).length;
+  // **（P7-4 の監査 C-4）印を付けられないときの選択**: 印なしで書き出す / やめる
+  const choice = check.marker_ok
+    ? ''
+    : '<label class="rc-inline"><input id="rc-marker-skip" type="checkbox" checked>'
+      + ' 印なしで書き出す（外すとやめます）</label>';
   return `<div class="rc-check">${marker}`
     + `<span class="stat">保存ノード ${esc(String(nodes))} 個</span>`
     + (unresolved ? `<span class="rc-warn">宣言に無い入力 ${esc(String(unresolved))} 件</span>` : '')
+    + choice
     + ((check.notes || []).length
       ? `<div class="rc-notes">${(check.notes || []).map((n) => esc(n)).join(' / ')}</div>` : '')
     + '</div>';
 }
 
-/** 結果 1 枚（合否のボタンつき。**上書き**）。 */
+/** URL の `?level=l1|l2|l3`（§4.8。**L1 が既定**）。 */
+export const LEVEL_MODE = { l1: 'pin_text', l2: 'rerun_graph', l3: 'manual_text' };
+
+export function levelFromHash(hash = '') {
+  const got = /[?&]level=(l[123])/i.exec(String(hash || ''));
+  return got ? got[1].toLowerCase() : 'l1';
+}
+
+/** 画面が選ぶ方式（**L1 なのに英文が残っていなければ L2 に落とす**。§5.1 / 監査 C-2）。 */
+export function defaultMode(record, level = 'l1') {
+  if (level === 'l1' && record && (record.final_prompt === null || record.final_prompt === undefined)) {
+    return 'rerun_graph';
+  }
+  return LEVEL_MODE[level] || (record && record.mode) || 'pin_text';
+}
+
+/** 結果 1 枚（**指標とメモ**つき。合否は**上書き**）。
+
+**（P7-4 の監査 B-1）** 前の版は `same_hash` / `seed_changed` しか出さず、`ssim` / `pHash` /
+変化した画素 / 平均差が**画面に無かった**。メモの入力も無く、押すたびに `note=None` で
+**前のメモが消えていた**（P7-3 の監査 C-2 と同じ穴）。
+ */
 export function resultHtml(item) {
   const verdict = item.verdict
     ? `<span class="rc-verdict ${esc(item.verdict)}">${esc(VERDICT_LABEL[item.verdict] || item.verdict)}</span>`
     : '<span class="rc-none">合否はまだ</span>';
+  const metric = (v, fmt) => (v === null || v === undefined ? null : fmt(Number(v)));
   const flags = [
     item.matched_by === 'manual' ? '手で紐付け' : '印で発見',
     item.fetched ? '取り込み' : '参照',
     item.same_hash ? '鍵が一致' : '鍵が違う',
     item.seed_changed ? 'seed が違う' : null,
+    metric(item.ssim, (v) => `SSIM ${v.toFixed(3)}`),
+    metric(item.phash_distance, (v) => `pHash 距離 ${v}`),
+    metric(item.changed_fraction, (v) => `変化した画素 ${(v * 100).toFixed(1)}%`),
+    metric(item.mean_abs, (v) => `平均差 ${v.toFixed(1)}`),
   ].filter(Boolean).map((t) => `<span class="rc-flag">${esc(t)}</span>`).join('');
   const buttons = Object.entries(VERDICT_LABEL).map(([key, label]) =>
     `<button class="rc-v" data-verdict="${esc(key)}" data-result="${esc(item.id)}">${esc(label)}</button>`).join('');
   const asset = item.result_asset_id
     ? `<a class="rc-open" href="#/asset/${esc(item.result_asset_id)}">結果を開く</a>` : '';
+  // **メモは「触ったときだけ送る」**（触らなければ前のメモを消さない。§3.6）
+  const noteBox = `<input class="rc-note-input" data-note-for="${esc(item.id)}" placeholder="メモ"`
+    + ` value="${esc(item.note || '')}" size="24">`;
   return `<div class="rc-result" data-result="${esc(item.id)}">`
     + `<span class="rc-seed">seed ${esc(item.seed ?? '—')}</span>${verdict}${flags}${asset}`
-    + `<span class="rc-vbtns">${buttons}</span>`
+    + `<span class="rc-vbtns">${buttons}</span>${noteBox}`
     + (item.note ? `<span class="rc-note">${esc(item.note)}</span>` : '')
     + '</div>';
 }
 
-/** 書き出し 1 束（ファイルと結果）。 */
-export function attemptHtml(item) {
+/** 書き出し 1 束（ファイルと結果）。**書き出し時の 3 語**をここに出す。
+
+**（P7-4 の監査 A-3）** 前の版は `checked` を読んでおらず、`EXPORT_REASON_LABEL` は**定義だけ**で
+`exportReasonText()` は未使用だった（**書き出し時の 3 語が画面に一度も出ない**）。
+**記録時の語はここに出さない**（記録の欄は `statusHtml`）。
+ */
+export function attemptHtml(item, recipeId = null) {
   const files = (item.files || []).map((f) =>
     `<li>seed ${esc(f.seed ?? '—')}${f.marker ? ` <span class="rc-marker">${esc(f.marker)}</span>` : ''}</li>`).join('');
   const marker = item.marker_skip_reason
     ? `<span class="rc-bad">印なし（${esc(item.marker_skip_reason)}）</span>`
     : '<span class="rc-ok">印あり</span>';
+  const checked = item.checked || {};
+  const why = (checked.reasons || []).filter((kind) => EXPORT_REASON_LABEL[kind]);
+  const whyHtml = why.length
+    ? `<ul class="rc-reasons rc-why-export">${why.map((kind) =>
+      `<li>${esc(exportReasonText(kind))}</li>`).join('')}</ul>`
+    : '';
+  const notesHtml = (checked.notes || []).length
+    ? `<div class="rc-notes">${(checked.notes || []).map((n) => esc(reasonText(n))).join(' / ')}</div>`
+    : '';
+  const manifest = recipeId
+    ? `<a class="rc-open" href="/api/recipes/${encodeURIComponent(recipeId)}/exports/`
+      + `${encodeURIComponent(item.attempt_id)}/manifest" target="_blank" rel="noreferrer">manifest を開く</a>`
+    : '';
   const results = (item.results || []).length
     ? (item.results || []).map(resultHtml).join('')
     : '<div class="rc-none">結果はまだ紐付いていません。</div>';
@@ -125,8 +178,8 @@ export function attemptHtml(item) {
     + `<span class="rc-id">${esc(item.attempt_id)}</span>`
     + `<span>${esc(MODE_LABEL[item.mode] || item.mode)}</span>${marker}`
     + `<span class="stat">${esc(String((item.files || []).length))} ファイル</span>`
-    + `<span class="stat">${esc(item.created_at || '')}</span></div>`
-    + `<ul class="rc-files">${files}</ul>${results}</div>`;
+    + `<span class="stat">${esc(item.created_at || '')}</span>${manifest}</div>`
+    + `${whyHtml}${notesHtml}<ul class="rc-files">${files}</ul>${results}</div>`;
 }
 
 /** 検査の結果を**画面に出さずに**取り直す（`load()` の後で出す。P4-3 の監査 B-2 と同じ）。 */
@@ -171,29 +224,34 @@ function render() {
   const panel = $('recipe');
   if (!panel) return;
   const record = state.record;
+  const picked = defaultMode(record, state.level);          // **L1 が既定。無ければ L2 に落ちる**
+  const modeOptions = (selected) => Object.entries(MODE_LABEL).map(([k, v]) =>
+    `<option value="${esc(k)}"${k === selected ? ' selected' : ''}>${esc(v)}</option>`).join('');
+  const levelNote = (state.level === 'l1' && record && picked === 'rerun_graph')
+    ? '<div class="rc-warn">L1 の英文が画像に残っていないので、L2（グラフをそのまま回す）にしました。</div>'
+    : (state.level !== 'l1' ? `<div class="rc-note">${esc(state.level.toUpperCase())} で開いています。</div>` : '');
   const actions = record
     ? `<div class="rc-actions">`
       + `<button id="rc-check">書き出す前に調べる</button>`
-      + `<label>方式 <select id="rc-mode">${Object.entries(MODE_LABEL).map(([k, v]) =>
-        `<option value="${esc(k)}"${record.mode === k ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select></label>`
+      + `<label>方式 <select id="rc-mode">${modeOptions(picked)}</select></label>`
       + `<label>seed <input id="rc-seeds" placeholder="1, 2" size="10"></label>`
       + `<label>枚数 <input id="rc-count" type="number" min="1" max="8" value="1" size="3"></label>`
       + `<label class="rc-inline"><input id="rc-marker" type="checkbox" checked> 印を付ける</label>`
-      + `<button id="rc-export">書き出す</button></div>`
+      + `<button id="rc-export">書き出す</button></div>${levelNote}`
       + `<div class="rc-refs"><span class="stat">鍵 ${esc((record.recipe_hash || '').slice(0, 16))}…</span>`
       + (record.graph_path
         ? `<a class="rc-open" href="/api/assets/${esc(state.assetId)}/graph?format=api" target="_blank">グラフを見る</a>`
         : '<span class="rc-warn">グラフが残っていません</span>')
       + `<span class="stat">出所 ${esc(record.graph_source || '—')}</span></div>`
-    : `<div class="rc-actions"><label>方式 <select id="rc-mode">${Object.entries(MODE_LABEL).map(([k, v]) =>
-      `<option value="${esc(k)}">${esc(v)}</option>`).join('')}</select></label>`
+    : `<div class="rc-actions"><label>方式 <select id="rc-mode">${modeOptions(picked)}</select></label>`
       + `<button id="rc-record">記録する</button></div>`;
   const exports = state.exports.length
-    ? state.exports.map(attemptHtml).join('')
+    ? state.exports.map((item) => attemptHtml(item, record ? record.recipe_id : null)).join('')
     : (record ? '<div class="rc-none">まだ書き出していません。</div>' : '');
   const attach = record
     ? `<div class="rc-attach"><input id="rc-attach-id" placeholder="結果の画像の id" size="28">`
       + `<input id="rc-attach-attempt" placeholder="書き出しの id" size="12">`
+      + `<input id="rc-attach-seed" placeholder="seed" size="6">`
       + `<button id="rc-attach">紐付ける</button></div>` : '';
   panel.innerHTML = `<div class="topbar">`
     + `<a class="back" href="#/asset/${esc(state.assetId)}">← 拡大</a>`
@@ -213,6 +271,8 @@ export async function showRecipe(assetId) {
   state.assetId = assetId;
   state.check = null;
   state.msg = '';
+  // **（監査 C-2）URL の `?level=l1|l2|l3` を読む**（§4.8。L1 が既定）
+  state.level = levelFromHash((typeof location !== 'undefined' && location.hash) || '');
   document.body.classList.add('recipe');
   await load();
 }
@@ -225,6 +285,23 @@ export function hideRecipe() {
 export function recipeLinkHtml(assetId, record) {
   const label = record ? `条件の記録（${esc(STATUS_LABEL[record.status] || record.status)}）` : '条件の記録';
   return `<a class="rc-link" href="#/asset/${esc(assetId)}/recipe">${label}</a>`;
+}
+
+/** 結果の 1 行を id で探す（メモの「触ったか」を見るため）。 */
+function findResult(resultId) {
+  for (const item of state.exports || []) {
+    for (const r of item.results || []) {
+      if (r.id === resultId) return r;
+    }
+  }
+  return null;
+}
+
+/** 手で紐付けるときの**どの seed か**（監査 C-1。前の版は最小 seed に固定されていた）。 */
+function attachSeed() {
+  const el = $('rc-attach-seed');
+  const value = (el && el.value ? String(el.value) : '').trim();
+  return value || undefined;
 }
 
 export function wireRecipe() {
@@ -252,6 +329,12 @@ export function wireRecipe() {
     }
     if (event.target.id === 'rc-export' && id) {
       event.preventDefault();
+      // **（監査 C-4）印を付けられないとき「やめる」を選べる**（印なしで通してしまわない）
+      const skipBox = $('rc-marker-skip');
+      if (skipBox && !skipBox.checked) {
+        msg('書き出しをやめました（印を付けられません。`filename_prefix` か保存ノードを見直してください）。', true);
+        return;
+      }
       const seeds = ($('rc-seeds')?.value || '').split(',').map((s) => s.trim()).filter(Boolean);
       const got = await post(`/api/recipes/${encodeURIComponent(id)}/export`, {
         mode: $('rc-mode')?.value || undefined,
@@ -268,19 +351,28 @@ export function wireRecipe() {
     if (verdict && id) {
       event.preventDefault();
       const attempt = event.target.closest('.rc-attempt')?.querySelector('.rc-id')?.textContent || '';
+      const resultId = event.target.dataset.result;
+      const payload = { verdict };
+      // **メモは「触ったときだけ」送る**（触らなければ前のメモを消さない。監査 B-1 / C-2）
+      const box = document.querySelector(`[data-note-for="${resultId}"]`);
+      const before = (findResult(resultId) || {}).note || '';
+      if (box && box.value !== before) payload.note = box.value;
       const got = await post(
         `/api/recipes/${encodeURIComponent(id)}/exports/${encodeURIComponent(attempt)}`
-        + `/results/${encodeURIComponent(event.target.dataset.result)}/verdict`, { verdict });
+        + `/results/${encodeURIComponent(resultId)}/verdict`, payload);
       await load();
       msg(got.ok ? '合否を記録しました。' : `記録できません（${got.detail || got.status}）`, !got.ok);
       return;
     }
     if (event.target.id === 'rc-attach' && id) {
       event.preventDefault();
+      const payload = { result_asset_id: ($('rc-attach-id')?.value || '').trim() };
+      const seed = attachSeed();
+      if (seed !== undefined) payload.seed = seed;      // **どの seed か**（監査 C-1）
       const got = await post(
         `/api/recipes/${encodeURIComponent(id)}/exports/`
         + `${encodeURIComponent(($('rc-attach-attempt')?.value || '').trim())}/results`,
-        { result_asset_id: ($('rc-attach-id')?.value || '').trim() });
+        payload);
       await load();
       msg(got.ok ? '紐付けました。' : `紐付けられません（${got.detail || got.status}）`, !got.ok);
     }

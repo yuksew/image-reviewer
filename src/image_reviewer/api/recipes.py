@@ -83,11 +83,15 @@ def export_recipe(request: Request, recipe_id: str, payload: dict = Body(default
 
 @router.post("/recipes/{recipe_id}/exports/{attempt_id}/results")
 def attach_result(request: Request, recipe_id: str, attempt_id: str, payload: dict = Body(default={})):
-    """印が無い結果を**人が紐付ける**（§3.6。**人だけ**）。200 = 既にある／再送。"""
+    """印が無い結果を**人が紐付ける**（§3.6。**人だけ**）。200 = 既にある／再送。
+
+    **（P7-3 の監査 C-1）** `seed` で**どの書き出しか**を選べる（省略したら最小の seed）。
+    """
     actor = actor_of(request)
     require_human(actor)                              # `agent` は 403（§0.10）
     got = watcher_of(request).attach(
         recipe_id, attempt_id, str(payload.get("result_asset_id") or ""),
+        seed=None if payload.get("seed") is None else str(payload.get("seed")),
         actor=actor, client_token=payload.get("client_token"))
     return JSONResponse(got, status_code=200 if got.get("replayed") else 201)
 
@@ -95,9 +99,23 @@ def attach_result(request: Request, recipe_id: str, attempt_id: str, payload: di
 @router.post("/recipes/{recipe_id}/exports/{attempt_id}/results/{result_id}/verdict")
 def set_verdict(request: Request, recipe_id: str, attempt_id: str, result_id: str,
                 payload: dict = Body(default={})):
-    """合否を記録する（§3.6。**人だけ**・**上書き**＋`verdict_at` / `verdict_actor`）。"""
+    """合否を記録する（§3.6。**人だけ**・**上書き**＋`verdict_at` / `verdict_actor`）。
+
+    **（P7-3 の監査 C-2）** `note` を**送らなかったら前の `note` を消さない**
+    （「送らなかった欄は触らない」）。
+    """
     actor = actor_of(request)
     require_human(actor)
+    note = payload.get("note") if "note" in payload else None
     return watcher_of(request).set_verdict(
         recipe_id, attempt_id, result_id, str(payload.get("verdict") or ""),
-        note=payload.get("note"), actor=actor)
+        note=None if note is None else str(note), actor=actor)
+
+
+@router.get("/recipes/{recipe_id}/exports/{attempt_id}/manifest")
+def get_manifest(request: Request, recipe_id: str, attempt_id: str):
+    """**書き出した manifest を返す**（§5.3 の「manifest を開く」。**書かない**）。
+
+    **（P7-4 の監査 C-1）** 画面に「フォルダを開く」があったが**口が無かった**ので足した。
+    """
+    return watcher_of(request).manifest(recipe_id, attempt_id)

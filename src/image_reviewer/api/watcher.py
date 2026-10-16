@@ -36,3 +36,15 @@ def stop_watcher(request: Request):
     actor = actor_of(request)
     require_human(actor)
     return watcher_of(request).stop()
+
+
+@router.post("/watcher/add-root")
+def add_watcher_root(request: Request):
+    """**出力先を登録ルートに足す**（**人だけ**）。
+
+    **（P7-3 の監査 B-2）** 監視の開始では足さない（出力フォルダには利用者の画像が何百枚も入る。
+    実測 729 枚）。**人が押したときだけ**足す。
+    """
+    actor = actor_of(request)
+    require_human(actor)
+    return watcher_of(request).add_output_root(actor=actor)

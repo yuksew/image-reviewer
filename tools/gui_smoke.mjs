@@ -868,6 +868,23 @@ check(jobsUi.watcherHtml({ enabled: false, picked: {} }).includes('出力先が�
 check(jobsUi.watcherHtml({ enabled: true, last_error: '<script>alert(1)</script>' })
   .includes('&lt;script&gt;'), '監視の行もエスケープする（§5.5）');
 
+// ---- P7-4 の監査（A-1 / B-2）: **押しても動く**ことと、根を黙って足さないこと ----
+
+// A-1: 監視の操作は **actor をヘッダで送る**（送らないと口が 403 にして、画面は無言で終わっていた）
+const watchStart = jobsUi.watchRequest('start');
+check(watchStart.url === '/api/watcher/start'
+  && watchStart.init.method === 'POST'
+  && watchStart.init.headers['X-Image-Reviewer-Actor'] === 'human',
+  `監視の「見る」は actor を送る（監査 A-1）: ${JSON.stringify(watchStart)}`);
+check(jobsUi.watchRequest('stop').url === '/api/watcher/stop'
+  && jobsUi.watchRequest('add-root').url === '/api/watcher/add-root',
+  '監視の「止める」と「出力先を登録に足す」も同じ形（監査 A-1 / B-2）');
+// B-2: 出力先が登録ルートに無いときは**人が押す**ボタンを出す（黙って足さない）
+check(jobsUi.watcherHtml({ enabled: false, output_dir: 'C:/ai/out', needs_root: true })
+  .includes('出力先を登録に足す'), '出力先が未登録なら「足す」を出す（監査 B-2）');
+check(!jobsUi.watcherHtml({ enabled: false, output_dir: 'C:/ai/out', root_added: true })
+  .includes('出力先を登録に足す'), '登録済みなら「足す」を出さない（監査 B-2）');
+
 // ---- P4-3 の監査で足した検査（A-1 / B-1 / C-2 / C-3 / C-5）----
 
 check(jobsUi.STATE_LABEL.queued === '待っています',
@@ -922,7 +939,10 @@ const RECIPE = { recipe_id: 'rec1', asset_id: 'a1', mode: 'pin_text',
   notes: ['COMFY_DYNAMIC* の展開はできません'] };
 const EXPORTS = { recipe_id: 'rec1', items: [
   { attempt_id: 'att1', mode: 'rerun_graph', marker_skip_reason: '前提1', export_dir: 'd',
-    manifest_path: 'm', seed_node: '4', created_at: '2026-10-17T00:00:00Z', checked: null,
+    manifest_path: 'm', seed_node: '4', created_at: '2026-10-17T00:00:00Z',
+    // **書き出し時の 3 語**（記録時の語は入れない。監査 A-3 / E-2）
+    checked: { marker_ok: true, save_nodes: ['17'], unresolved: [], checked_at: 'x',
+               reasons: ['llm_nondeterministic'], notes: [] },
     files: [{ seed: '1', recipe_hash: 'sha256:abc', graph_path: 'g', marker: 'repro-att1/seed-1' }],
     results: [{ id: 'res1', attempt_id: 'att1', seed: '1', result_asset_id: 'a2',
       matched_by: 'marker', result_hash: 'sha256:xyz', same_hash: false, ssim: 0.9,
@@ -960,6 +980,27 @@ check(rcHtml.includes('data-verdict="same"') && rcHtml.includes('data-verdict="f
   '合否のボタンを 4 つ出す（§3.6）');
 check(rcHtml.includes('取り込み'), '取り込んだかどうかを出す（P7-4 の fetched）');
 check(rcHtml.includes('seed が違う'), 'seed が違うことを出す');
+// **（P7-4 の監査 A-3）書き出し時の 3 語が画面に出る**（前の版は定義だけで未使用だった）
+check(rcHtml.includes(recipeUi.EXPORT_REASON_LABEL.llm_nondeterministic),
+  '書き出し時の理由を画面に出す（監査 A-3）');
+// **（P7-4 の監査 B-1）指標とメモの入力**（前の版は同じ鍵と seed しか出さず、メモも打てなかった）
+check(rcHtml.includes('SSIM') && rcHtml.includes('pHash 距離') && rcHtml.includes('変化した画素')
+  && rcHtml.includes('平均差'), '結果の行に 4 指標を出す（監査 B-1）');
+check(rcHtml.includes('data-note-for="res1"'), '結果の行にメモの入力を出す（監査 B-1）');
+// **（監査 C-1）manifest を開く口**（前の版は口が無かった）
+check(rcHtml.includes('/exports/att1/manifest'), 'manifest を開く口を出す（監査 C-1）');
+// **（監査 C-2）`?level=` と L2 への落ち方**
+check(recipeUi.levelFromHash('#/asset/a1/recipe?level=l2') === 'l2'
+  && recipeUi.levelFromHash('#/asset/a1/recipe') === 'l1', 'URL の level を読む（監査 C-2）');
+check(recipeUi.defaultMode({ final_prompt: null }, 'l1') === 'rerun_graph',
+  'L1 で英文が残っていなければ L2 に落とす（監査 C-2）');
+check(recipeUi.defaultMode({ final_prompt: '(masterpiece), 1girl' }, 'l1') === 'pin_text',
+  '英文があれば L1 のまま（監査 C-2）');
+// **（監査 C-4）印を付けられないときの選択**（やめる / 印なしで書き出す）
+check(recipeUi.checkHtml({ marker_ok: false, marker_skip_reason: '前提1', save_nodes: ['17'],
+  unresolved: [], notes: [] }).includes('rc-marker-skip'), '印なしで書き出すかの選択を出す（監査 C-4）');
+check(!recipeUi.checkHtml({ marker_ok: true, save_nodes: ['17'], unresolved: [],
+  notes: [] }).includes('rc-marker-skip'), '印を付けられるときは選択を出さない（監査 C-4）');
 check(!rcHtml.includes('<script'), '理由や語釈はエスケープして出す（esc）');
 
 // **記録時の 7 語と書き出し時の 3 語を混ぜない**（点検 A-3）

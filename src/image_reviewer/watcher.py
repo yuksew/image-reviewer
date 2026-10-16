@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -35,9 +36,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from . import db, png_meta
-from .capture import text_output_for               # **（監査 A-3）英訳の取り出しは既存の口を使う**
+from .capture import text_output_for, write_sidecar   # **（監査 A-3 / B-1）既存の口を使う**
 from .recipe import ComfyProbe, recipe_hash
 from .recipe_export import MARKER_PREFIX
+from .review import ReviewError
 from .review import ReviewError
 from .store import normalize_path
 
@@ -151,6 +153,8 @@ class ComfyWatcher:
         #: 出力先の控え（**（監査 A-2）`__init__` で必ず作る**。`start()` でしか作らないと、
         #: 再起動して `status()` / `poll_once()` が読んだ瞬間に `AttributeError` で **500** になる）
         self._out_dir_cache: str | None = None
+        #: **出力先がまだ登録ルートに入っていない**ときの場所（**（監査 B-2）画面に 1 行出して人が押す**）
+        self._root_note: str | None = None
 
     # ---- 状態（`watcher_state` の 1 行。**プロセスの状態ではない**）----
 
@@ -164,13 +168,19 @@ class ComfyWatcher:
         if row is None:
             return {"enabled": False, "last_prompt_id": None, "baseline_create_time": None,
                     "last_polled_at": None, "last_error": None, "picked": dict(self.picked),
-                    "output_dir": None, "output_dir_inferred": False}
+                    "output_dir": None, "output_dir_inferred": False,
+                    "needs_root": False, "root_added": False}
+        out_dir = self._saved_output_dir()
         return {"enabled": bool(row["enabled"]), "last_prompt_id": row["last_prompt_id"],
                 "baseline_create_time": row["baseline_create_time"],
                 "last_polled_at": row["last_polled_at"], "last_error": None,
                 "picked": dict(self.picked),
-                "output_dir": self._saved_output_dir(),
-                "output_dir_inferred": bool(self._saved_output_dir()) and not self._configured()}
+                "output_dir": out_dir,
+                "output_dir_inferred": bool(out_dir) and not self._configured(),
+                # **（監査 B-2）黙って足さない**: 足りていなければ画面が「足す」を出す
+                "needs_root": bool(out_dir) and not self._is_root(out_dir),
+                "root_added": bool(out_dir) and self._is_root(out_dir),
+                "root_note": self._root_note}
 
     def _configured(self) -> str | None:
         with self.store.locked() as con:
@@ -218,7 +228,10 @@ class ComfyWatcher:
         if baseline is None:
             baseline = int(time.time() * 1000)          # **job が 1 つも無いときも「いま」から**
         if out_dir:
-            self._add_root(out_dir)
+            # **（P7-3 の監査 B-2）黙って登録ルートに足さない。**
+            # 出力フォルダには利用者の画像が何百枚も入っている（実測 729 枚）。
+            # 勝手に登録すると一覧が増えるので、**画面に 1 行出して人が押す**（`POST /api/watcher/add-root`）。
+            self._root_note = None if self._is_root(out_dir) else out_dir
         with self.store.transaction() as con:
             con.execute(
                 "INSERT INTO watcher_state(name, last_prompt_id, baseline_create_time,"
@@ -256,8 +269,40 @@ class ComfyWatcher:
             con.execute("UPDATE watcher_state SET enabled = 0, updated_at = ? WHERE name = ?",
                         (db.now(), WATCHER_NAME))
 
+    def _is_root(self, path: str) -> bool:
+        """その場所が**既に登録ルートか**（大小文字と区切りを吸収して比べる）。"""
+        try:
+            roots = [str(r) for r in self.store.roots()]
+        except Exception:                                # noqa: BLE001  古い DB でも落とさない
+            return False
+        key = os.path.normcase(os.path.normpath(str(path)))
+        return any(os.path.normcase(os.path.normpath(r)) == key for r in roots)
+
+    def add_output_root(self, *, actor: str = "human") -> dict:
+        """**出力先を登録ルートに足す**（`POST /api/watcher/add-root`。**人だけ**）。
+
+        **（P7-3 の監査 B-2）** 監視の開始では足さない（出力フォルダには利用者の画像が何百枚も入る）。
+        画面に 1 行出し、**人が押したときだけ**足す。
+        """
+        out_dir = self._saved_output_dir()
+        if not out_dir:
+            raise ReviewError(409, "出力先がまだ分かっていません",
+                              details={"hint": "設定 comfyui.output_dir か、ComfyUI への接続が要ります"})
+        if not Path(out_dir).is_dir():
+            raise ReviewError(409, "出力先が実在しません", details={"output_dir": out_dir})
+        if self._is_root(out_dir):
+            self._root_note = None
+            return {"root_added": True, "output_dir": out_dir, "already": True}
+        try:
+            roots = [str(r) for r in self.store.roots()]
+        except Exception as exc:                         # noqa: BLE001
+            raise ReviewError(500, "登録ルートを読めません", details={"error": str(exc)}) from exc
+        self.store.set_roots([*roots, str(out_dir)])
+        self._root_note = None
+        return {"root_added": True, "output_dir": out_dir, "already": False, "actor": actor}
+
     def _add_root(self, path: str) -> None:
-        """出力先を**登録ルートに足す**（§0.9。出力は普通は登録ルートの外にある）。"""
+        """（残置。テストと道具が直接使う。**監視の開始からは呼ばない**＝上の add_output_root）。"""
         try:
             roots = [str(r) for r in self.store.roots()]
         except Exception:                                # noqa: BLE001  古い DB でも落とさない
@@ -438,10 +483,11 @@ class ComfyWatcher:
             made = self._register_result(export, image, detail, base, out_dir)
             if made:
                 got["results"] += 1
-                if made.get("text_captured"):
-                    got["texts"] += 1
         # **（監査 A-3）英訳を捕まえて記録を上げる**（画像が 1 枚も当たらなくても、
         # その job の graph に `TextGenerate` があれば記録は上げられる）
+        # **（再確認 C-R1）英訳の数はここだけで数える**: 前の版は `_register_result` の
+        # `text_captured`（＝「PNG にグラフがある」の意味）でも足していたので、
+        # 英訳 1 件の周期が `texts=2` になっていた（二重計上）。
         got["texts"] += self._capture_texts(detail, images, base, out_dir)
         return got
 
@@ -677,31 +723,38 @@ class ComfyWatcher:
 
     def _sidecar(self, path: Path, record_row, export, result_id: str, result_hash: str | None,
                  same: int, seed_changed: int, metrics: dict) -> str | None:
-        """結果の隣に人が読める JSON を置く（§0.9。`capture.py` に倣う）。"""
+        """**`<data>/sidecar` に人が読める JSON を置く**（§0.9。`capture.py` の既存の形に合わせる）。
+
+        **（P7-3 の監査 B-1）** 前の版は**利用者の ComfyUI の出力フォルダ**の結果画像の隣に
+        `<name>.result.json` を書いていた（`data/sidecar` の既存の形と別で、利用者のフォルダを汚す）。
+        `capture.write_sidecar` と同じ置き場・同じ形（`schema` / `abi` / `captured_at` / `meta`）に寄せる。
+        """
         try:
-            doc = {"abi": "0.1", "kind": "recipe_result", "result_id": result_id,
-                   "recipe_id": record_row["id"], "attempt_id": export["attempt_id"],
-                   "seed": export["seed"], "result_hash": result_hash,
-                   "recipe_hash": export["recipe_hash"], "same_hash": bool(same),
-                   "seed_changed": bool(seed_changed), "metrics": metrics,
-                   "at": db.now()}
-            out = path.with_suffix(".result.json")
-            tmp = out.with_suffix(".json.part")
-            tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(out)
-            return str(out)
+            data_dir = getattr(self.store, "data_dir", None) or Path(path).parent
+            extra = {"kind": "recipe_result", "result_id": result_id,
+                     "recipe_id": record_row["id"], "attempt_id": export["attempt_id"],
+                     "seed": export["seed"], "result_hash": result_hash,
+                     "recipe_hash": export["recipe_hash"], "same_hash": bool(same),
+                     "seed_changed": bool(seed_changed), "metrics": metrics,
+                     "result_path": str(path), "sha256": result_id}
+            # **既存の書き手と同じ形**（`schema` / `abi` / `captured_at` / `meta`。監査 B-1）
+            return str(write_sidecar(data_dir, {"source": "watcher"}, extra))
         except OSError:
             return None
 
     # ---- 手で紐付ける・合否（§3.6）----
 
-    def attach(self, recipe_id: str, attempt_id: str, result_asset_id: str, *, actor: str = "human",
-               client_token: str | None = None) -> dict:
-        """`POST /api/recipes/{id}/exports/{attempt_id}/results`（**人だけ**）。"""
-        export = self._export_of(recipe_id, attempt_id)
+    def attach(self, recipe_id: str, attempt_id: str, result_asset_id: str, *, seed: str | None = None,
+               actor: str = "human", client_token: str | None = None) -> dict:
+        """`POST /api/recipes/{id}/exports/{attempt_id}/results`（**人だけ**）。
+
+        **（P7-3 の監査 C-1）** `seed` で**どの書き出しか**を選べる（前の版は**最小の seed に固定**で、
+        `seed: '2'` を送っても seed 1 の行に付いていた）。省略したときだけ最小の seed に落とす。
+        """
+        export = self._export_of(recipe_id, attempt_id, seed=seed)
         if export is None:
             raise ReviewError(404, "その書き出しはありません",
-                              details={"attempt_id": attempt_id})
+                              details={"attempt_id": attempt_id, "seed": seed})
         with self.store.locked() as con:
             asset = con.execute("SELECT id FROM asset WHERE id = ?", (result_asset_id,)).fetchone()
         if asset is None:
@@ -725,32 +778,78 @@ class ComfyWatcher:
 
     def set_verdict(self, recipe_id: str, attempt_id: str, result_id: str, verdict: str, *,
                     note: str | None = None, actor: str = "human") -> dict:
-        """`POST …/results/{result_id}/verdict`（§3.6。**人だけ**・**上書き**）。"""
+        """`POST …/results/{result_id}/verdict`（§3.6。**人だけ**・**上書き**）。
+
+        **（P7-3 の監査 C-2 / P7-4 の監査 B-1）** `note` を**送らなかったら前の `note` を消さない**
+        （前の版は `note = ?` に `None` を入れて消していた。「送らなかった欄は触らない」）。
+        """
         if verdict not in VERDICTS:
             raise ReviewError(422, "verdict は same | close | different | failed です",
                               details={"verdict": "same | close | different | failed"})
         export = self._export_of(recipe_id, attempt_id)
         if export is None:
             raise ReviewError(404, "その書き出しはありません", details={"attempt_id": attempt_id})
+        touch_note = note is not None
         with self.store.transaction() as con:
             row = con.execute("SELECT * FROM recipe_export_result WHERE id = ? AND export_id = ?",
                               (result_id, export["id"])).fetchone()
             if row is None:
                 raise ReviewError(404, "その結果はありません", details={"result_id": result_id})
-            con.execute("UPDATE recipe_export_result SET verdict = ?, verdict_at = ?,"
-                        " verdict_actor = ?, note = ? WHERE id = ?",
-                        (verdict, db.now(), actor, note, result_id))
-        return {"id": result_id, "verdict": verdict, "verdict_actor": actor, "note": note}
+            if touch_note:
+                con.execute("UPDATE recipe_export_result SET verdict = ?, verdict_at = ?,"
+                            " verdict_actor = ?, note = ? WHERE id = ?",
+                            (verdict, db.now(), actor, note, result_id))
+            else:
+                con.execute("UPDATE recipe_export_result SET verdict = ?, verdict_at = ?,"
+                            " verdict_actor = ? WHERE id = ?",
+                            (verdict, db.now(), actor, result_id))
+            saved = con.execute("SELECT note FROM recipe_export_result WHERE id = ?",
+                                (result_id,)).fetchone()["note"]
+        return {"id": result_id, "verdict": verdict, "verdict_actor": actor, "note": saved,
+                "note_touched": touch_note}
 
-    def _export_of(self, recipe_id: str, attempt_id: str):
-        """記録 id と束 id から**ファイルの 1 行**を引く（`recipe_id` は束の側にある）。"""
+    def _export_of(self, recipe_id: str, attempt_id: str, *, seed: str | None = None):
+        """記録 id と束 id から**ファイルの 1 行**を引く（`recipe_id` は束の側にある）。
+
+        **（監査 C-1）** `seed` を渡されたら**その seed の行**を返す（無ければ `None`）。
+        省略したときだけ最小の seed に落とす。
+        """
         with self.store.locked() as con:
+            if seed is not None:
+                return con.execute(
+                    "SELECT e.* FROM recipe_export e"
+                    " JOIN recipe_export_attempt a ON a.attempt_id = e.attempt_id"
+                    " WHERE a.recipe_id = ? AND e.attempt_id = ? AND COALESCE(e.seed, '') = ?"
+                    " LIMIT 1",
+                    (recipe_id, attempt_id, str(seed))).fetchone()
             return con.execute(
                 "SELECT e.* FROM recipe_export e"
                 " JOIN recipe_export_attempt a ON a.attempt_id = e.attempt_id"
                 " WHERE a.recipe_id = ? AND e.attempt_id = ?"
                 " ORDER BY COALESCE(e.seed, '') LIMIT 1",
                 (recipe_id, attempt_id)).fetchone()
+
+    def manifest(self, recipe_id: str, attempt_id: str) -> dict:
+        """**書き出した manifest を返す**（`GET …/exports/{attempt_id}/manifest`。**書かない**）。
+
+        **（P7-4 の監査 C-1）** 画面に「フォルダを開く」があったが口が無かったので足した。
+        """
+        with self.store.locked() as con:
+            row = con.execute(
+                "SELECT a.manifest_path, a.export_dir FROM recipe_export_attempt a"
+                " WHERE a.recipe_id = ? AND a.attempt_id = ?",
+                (recipe_id, attempt_id)).fetchone()
+        if row is None:
+            raise ReviewError(404, "その書き出しはありません", details={"attempt_id": attempt_id})
+        path = row["manifest_path"]
+        if not path and row["export_dir"]:
+            path = str(Path(row["export_dir"]) / "manifest.json")
+        if not path or not Path(path).is_file():
+            raise ReviewError(404, "manifest がありません", details={"path": path})
+        try:
+            return json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ReviewError(500, "manifest を読めません", details={"error": str(exc)}) from exc
 
     def results(self, recipe_id: str) -> dict:
         """結果の一覧（`GET /api/recipes/{id}/exports` の材料。**書かない**）。"""

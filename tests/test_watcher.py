@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
@@ -431,9 +432,14 @@ def test_seed_changed_is_detected_from_the_result_graph(env):
     assert _seed_of_graph(other) == "999"
 
 
-def test_the_sidecar_is_written_next_to_the_result(env):
+def test_the_sidecar_goes_to_the_data_sidecar_folder(env):
     """**何を壊すと落ちるか**: sidecar（人が読める JSON）を書かないと、
-    フォルダを開いた人に「どの条件の結果か」が伝わらない（§0.9）。"""
+    フォルダを開いた人に「どの条件の結果か」が伝わらない（§0.9）。
+
+    **（P7-3 の監査 B-1）** 置き場は **`<data>/sidecar`**（`capture.write_sidecar` と同じ形）。
+    前の版は**利用者の ComfyUI の出力フォルダ**の結果の隣に `<name>.result.json` を書いていて、
+    既存の sidecar と別の形・別の場所になっていた（**利用者のフォルダを汚す**）。
+    """
     got = export_of(env)
     sub = got["marker"].rsplit("/", 1)[0]
     path = write_result(env, subfolder=sub, filename=f"{got['marker'].rsplit('/', 1)[1]}_00001_.png", graph=exported_graph(got))
@@ -446,9 +452,17 @@ def test_the_sidecar_is_written_next_to_the_result(env):
     env.watcher.start(actor="human", run=False)
     bump(env)
     env.watcher.poll_once()
-    sidecar = path.with_suffix(".result.json")
-    assert sidecar.exists(), "sidecar が無い"
-    doc = json.loads(sidecar.read_text(encoding="utf-8"))
+    # **結果の隣には書かない**（利用者のフォルダを汚さない）
+    assert not path.with_suffix(".result.json").exists(), \
+        "利用者の出力フォルダに sidecar を書いた（監査 B-1）"
+    out_dir = env.store.data_dir / "sidecar"
+    made = sorted(out_dir.glob("*.json"))
+    assert made, f"sidecar が <data>/sidecar に無い: {out_dir}"
+    doc = json.loads(made[0].read_text(encoding="utf-8"))
+    assert doc["schema"] == "urn:image-reviewer:sidecar", "既存の sidecar と形が違う（監査 B-1）"
+    assert doc["kind"] == "recipe_result"
+    # **（監査 B-1）置き場も名前も `capture.write_sidecar` と同じ**（`<sha256>.json`）
+    assert made[0].name == f"{doc['sha256']}.json", f"名前が既存の形と違う: {made[0].name}"
     assert doc["attempt_id"] == got["attempt_id"] and doc["same_hash"] is True
 
 
@@ -622,3 +636,111 @@ def test_a_text_output_is_captured_and_raises_the_verdict(env):
     assert after["final_prompt"], "final_prompt を組み直していない（監査 A-3）"
     assert after["status"] == "exact", f"判定が上がっていない（{before['status']} → {after['status']}）"
     assert cycle["texts"] >= 1, "texts の数え方が英訳の捕獲を表していない（監査 A-3）"
+
+
+# ---- P7-3 の再確認で「直っていない」とされた 4 件＋`texts` の二重計上（2026-10-17） ----
+
+
+def test_the_output_folder_is_not_added_to_roots_without_a_human(env):
+    """**何を壊すと落ちるか**: 監視の開始で**黙って登録ルートに足す**と、利用者の出力フォルダ
+    （実測 729 枚）が一覧に混ざる（**再確認 B-2**）。足すのは人が押したときだけ。"""
+    with env.store.transaction() as con:
+        con.execute("INSERT INTO settings(key, value) VALUES ('comfyui.output_dir', ?)",
+                    (str(env.tmp_path / "output"),))
+    (env.tmp_path / "output").mkdir(parents=True, exist_ok=True)
+    before = len(env.store.roots())
+    env.watcher.start(actor="human", run=False)
+    assert len(env.store.roots()) == before, "開始で黙って根を足した（再確認 B-2）"
+    status = env.watcher.status()
+    assert status["needs_root"] is True and status["root_added"] is False
+    env.watcher.add_output_root(actor="human")
+    assert len(env.store.roots()) == before + 1, "人が押しても足りない（再確認 B-2）"
+    assert env.watcher.status()["root_added"] is True
+    env.watcher.add_output_root(actor="human")               # **2 回目は増えない**
+    assert len(env.store.roots()) == before + 1
+
+
+def test_a_text_is_counted_once(env, monkeypatch):
+    """**何を壊すと落ちるか**: 英訳 1 件の周期が `texts=2` になる（**再確認 C-R1** の二重計上）。
+
+    前の版は `_register_result` の `text_captured`（＝「PNG にグラフがある」の意味）でも足していた。
+    **捕獲 1 件・登録 1 件**（`text_captured` が立つ）を偽装して、数えが **1** であることを固定する
+    （英訳の数を数えるのは `_capture_texts` だけ）。
+    """
+    got = export_of(env)
+    sub = got["marker"].rsplit("/", 1)[0]
+    path = write_result(env, subfolder=sub, filename=f"{got['marker'].rsplit('/', 1)[1]}_00001_.png",
+                        graph=exported_graph(got))
+    env.comfy.jobs = [job("j1", 1000)]
+    env.comfy.details = {"j1": detail("j1", graph=exported_graph(got),
+                                      images=[{"filename": path.name, "subfolder": sub, "type": "output"}])}
+    with env.store.transaction() as con:
+        con.execute("INSERT INTO settings(key, value) VALUES ('comfyui.output_dir', ?)",
+                    (str(env.tmp_path / "output"),))
+    monkeypatch.setattr(ComfyWatcher, "_capture_texts", lambda self, *a, **k: 1)
+    monkeypatch.setattr(ComfyWatcher, "_register_result",
+                        lambda self, *a, **k: {"id": "x", "text_captured": True})
+    env.watcher.start(actor="human", run=False)
+    bump(env)
+    env.watcher.poll_once()
+    assert env.watcher.picked["texts"] == 1, \
+        f"英訳 1 件が {env.watcher.picked['texts']} と数えられた（再確認 C-R1）"
+
+
+def test_attach_can_pick_the_seed(env):
+    """**何を壊すと落ちるか**: 手で紐付ける口が**最小の seed に固定**されると、`seed: '2'` を送っても
+    seed 1 の書き出しに付く（**再確認 C-1**）。"""
+    recipe_id, asset_id = record_of(env, PLAIN_GRAPH)
+    got = env.exports.export(recipe_id, seeds=["1", "2"], actor="human")
+    attempt = got["attempt_id"]
+    with env.store.locked() as con:
+        seeds = [r["seed"] for r in con.execute(
+            "SELECT seed FROM recipe_export WHERE attempt_id = ? ORDER BY seed", (attempt,))]
+    assert seeds == ["1", "2"], seeds
+    made = env.watcher.attach(recipe_id, attempt, asset_id, seed="2", actor="human")
+    with env.store.locked() as con:
+        row = con.execute("SELECT e.seed FROM recipe_export_result r"
+                          " JOIN recipe_export e ON e.id = r.export_id WHERE r.id = ?",
+                          (made["id"],)).fetchone()
+    assert row["seed"] == "2", f"seed 1 に付いた（再確認 C-1）: {row['seed']}"
+
+
+def test_a_verdict_without_a_note_keeps_the_old_note(env):
+    """**何を壊すと落ちるか**: `note` を送らない合否で**前のメモが消える**（**再確認 C-2** /
+    P7-4 の監査 B-1。**送らなかった欄は触らない**）。"""
+    got = export_of(env)
+    made = env.watcher.attach(got["recipe_id"], got["attempt_id"], got["asset_id"], actor="human")
+    env.watcher.set_verdict(got["recipe_id"], got["attempt_id"], made["id"], "close",
+                            note="少し違う", actor="human")
+    again = env.watcher.set_verdict(got["recipe_id"], got["attempt_id"], made["id"], "same",
+                                    note=None, actor="human")
+    assert again["note"] == "少し違う", f"メモが消えた（再確認 C-2）: {again['note']}"
+    cleared = env.watcher.set_verdict(got["recipe_id"], got["attempt_id"], made["id"], "same",
+                                      note="", actor="human")
+    assert cleared["note"] == "", "空文字を送っても消せない"
+
+
+def test_the_manifest_can_be_read_back(env):
+    """**何を壊すと落ちるか**: 画面の「manifest を開く」の口が無いと 404 になる（**監査 C-1**）。"""
+    got = export_of(env)
+    doc = env.watcher.manifest(got["recipe_id"], got["attempt_id"])
+    assert doc["attempt_id"] == got["attempt_id"] and doc["mode"] == "pin_text", doc.keys()
+
+
+def test_the_top_up_v6_column_has_the_same_check_as_a_fresh_v6(tmp_path):
+    """**何を壊すと落ちるか**: `_top_up_v6` の `ADD COLUMN` に `CHECK` が無いと、
+    **古い v6 と新しい v6 で同じ版番号なのに形が 2 つ**になる（**再確認 G-5**）。"""
+    from image_reviewer import db
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(db.V6_RECIPE_DDL)
+    con.execute("CREATE TABLE recipe_export_result_old AS SELECT * FROM recipe_export_result")
+    con.execute("DROP TABLE recipe_export_result")
+    con.execute("CREATE TABLE recipe_export_result (id TEXT PRIMARY KEY, export_id TEXT NOT NULL)")
+    db._top_up_v6(con)
+    sql = con.execute("SELECT sql FROM sqlite_master WHERE name = 'recipe_export_result'").fetchone()["sql"]
+    assert "CHECK (fetched IN (0, 1))" in sql, f"CHECK が付いていない（再確認 G-5）: {sql}"
+    con.execute("INSERT INTO recipe_export_result(id, export_id, fetched) VALUES ('a', 'b', 1)")
+    with pytest.raises(sqlite3.IntegrityError):
+        con.execute("INSERT INTO recipe_export_result(id, export_id, fetched) VALUES ('c', 'd', 5)")
+    con.close()

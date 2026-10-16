@@ -233,14 +233,14 @@ async function select(id) {
     <div class="stat" style="margin-top:6px">${esc(shortPath(asset.locations?.[0]?.path))}</div>
     ${asset.meta_note ? `<div class="note" style="margin-top:6px">${esc(asset.meta_note)}</div>` : ''}
 
+    <div class="prov-recipe">${recipeLinkHtml(id, null)}</div>
+
     <h3>タグ<span class="src">（PNG の語 / タガー / 手）</span></h3>
     <div id="tg-panel" class="tg-panel"></div>
 
     <h3>生成の来歴</h3>
     ${meta.model || meta.seed ? `<table>${rows.join('')}</table>`
       : `<div class="note">この画像には生成条件が残っていません（prompt チャンクが無い）。</div>`}
-
-    <div class="prov-recipe">${recipeLinkHtml(id, null)}</div>
 
     ${meta.ja_text ? `<h3>生成に用いた日本語</h3><textarea readonly>${esc(meta.ja_text)}</textarea>
       <div class="stat">出所: ${esc(meta.ja_source || '—')}</div>` : ''}

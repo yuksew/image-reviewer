@@ -1049,3 +1049,30 @@ POST /api/watcher/stop  → 200 {"enabled": false}
 | **G-5-(b)** | グラフ無しの `recipe_hash` | **空の SHA-256 のまま**（表は触らない）。**等価判定は `graph_path IS NOT NULL` を条件**にする。`check` / `export` は `status='impossible'` で止まるので実害は小さい | §0.5・§5.1 |
 | **G-6-(a)** | `GET /api/recipes` | **要約だけ**（`record` / `env` は 1 枚の口）。一覧が重くならない | §3.6 |
 | **C-1（持ち越し）** | 1 枚あたりの ComfyUI の `GET` | **目標（p95 300 ms）内**（実測: 口から 中央 128.7 ms・p95 196.4 ms・`/object_info/{ct}` 1,534 本）。`class_type` ごとの**短いキャッシュ（60 秒）**は**P7-2 以降**に回す | §7・§10 |
+### 0.19 P7 を閉じる時の修正で確定したこと（2026-10-17。**P7-4 の監査と P7-3 の再確認**）
+
+**P7-4 の監査（A-1〜A-3 / B-1 / C-1 / C-2 / C-4）**:
+
+- **監視の「見る / 止める」は `actor` をヘッダで送る**（送らないと口が `agent` と見なして **403**。
+  画面は無言で終わっていた）。**押した結果は 1 行で出す**。**検査は「実際に押す」**（`gui_layout --screen jobs`）。
+- **拡大の「条件の記録」の入口は画像のすぐ下**（前は来歴の下で **top 1,250 px**。1,400×900 でも
+  1,920×1,080 でも**スクロールしないと見えなかった**）。**`rcTop` / `rcVisible` を毎回測る**（今は 535 px）。
+- **書き出し時の 3 語（`text_pinned` / `llm_nondeterministic` / `manual_step`）を束の欄に出す**。
+  **口も混ぜない**: `checked.reasons` は**書き出し時の 3 語だけ**、記録時の語（`text_not_captured` など）は
+  **`checked.notes`** に入れる（前の版は 1 つの配列に混ぜていた）。
+- **結果の行に指標**（`same_hash` / `seed_changed` / `SSIM` / `pHash 距離` / 変化した画素 / 平均差）と
+  **メモの入力**（**触ったときだけ送る**＝前のメモを消さない）。
+- **manifest を開く口**（`GET /api/recipes/{id}/exports/{attempt_id}/manifest`。**書かない**）。
+- **`?level=l1|l2|l3`** を読み、**L1 で英文が残っていなければ L2（`rerun_graph`）に落として 1 行出す**。
+- **印を付けられないときは選べる**（**印なしで書き出す / やめる**。既定は「印なしで書き出す」）。
+
+**P7-3 の再確認（B-1 / B-2 / C-1 / C-2 / G-5 / `texts` の二重計上）**:
+
+- **sidecar は `<data>/sidecar`**（`capture.write_sidecar` と同じ形＝`<sha256>.json`・`schema` / `abi` /
+  `captured_at` / `meta`）。**利用者の ComfyUI の出力フォルダには書かない**。
+- **出力フォルダを黙って登録ルートに足さない**（実測 729 枚）。`GET /api/watcher` が **`needs_root`** を返し、
+  **画面の「出力先を登録に足す」を人が押したときだけ**足す（`POST /api/watcher/add-root`）。
+- **手で紐付ける口は `seed` を選べる**（省略したときだけ最小の seed）。
+- **`note` を送らなかったら前のメモを消さない**（空文字を送れば消せる）。
+- **`_top_up_v6` の `ADD COLUMN` にも `CHECK (fetched IN (0, 1))`** を付ける（**同じ v6 で形を 2 つ作らない**）。
+- **英訳を数えるのは `_capture_texts()` だけ**（`text_captured`＝「PNG にグラフがある」で足すと二重計上）。

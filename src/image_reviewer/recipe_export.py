@@ -490,7 +490,7 @@ class RecipeExportService:
                     " WHERE attempt_id = ? ORDER BY COALESCE(seed, '')", (row["attempt_id"],)).fetchall()
                 # P7-3: 結果と合否（人が付けた物。**書かない**）
                 results = con.execute(
-                    "SELECT r.*, e.seed FROM recipe_export_result r"
+                    "SELECT r.*, e.seed, e.attempt_id FROM recipe_export_result r"
                     " JOIN recipe_export e ON e.id = r.export_id"
                     " WHERE e.attempt_id = ? ORDER BY r.created_at DESC, r.id DESC",
                     (row["attempt_id"],)).fetchall()

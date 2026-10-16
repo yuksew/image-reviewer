@@ -192,6 +192,187 @@ def _recipe_asset(store, recipe_id: str) -> str:
                            (recipe_id,)).fetchone()["source_asset_id"]
 
 
+def watch_of(data: Path, *, port: int = 8794, keep: bool = False) -> dict:
+    """**線 6（合格の門）を実物で通す**（P7-3）。
+
+    **偽の ComfyUI**（`/api/jobs` と `/api/jobs/{id}` を返す小さな HTTP サーバ）を立て、
+    **印つきの出力を持つ job** を 1 つ流す。監視が拾って `recipe_export_result` が
+    `matched_by='marker'` で 1 行できること、**その `outputs` が指す実ファイル**
+    （合成 PNG。`prompt` に**書き出したグラフ**を入れる）を `comfyui.output_dir` に置いて
+    **登録・鍵・指標・`seed_changed` まで通す**ことを見る。**印の無い job では作られない**ことも見る。
+
+    **本物の ComfyUI は使わない**（`POST` しない＝画像を生成しない）。
+    """
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from PIL import Image, PngImagePlugin
+
+    from image_reviewer.recipe import RecipeService
+    from image_reviewer.recipe_export import RecipeExportService
+    from image_reviewer.store import Store
+    from image_reviewer.watcher import ComfyWatcher
+
+    out_dir = data.parent / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    store = Store(data)
+    recipes = RecipeService(store)
+    exports = RecipeExportService(store, recipes)
+    with store.transaction() as con:               # **複製の上**。何度でも同じ結果にする
+        con.execute("DELETE FROM recipe_export_result")
+
+    # ---- ① グラフを持つ 1 枚に記録を作り、**印つきで書き出す** ----
+    with store.locked() as con:
+        asset = con.execute("SELECT id FROM asset ORDER BY id").fetchone()
+        if asset is None:
+            store.close()
+            return {"ok": False, "why": "画像がありません"}
+        graph_rows = con.execute("SELECT id, source_asset_id FROM recipe_record"
+                                 " ORDER BY created_at LIMIT 50").fetchall()
+    recipe_id = None
+    for row in graph_rows:
+        _record, graph = exports._load(row["id"])
+        if graph and any(str(n.get("class_type")) in ("SaveImage", "PreviewImage")
+                         for n in graph.values() if isinstance(n, dict)):
+            recipe_id = row["id"]
+            break
+    if recipe_id is None:
+        recipe_id = recipes.record(asset["id"], mode="pin_text", actor="human")["recipe_id"]
+    got = exports.export(recipe_id, seeds=["7"], actor="human")
+    attempt_id = got["attempt_id"]
+    sub = f"repro-{attempt_id}"
+    graph_path = Path(got["export_dir"]) / "seed-7.json"
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    exported_hash = recipes.get(_recipe_asset(store, recipe_id))["recipe_hash"]
+
+    # ---- ② 出力先に合成の PNG を 2 枚置く（同じ seed / 違う seed） ----
+    def put(name: str, seed: int) -> Path:
+        body = json.loads(json.dumps(graph))
+        for node in body.values():
+            if isinstance(node, dict) and node.get("class_type") in ("KSampler", "KSamplerAdvanced"):
+                node.setdefault("inputs", {})["seed"] = seed
+                break
+        path = out_dir / sub / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        im = Image.new("RGB", (48, 64), (30, 40, 50))
+        info = PngImagePlugin.PngInfo()
+        info.add_text("prompt", json.dumps(body))
+        im.save(path, pnginfo=info)
+        return path
+
+    same_png = put("seed-7_00001_.png", 7)
+    other_png = put("seed-7_00002_.png", 999)          # **seed を変えた物**（`seed_changed` 用）
+    # **印なしの PNG はグラフにも印を入れない**（保険の照合＝PNG の `prompt` を見る規則があるため）
+    plain = json.loads(json.dumps(graph))
+    for node in plain.values():
+        if isinstance(node, dict) and node.get("class_type") in ("SaveImage", "PreviewImage"):
+            node.setdefault("inputs", {})["filename_prefix"] = "plain"
+            break
+    stray_png = out_dir / "other" / "no_marker_00001_.png"
+    stray_png.parent.mkdir(parents=True, exist_ok=True)
+    im = Image.new("RGB", (48, 64), (30, 40, 50))
+    info = PngImagePlugin.PngInfo()
+    info.add_text("prompt", json.dumps(plain))
+    im.save(stray_png, pnginfo=info)
+
+    # ---- ③ 偽の ComfyUI ----
+    jobs: list[dict] = []
+    details: dict[str, dict] = {}
+
+    def add_job(job_id: str, images: list[dict], when: int) -> None:
+        jobs.append({"id": job_id, "status": "completed", "create_time": when,
+                     "outputs_count": len(images), "previewable_outputs_count": len(images)})
+        details[job_id] = {"id": job_id, "workflow": {"prompt": graph},
+                           "outputs": {"9": {"images": images}},
+                           "execution_status": {"status_str": "success",
+                                                "messages": [["execution_cached", {"nodes": []}]]}}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):                  # 静かにする
+            pass
+
+        def _json(self, body) -> None:
+            raw = json.dumps(body).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self):                              # noqa: N802
+            path = urllib.parse.urlsplit(self.path).path
+            if path == "/api/jobs":
+                self._json({"jobs": jobs, "pagination": {"total": len(jobs)}})
+            elif path.startswith("/api/jobs/"):
+                self._json(details.get(path.rsplit("/", 1)[-1], {}))
+            elif path == "/internal/folder_paths":
+                self._json({"checkpoints": [str(out_dir.parent / "models" / "checkpoints")]})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    watcher = ComfyWatcher(store, recipes, exports, interval=999.0)
+    try:
+        # ---- ④ 設定（監視の接続先と出力先）----
+        with store.transaction() as con:
+            con.execute("INSERT OR REPLACE INTO settings(key, value) VALUES ('comfyui.url', ?)", (base,))
+            con.execute("INSERT OR REPLACE INTO settings(key, value) VALUES ('comfyui.output_dir', ?)",
+                        (str(out_dir),))
+        # ---- ⑤ 1 周期目: 印つきの 2 枚 ----
+        before = int(__import__("time").time() * 1000) + 500     # **開始より後**に来た job にする
+        watcher.start(base_url=base, run=False)       # **開始のあとに job を流す**
+        add_job("job-marker", [{"filename": same_png.name, "subfolder": sub, "type": "output"},
+                               {"filename": other_png.name, "subfolder": sub, "type": "output"}], before)
+        cycle1 = watcher.poll_once()
+        rows = store.con.execute(
+            "SELECT r.*, e.seed FROM recipe_export_result r JOIN recipe_export e ON e.id = r.export_id"
+            " ORDER BY r.created_at, r.id").fetchall()
+        # ---- ⑥ 2 周期目: 印の無い job（**作られない**）----
+        add_job("job-stray", [{"filename": stray_png.name, "subfolder": "other", "type": "output"}],
+                before + 10_000)
+        cycle2 = watcher.poll_once()
+        after_rows = store.con.execute("SELECT count(*) AS n FROM recipe_export_result").fetchone()["n"]
+        # ---- ⑦ タグ付けの job（`outputs_count: 0`）は詳細を取らない ----
+        jobs.append({"id": "job-tags", "status": "completed", "create_time": before + 20_000,
+                     "outputs_count": 0, "previewable_outputs_count": 0})
+        called: list[str] = []
+        watcher._http = lambda url, **kw: (called.append(url), _probe_get(url, base, jobs, details))[1]
+        cycle3 = watcher.poll_once()
+        sidecars = sorted(p.name for p in (out_dir / sub).glob("*.result.json"))
+        return {
+            "ok": (len(rows) == 2 and after_rows == 2 and cycle1["results"] == 2
+                   and cycle2["results"] == 0 and cycle3["results"] == 0
+                   and not any("job-tags" in u for u in called)),
+            "attempt_id": attempt_id, "marker": got.get("marker"), "out_dir": str(out_dir),
+            "results": [{"matched_by": r["matched_by"], "same_hash": bool(r["same_hash"]),
+                         "seed_changed": bool(r["seed_changed"]), "ssim": r["ssim"],
+                         "phash_distance": r["phash_distance"], "seed": r["seed"],
+                         "result_asset_id": r["result_asset_id"]} for r in rows],
+            "cycles": {"marker": cycle1, "stray": cycle2, "tags": cycle3},
+            "rows_after_stray": after_rows, "sidecars": sidecars,
+            "exported_hash": exported_hash,
+            "tag_job_detail_calls": [u for u in called if "job-tags" in u],
+        }
+    finally:
+        watcher.stop()
+        server.shutdown()
+        store.close()
+
+
+def _probe_get(url: str, base: str, jobs: list, details: dict):
+    """偽の ComfyUI を**差し替えずに**数えるための小さな中継（3 周期目だけ使う）。"""
+    path = urllib.parse.urlsplit(url).path
+    if path == "/api/jobs":
+        return {"jobs": jobs, "pagination": {"total": len(jobs)}}
+    if path.startswith("/api/jobs/"):
+        return details.get(path.rsplit("/", 1)[-1], {})
+    return {}
+
+
 def main() -> int:
     global OK
     parser = argparse.ArgumentParser(description="P7 の実測")
@@ -199,6 +380,8 @@ def main() -> int:
     parser.add_argument("--export", action="store_true",
                         help="複製の 1 枚から seed 2 つを書き出す（P7-2 の線 3・4・5）")
     parser.add_argument("--http", action="store_true", help="複製にサーバを立てて口から確かめる")
+    parser.add_argument("--watch", action="store_true",
+                        help="偽の ComfyUI を立てて監視を通す（P7-3 の線 6。**生成はしない**）")
     parser.add_argument("--data", default=None, help="複製の置き場（既定は .tmp-audit-redo/p7/judge/data）")
     parser.add_argument("--limit", type=int, default=0, help="枚数を絞る（既定は全部）")
     parser.add_argument("--port", type=int, default=8793)
@@ -262,6 +445,28 @@ def main() -> int:
         say(f"  manifest の export_hashes: {got.get('manifest_hashes')}")
         say(f"  manifest: {got.get('manifest_path')}"
             "（`uv run --with jsonschema python tools/check_contract_p7.py` が拾って検証する）")
+
+    if args.watch:
+        say("\n=== 線 6: 印から結果が紐付く（P7-3。偽の ComfyUI）===")
+        got = watch_of(data, port=args.port + 1, keep=args.keep)
+        if not got.get("ok") and got.get("why"):
+            say(f"  NG: {got['why']}")
+            OK = False
+        else:
+            say(f"  印: {got['marker']} / 出力先: {got['out_dir']}")
+            for one in got["results"]:
+                say(f"  結果: matched_by={one['matched_by']} same_hash={one['same_hash']}"
+                    f" seed_changed={one['seed_changed']} seed={one['seed']}"
+                    f" ssim={one['ssim']} phash={one['phash_distance']}")
+                if one["seed_changed"]:
+                    say("    （seed が違う物を混ぜた。**気づけている**のが正）")
+            say(f"  周期: 印つき={got['cycles']['marker']['results']} 枚"
+                f" / 印なし={got['cycles']['stray']['results']} 枚（0 が正）"
+                f" / タグ付け job の詳細取得={len(got['tag_job_detail_calls'])} 回（0 が正）")
+            say(f"  sidecar: {got['sidecars']}")
+            if not got["ok"]:
+                say("  NG: 期待（印つき 2 行・印なし 0 行・タグ付け job の詳細 0 回）に合いません")
+                OK = False
 
     if args.http:
         say("\n=== 口から（5 枚）===")

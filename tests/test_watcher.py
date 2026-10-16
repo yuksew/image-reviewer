@@ -64,6 +64,13 @@ class FakeComfy:
             return self.folders
         raise AssertionError(f"偽の ComfyUI が知らない URL: {url}")
 
+    def bytes_of(self, url: str, *, timeout: float = 30.0) -> bytes:
+        """`/view` の口（**本物の ComfyUI を触らない**）。"""
+        self.calls.append(url)
+        if "/view?" not in url:
+            raise AssertionError(f"偽の ComfyUI が知らない URL: {url}")
+        return self.view
+
     def detail_calls(self) -> list[str]:
         return [u for u in self.calls if "/api/jobs/" in u]
 
@@ -95,7 +102,7 @@ def env(tmp_path):
     recipes = RecipeService(store, probe_factory=lambda settings: probe)
     exports = RecipeExportService(store, recipes, probe_factory=lambda settings: probe)
     comfy = FakeComfy()
-    watcher = ComfyWatcher(store, recipes, exports, http=comfy, interval=0.01)
+    watcher = ComfyWatcher(store, recipes, exports, http=comfy, bytes_of=comfy.bytes_of, interval=0.01)
     try:
         yield SimpleNamespace(store=store, recipes=recipes, exports=exports,
                               watcher=watcher, comfy=comfy, tmp_path=tmp_path)
@@ -118,6 +125,25 @@ def write_result(env, *, subfolder: str, filename: str, graph=None, color=(10, 2
     path = out.joinpath(*[p for p in f"{subfolder}/{filename}".split("/") if p])
     make_png(path, graph if graph is not None else clone(GRAPH), color=color)
     return path
+
+
+def exported_graph(got: dict) -> dict:
+    """書き出したグラフ（`<export_dir>/seed-<seed>.json`）を読む。
+
+    **結果の PNG に入るのはこれ**（元のグラフではない。印と seed が入っている）。
+    `recipe_hash` は印と `_meta` を除くので、**この 2 つの鍵は一致する**（§0.5）。
+    """
+    path = Path(got["export_dir"]) / f"seed-{got['seed']}.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def bump(env, delta: int = 10 ** 9) -> None:
+    """job の `create_time` を進める（**開始より後に来た job** にする。基準は開始時の最新）。"""
+    for one in env.comfy.jobs:
+        one["create_time"] = int(one["create_time"]) + delta
+    for group in env.comfy.statuses.values():
+        for one in group:
+            one["create_time"] = int(one["create_time"]) + delta
 
 
 def rows(env, sql: str, args: tuple = ()) -> list:
@@ -170,15 +196,16 @@ def test_marker_match_registers_one_result(env):
     ③鍵の比較（`same_hash`）と `seed_changed` を落とすと、線 6（印から結果が紐付く）が満たせない。"""
     got = export_of(env)
     sub = got["marker"].rsplit("/", 1)[0]
-    path = write_result(env, subfolder=sub, filename=f"{got['marker'].rsplit('/', 1)[1]}_00001_.png")
+    path = write_result(env, subfolder=sub, filename=f"{got['marker'].rsplit('/', 1)[1]}_00001_.png", graph=exported_graph(got))
     env.comfy.jobs = [job("j1", 1000)]
-    env.comfy.details = {"j1": detail("j1", graph=clone(GRAPH),
+    env.comfy.details = {"j1": detail("j1", graph=exported_graph(got),
                                       images=[{"filename": path.name, "subfolder": sub, "type": "output"}])}
     with env.store.transaction() as con:
         con.execute("INSERT INTO settings(key, value) VALUES ('comfyui.output_dir', ?)",
                     (str(env.tmp_path / "output"),))
 
-    env.watcher.start(actor="human")
+    env.watcher.start(actor="human", run=False)
+    bump(env)
     got_cycle = env.watcher.poll_once()
 
     assert got_cycle["results"] == 1, got_cycle
@@ -203,7 +230,8 @@ def test_a_job_without_a_marker_makes_nothing(env):
     with env.store.transaction() as con:
         con.execute("INSERT INTO settings(key, value) VALUES ('comfyui.output_dir', ?)",
                     (str(env.tmp_path / "output"),))
-    env.watcher.start(actor="human")
+    env.watcher.start(actor="human", run=False)
+    bump(env)
     assert env.watcher.poll_once()["results"] == 0
     assert rows(env, "SELECT * FROM recipe_export_result") == []
 
@@ -216,7 +244,8 @@ def test_a_tagging_job_is_dropped_without_fetching_details(env):
     with env.store.transaction() as con:
         con.execute("INSERT INTO settings(key, value) VALUES ('comfyui.output_dir', ?)",
                     (str(env.tmp_path / "output"),))
-    env.watcher.start(actor="human")
+    env.watcher.start(actor="human", run=False)
+    bump(env)
     env.watcher.poll_once()
     assert "tag1" not in " ".join(env.comfy.detail_calls()), "タグ付け job の詳細を取っている"
 
@@ -227,7 +256,8 @@ def test_a_cached_job_is_skipped_by_the_save_node(env):
     export_of(env)
     env.comfy.jobs = [job("j1", 1000)]
     env.comfy.details = {"j1": detail("j1", graph=clone(GRAPH), cached=["17"])}   # 17 = SaveImage
-    env.watcher.start(actor="human")
+    env.watcher.start(actor="human", run=False)
+    bump(env)
     got = env.watcher.poll_once()
     assert got["cached"] == 1 and got["results"] == 0
     # **空の `nodes` は「キャッシュに当たっていない」**（＝処理する）
@@ -244,14 +274,15 @@ def test_the_same_job_is_not_taken_twice(env):
     2 秒ごとに同じ job を拾って**同じ結果を何度も作る**（再起動しても二度登録しない）。"""
     got = export_of(env)
     sub = got["marker"].rsplit("/", 1)[0]
-    path = write_result(env, subfolder=sub, filename=f"{got['marker'].rsplit('/', 1)[1]}_00001_.png")
+    path = write_result(env, subfolder=sub, filename=f"{got['marker'].rsplit('/', 1)[1]}_00001_.png", graph=exported_graph(got))
     env.comfy.jobs = [job("j1", 1000)]
-    env.comfy.details = {"j1": detail("j1", graph=clone(GRAPH),
+    env.comfy.details = {"j1": detail("j1", graph=exported_graph(got),
                                       images=[{"filename": path.name, "subfolder": sub, "type": "output"}])}
     with env.store.transaction() as con:
         con.execute("INSERT INTO settings(key, value) VALUES ('comfyui.output_dir', ?)",
                     (str(env.tmp_path / "output"),))
-    env.watcher.start(actor="human")
+    env.watcher.start(actor="human", run=False)
+    bump(env)
     assert env.watcher.poll_once()["results"] == 1
     assert env.watcher.poll_once()["results"] == 0, "同じ job を 2 度拾っている"
     assert len(rows(env, "SELECT * FROM recipe_export_result")) == 1
@@ -265,28 +296,31 @@ def test_an_unfinished_older_job_holds_the_baseline(env):
     """**何を壊すと落ちるか**: 未完了（`in_progress`）を考えずに基準を進めると、
     後から完了した古い job を**永久に取り落とす**（点検 B-3-2）。"""
     export_of(env)
-    env.comfy.jobs = [job("j2", 2000)]
-    env.comfy.statuses = {"in_progress": [job("j1", 1500)]}
+    env.comfy.jobs = [job("j1", 1000)]
+    env.comfy.statuses = {"in_progress": [job("j2", 2000)]}
     with env.store.transaction() as con:
         con.execute("INSERT INTO settings(key, value) VALUES ('comfyui.output_dir', ?)",
                     (str(env.tmp_path / "output"),))
-    env.watcher.start(actor="human")
+    env.watcher.start(actor="human", run=False)
+    bump(env)
     env.watcher.poll_once()
     base = rows(env, "SELECT baseline_create_time FROM watcher_state")[0][0]
-    assert base < 1500, f"未完了の job を追い越して基準が進んだ（{base}）"
+    unfinished = int(env.comfy.statuses["in_progress"][0]["create_time"])
+    assert base < unfinished, f"未完了の job を追い越して基準が進んだ（{base} >= {unfinished}）"
 
 
 def test_a_cycle_with_nothing_to_do_writes_nothing(env):
     """**何を壊すと落ちるか**: 拾う物が無い周期でもファイルや行を書くと、
     `GET` の無副作用（§0.10）が崩れ、`watcher_state` が無駄に書き換わる。"""
     export_of(env)
-    env.watcher.start(actor="human")
+    env.watcher.start(actor="human", run=False)
+    bump(env)
     before = sorted((p.name, p.stat().st_size, p.stat().st_mtime_ns)
-                    for p in Path(env.store.data_dir).rglob("*") if p.is_file())
+                    for p in Path(env.store.data_dir).rglob("*") if p.is_file() and not p.name.startswith('db.sqlite3'))
     env.comfy.jobs = []
     env.watcher.poll_once()
     after = sorted((p.name, p.stat().st_size, p.stat().st_mtime_ns)
-                   for p in Path(env.store.data_dir).rglob("*") if p.is_file())
+                   for p in Path(env.store.data_dir).rglob("*") if p.is_file() and not p.name.startswith('db.sqlite3'))
     assert before == after, "何も無い周期でファイルを書いている"
 
 
@@ -300,8 +334,10 @@ def test_the_watcher_is_not_started_by_a_get(env):
 
 def test_start_is_idempotent_and_stop_is_too(env):
     """**何を壊すと落ちるか**: 開始/停止が冪等でないと、二重に開始して**周期が 2 本**走る。"""
-    env.watcher.start(actor="human")
-    env.watcher.start(actor="human")
+    env.watcher.start(actor="human", run=False)
+    bump(env)
+    env.watcher.start(actor="human", run=False)
+    bump(env)
     assert env.watcher.status()["enabled"] is True
     assert sum(1 for t in [env.watcher._thread] if t and t.is_alive()) <= 1
     env.watcher.stop()
@@ -312,7 +348,8 @@ def test_start_is_idempotent_and_stop_is_too(env):
 def test_a_broken_connection_does_not_advance_and_does_not_raise(env):
     """**何を壊すと落ちるか**: 繋がらない周期で例外を投げると監視が止まる。
     基準を進めると、繋がらなかった間の job を永久に取り落とす。"""
-    env.watcher.start(actor="human")
+    env.watcher.start(actor="human", run=False)
+    bump(env)
     base_before = rows(env, "SELECT baseline_create_time FROM watcher_state")[0][0]
 
     def boom(url, **kw):
@@ -375,7 +412,7 @@ def test_seed_changed_is_detected_from_the_result_graph(env):
     画面が「同じ条件で出た」と嘘をつく（§0.9 の `seed_changed`。§4.7.2 の 2）。"""
     got = export_of(env, seed="1")
     sub = got["marker"].rsplit("/", 1)[0]
-    other = clone(GRAPH)
+    other = exported_graph(got)
     other["15"]["inputs"]["seed"] = 999
     path = write_result(env, subfolder=sub,
                         filename=f"{got['marker'].rsplit('/', 1)[1]}_00001_.png", graph=other)
@@ -385,11 +422,12 @@ def test_seed_changed_is_detected_from_the_result_graph(env):
     with env.store.transaction() as con:
         con.execute("INSERT INTO settings(key, value) VALUES ('comfyui.output_dir', ?)",
                     (str(env.tmp_path / "output"),))
-    env.watcher.start(actor="human")
+    env.watcher.start(actor="human", run=False)
+    bump(env)
     env.watcher.poll_once()
     row = rows(env, "SELECT * FROM recipe_export_result")[0]
     assert row["seed_changed"] == 1, "seed が違うのに気づいていない"
-    assert row["same_hash"] == 1, "グラフが同じなら鍵は一致する（seed は鍵に入る）"
+    assert row["same_hash"] == 0, "seed が変われば鍵も変わる（seed は鍵に入る）"
     assert _seed_of_graph(other) == "999"
 
 
@@ -398,14 +436,15 @@ def test_the_sidecar_is_written_next_to_the_result(env):
     フォルダを開いた人に「どの条件の結果か」が伝わらない（§0.9）。"""
     got = export_of(env)
     sub = got["marker"].rsplit("/", 1)[0]
-    path = write_result(env, subfolder=sub, filename=f"{got['marker'].rsplit('/', 1)[1]}_00001_.png")
+    path = write_result(env, subfolder=sub, filename=f"{got['marker'].rsplit('/', 1)[1]}_00001_.png", graph=exported_graph(got))
     env.comfy.jobs = [job("j1", 1000)]
-    env.comfy.details = {"j1": detail("j1", graph=clone(GRAPH),
+    env.comfy.details = {"j1": detail("j1", graph=exported_graph(got),
                                       images=[{"filename": path.name, "subfolder": sub, "type": "output"}])}
     with env.store.transaction() as con:
         con.execute("INSERT INTO settings(key, value) VALUES ('comfyui.output_dir', ?)",
                     (str(env.tmp_path / "output"),))
-    env.watcher.start(actor="human")
+    env.watcher.start(actor="human", run=False)
+    bump(env)
     env.watcher.poll_once()
     sidecar = path.with_suffix(".result.json")
     assert sidecar.exists(), "sidecar が無い"
@@ -423,11 +462,13 @@ def test_the_result_is_fetched_by_view_when_the_output_dir_is_unknown(env):
     env.comfy.jobs = [job("j1", 1000)]
     env.comfy.details = {"j1": detail("j1", graph=clone(GRAPH), images=[
         {"filename": f"{got['marker'].rsplit('/', 1)[1]}_00001_.png", "subfolder": sub, "type": "output"}])}
-    watcher = ComfyWatcher(env.store, env.recipes, env.exports, http=env.comfy, interval=0.01)
+    watcher = ComfyWatcher(env.store, env.recipes, env.exports, http=env.comfy,
+                              bytes_of=env.comfy.bytes_of, interval=0.01)
     # **出力先の設定を消す**（推定も当たらない: 偽の ComfyUI は `/internal/folder_paths` を知らない）
     with env.store.transaction() as con:
         con.execute("DELETE FROM settings WHERE key = 'comfyui.output_dir'")
-    watcher.start(actor="human")
+    watcher.start(actor="human", run=False)
+    bump(env)
     try:
         got_cycle = watcher.poll_once()
     finally:

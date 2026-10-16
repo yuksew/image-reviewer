@@ -176,10 +176,13 @@ class ComfyWatcher:
 
     # ---- 開始 / 停止 ----
 
-    def start(self, *, base_url: str | None = None, actor: str = "human") -> dict:
+    def start(self, *, base_url: str | None = None, actor: str = "human", run: bool = True) -> dict:
         """`POST /api/watcher/start`（§3.4）。**設定は開始のたびに読む**（点検 C-6）。
 
         開始時に**そのときの最新の `create_time` を基準**にする（過去の job を遡らない）。
+
+        `run=False` は**周期を回さず状態だけ立てる**（テストと道具が自分で `poll_once()` を呼ぶため。
+        画面と本番は `run=True`＝2 秒ごとの周期が回る）。
         """
         with self.store.locked() as con:
             settings = settings_of(con)
@@ -203,6 +206,8 @@ class ComfyWatcher:
                 last_id = str(jobs[0].get("id") or "") or None
         except OSError:
             baseline = int(time.time() * 1000)          # 繋がらないときは「いま」から
+        if baseline is None:
+            baseline = int(time.time() * 1000)          # **job が 1 つも無いときも「いま」から**
         if out_dir:
             self._add_root(out_dir)
         with self.store.transaction() as con:
@@ -215,7 +220,8 @@ class ComfyWatcher:
                 (WATCHER_NAME, last_id, baseline, db.now(), db.now()))
         self.picked = {"results": 0, "texts": 0, "skipped_jobs": 0}
         self._seen.clear()
-        self._start_thread()
+        if run:
+            self._start_thread()
         return {"enabled": True, "baseline_prompt_id": last_id, "base_url": base,
                 "output_dir": out_dir, "output_dir_inferred": inferred,
                 "interval": self.interval}
@@ -276,12 +282,14 @@ class ComfyWatcher:
             jobs = self._jobs(base)
         except OSError as exc:
             counters["error"] = f"{type(exc).__name__}: {exc}"
-            self._touch(baseline, error=True)
+            self._touch(None, error=True)
             return counters
         # **画像を出す job だけ**（`outputs_count: 0` は詳細を取らずに弾く。点検 B-3-4）
+        # **`create_time` は「それまで読んだ」の印**なので、**同じ値は読まない**（`>`）。
+        # 同じ ms に 2 件入る場合は `_seen`（処理済みの集合）で弾く（§0.9）
         picked = [j for j in jobs
                   if int(j.get("outputs_count") or 0) > 0
-                  and int(j.get("create_time") or 0) >= baseline
+                  and int(j.get("create_time") or 0) > baseline
                   and str(j.get("id") or "") not in self._seen]
         counters["skipped_jobs"] = len(jobs) - len(picked)
         newest = baseline
@@ -366,8 +374,13 @@ class ComfyWatcher:
                  if isinstance(node, dict) and node.get("class_type") in ("SaveImage", "PreviewImage")]
         return bool(saves) and all(nid in nodes for nid in saves)
 
-    def _touch(self, baseline: int, *, count: int = 0, error: bool = False) -> None:
+    def _touch(self, baseline: int | None, *, count: int = 0, error: bool = False) -> None:
+        """既読と時刻を書く。**`baseline=None` は基準を動かさない**（繋がらない回。§0.9）。"""
         with self.store.transaction() as con:
+            if baseline is None:
+                con.execute("UPDATE watcher_state SET last_polled_at = ?, updated_at = ?"
+                            " WHERE name = ?", (db.now(), db.now(), WATCHER_NAME))
+                return
             con.execute("UPDATE watcher_state SET baseline_create_time = ?, last_polled_at = ?,"
                         " updated_at = ? WHERE name = ?",
                         (int(baseline), db.now(), db.now(), WATCHER_NAME))
@@ -456,7 +469,12 @@ class ComfyWatcher:
         if path is None:
             return None
         with self.store.locked() as con:
-            row = con.execute("SELECT * FROM recipe_record WHERE id = ?", (export["recipe_id"],)).fetchone()
+            attempt = con.execute("SELECT recipe_id FROM recipe_export_attempt WHERE attempt_id = ?",
+                                  (export["attempt_id"],)).fetchone()
+            if attempt is None:
+                return None
+            row = con.execute("SELECT * FROM recipe_record WHERE id = ?",
+                              (attempt["recipe_id"],)).fetchone()
         if row is None:
             return None
         asset_id, _created = self._register_asset(path)

@@ -8,6 +8,12 @@
 > **`git` 管理にして GitHub に push 済み**（`https://github.com/yuksew/image-reviewer`・main・初回コミット）。
 > **利用者のアプリはいま止めてあります**（`onnxruntime` の導入で止めた）。**次に起動すると `.data` が v3 → v5** に上がります
 > （控えは `.backup/pre-p4-20261016-093705`）。
+>
+> **2026-10-16 13:00 の追記（その後の状態）**: **アプリは起動済みで、`.data` は v5 に上がりました**（263 枚・判断 3 件は無傷）。
+> **利用者の決定でタガーは ComfyUI を優先**します（`settings` の `tagger.engine=comfyui`・`tagger.node=illust`＝`IllustTagger`。
+> 内蔵は CPU 版しか入っておらず 1.30 秒/枚、IllustTagger は 0.27 秒/枚のため）。`tagger.comfyui_temp` も入れて
+> **投げた複製を消す**ようにしました。**`onnxruntime-gpu` ＋ CUDA の DLL** を入れれば内蔵が最速（0.063 秒/枚）になるので、
+> そのときは `tagger.engine=auto` に戻します。
 
 ---
 

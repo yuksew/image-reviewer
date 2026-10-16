@@ -1025,6 +1025,15 @@ URL で名前付きワークフローを開く手段が無いため、次の順�
 - **ComfyUI 経由では画像を `POST /upload/image`（`type=temp`）で複製してから渡す**（`LoadImage` は
   `input/` の一覧しか受けない。P4 の点検 A-2）。名前は `<asset_id>-<sha256 の先頭 8>`（中身が変わったら
   名前も変える＝キャッシュ事故を避ける）。**付け終わったら消す**（設定 `tagger.comfyui_temp`）。
+- **この環境の既定（利用者の決定 2026-10-16）**: **ComfyUI を優先する**。
+  `settings` の `tagger.engine = comfyui`・`tagger.node = illust` を入れてある。
+  理由: **内蔵は CPU 版しか入っていない**（`onnxruntime 1.31.0`。`providers` は CPU だけ）ので
+  **1.30 秒/枚**、**ComfyUI の `IllustTagger` は 0.27 秒/枚**（実測）。1 万枚で 2.1 時間 対 45 分。
+  **`onnxruntime-gpu` ＋ CUDA の DLL** を入れれば内蔵が最速（0.063 秒/枚・約 11 分）になるので、
+  そのときは `tagger.engine` を `auto`（内蔵優先）に戻す。
+  `auto` のままでも、内蔵が入っていれば内蔵が選ばれる（設計の既定は変えていない）。
+  なお **`IllustTagger` と WD14 は別の模型**なので、**語の集合は完全には一致しない**
+  （どの模型で付けたかは `asset_tag.model` に残る）。
 
 ### 8.3 タガーの限界を画面に書く
 

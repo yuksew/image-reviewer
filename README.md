@@ -106,7 +106,7 @@ uv run python tools/probe_p4.py --gloss            # 語釈の線 4・5・6（�
 | エージェントにレビューを頼まれる | `POST /api/review-requests`。投げてすぐ返り、エージェントはポーリングで結果を得る。AI の下書きと人の判断を両方残す |
 | うまくいった条件を使い回す | 記録・コピー・ComfyUI で開く・**seed 違いのグラフ書き出し**・名前を付けて保存。**実行はしない** |
 | 他のツールから結果を読む | REST `GET /api/export/review.json` ＋ `<data>/export/review.json`（版付き契約） |
-| タグの無い画像にタグを付ける | 内蔵 WD14（`onnxruntime-gpu`、既定）または ComfyUI の `IllustTagger` |
+| タグの無い画像にタグを付ける | **この環境の既定は ComfyUI の `IllustTagger`**（`settings` の `tagger.engine=comfyui`・`tagger.node=illust`。0.27 秒/枚）。内蔵 WD14（`onnxruntime-gpu`、`tagger.engine=auto` で内蔵優先）も選べる（**いまは CPU 版しか入っていないので 1.30 秒/枚**） |
 | 重複を整理して本当に消す | 内容ハッシュと知覚ハッシュ。実削除は**5 分間取り消せる** |
 | 速く動く | 実測に基づく目標値（下記） |
 

@@ -481,6 +481,17 @@ def has_text_encoder(graph: dict) -> bool:
     return any((graph[nid].get("class_type") == "CLIPTextEncode") for nid in reachable)
 
 
+def captured_reconstruct(info: dict, captured: str) -> str:
+    """捕まえた英訳を**最終プロンプトに組み直す**（`capture.reconstruct_final_prompt` と同じ規則）。
+
+    `StringConcatenate` の前置き（`(masterpiece, best quality), safe,` など）と区切りを戻す。
+    写しを作らずに 1 か所で持つため、ここに置いて `capture` 側と**同じ規則**であることを明記する。
+    """
+    prefix = info.get("concat_prefix") or ""
+    delim = info.get("concat_delimiter") or ""
+    return f"{prefix}{delim}{captured}" if prefix else captured
+
+
 def judge(*, prov: dict, doc: dict, env: dict, inspected: bool,
           extra: Sequence[dict] = (), notes: Sequence[str] = ()) -> dict:
     """記録した時点の `status` と `reasons`（§0.6。**7 語だけ**）。
@@ -705,6 +716,58 @@ class RecipeService:
                 "reasons": [r["kind"] for r in verdict["reasons"]],
                 "inspected": verdict["inspected"], "notes": verdict["notes"],
                 "replayed": False}
+
+    def capture_text(self, asset_id: str, *, text: str, prompt_id: str | None = None,
+                     node: str | None = None) -> dict | None:
+        """**（監査 A-3 / 設計 §0.9 の ①〜③）監視が捕まえた英訳を記録に取り込み、判定を上げ直す。**
+
+        英訳（`TextGenerate` の出力）は**実行の瞬間にしか無い**（PNG には残らない）ので、
+        監視が動いている間に捕まえないと**記録は `approx` のまま**になる
+        （実データの ja2en の 1 枚がこれに当たる。§1.2 の線 2 の注記）。
+
+        やること: `record_json` の `captured_text` / `captured_source` / `final_prompt` /
+        `final_prompt_source` を埋め、**`judge` を通し直して `status` / `reasons` を上げる**
+        （`text_not_captured` が消えれば `approx` → `exact`）。**記録が無い画像なら何もしない**。
+        """
+        body = (text or "").strip()
+        with self.store.locked() as con:
+            row = con.execute("SELECT * FROM recipe_record WHERE source_asset_id = ?",
+                              (asset_id,)).fetchone()
+        if row is None or not body:
+            return None
+        doc = json.loads(row["record_json"] or "{}")
+        env = json.loads(row["env_snapshot"] or "{}")
+        # **グラフは `record_json` ではなくファイル**（`graph_path`。§0.7 の置き場）にある。
+        # 記録のときに書いた API 形式 JSON を読み戻す（無ければ PNG から作り直す道は P7-1 の `record`）
+        graph = doc.get("graph") if isinstance(doc.get("graph"), dict) else None
+        if graph is None and row["graph_path"]:
+            try:
+                graph = json.loads(Path(row["graph_path"]).read_text(encoding="utf-8"))
+            except Exception:                        # noqa: BLE001  消えた・壊れたファイルは黙って諦める
+                graph = None
+        if graph is None:
+            return None
+        info = analyze_graph(graph)
+        final_prompt = captured_reconstruct(info, body)
+        doc["captured_text"] = body
+        doc["captured_source"] = "comfyui_history"
+        doc["final_prompt"] = final_prompt
+        doc["final_prompt_source"] = "reconstructed"
+        if prompt_id:
+            doc["prompt_id"] = prompt_id
+        if node:
+            doc["captured_from_node"] = node
+        verdict = judge(prov={"graph": graph, "info": info}, doc=doc, env=env,
+                        inspected=bool(doc.get("inspected")), notes=doc.get("notes") or ())
+        with self.store.transaction() as con:
+            con.execute(
+                "UPDATE recipe_record SET record_json = ?, final_prompt = ?,"
+                " final_prompt_source = ?, captured_text = ?, captured_source = ?,"
+                " text_probe = ?, status = ?, reasons = ? WHERE id = ?",
+                (_dump(doc), final_prompt, "reconstructed", body, "comfyui_history",
+                 body, verdict["status"], _dump(verdict["reasons"]), row["id"]))
+        return {"recipe_id": row["id"], "status": verdict["status"], "reasons": verdict["reasons"],
+                "final_prompt": final_prompt}
 
     def _ensure_graph_file(self, row) -> dict:
         """**消えたグラフのファイルを作り直す**（監査 A-4。`POST` だけが書く）。

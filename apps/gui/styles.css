@@ -705,3 +705,10 @@ body.recipe #recipe, body.recipelist #recipes {
 /* ---- 上部バーのジョブの印（§5.5） ---- */
 .job-badge.job-on { color: var(--accent); }
 .job-badge.job-done { color: var(--keep); }
+
+/* 監視の 1 行（P7-4 の残し。§5.5） */
+.watch-line { padding: 8px 14px 0; }
+.watch-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2, #555); }
+.watch-row .tag { border: 1px solid var(--line, #ccc); border-radius: 3px; padding: 0 4px; font-size: 11px; }
+.watch-row .watch-state { font-weight: 600; }
+.watch-row button { font: inherit; padding: 2px 8px; }

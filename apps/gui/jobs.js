@@ -90,6 +90,26 @@ export function listHtml(now = Date.now()) {
   return state.items.map((job) => jobHtml(job, now)).join('');
 }
 
+/** **（P7-4 の残し）監視の状態 1 行**（§5.5。`GET /api/watcher` は**書かない**）。 */
+export function watcherHtml(status = {}) {
+  if (!status || typeof status !== 'object') return '';
+  const on = Boolean(status.enabled);
+  const picked = status.picked || {};
+  const counts = `結果 ${picked.results || 0} / 英訳 ${picked.texts || 0}`;
+  const where = status.output_dir
+    ? `${status.output_dir_inferred ? '推定した場所' : '設定の場所'}: ${esc(status.output_dir)}`
+    : '出力先がまだ分かっていません';
+  return '<div class="watch-row">'
+    + `<span class="tag">監視</span>`
+    + `<span class="watch-state">${on ? '見ています' : '止まっています'}</span>`
+    + `<span class="note">${counts} ・ ${where}</span>`
+    + (on
+      ? '<button type="button" data-watch="stop">止める</button>'
+      : '<button type="button" data-watch="start">見る</button>')
+    + (status.last_error ? `<span class="note">${esc(status.last_error)}</span>` : '')
+    + '</div>';
+}
+
 async function load() {
   const body = await (await fetch(`${API}?limit=50`)).json();
   state.items = body.items || [];
@@ -100,6 +120,21 @@ async function load() {
     const active = state.items.filter((j) => j.state === 'running' || j.state === 'queued').length;
     brief.textContent = active ? `${active} 件が進行中` : `${state.items.length} 件`;
   }
+  const watch = $('watch-line');
+  if (watch) {
+    try {
+      watch.innerHTML = watcherHtml(await (await fetch('/api/watcher')).json());
+    } catch {
+      watch.innerHTML = '';
+    }
+  }
+}
+
+/** 監視の開始 / 停止（**人だけ**。`POST` は 403 になりうる）。 */
+async function toggleWatch(what) {
+  const verb = what === 'stop' ? 'stop' : 'start';
+  await fetch(`/api/watcher/${verb}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  await load();
 }
 
 /** 失敗した項目の全部（`items_failed` は先頭 20 件なので、必要ならここで読む）。 */
@@ -166,5 +201,12 @@ export function wireJobs() {
   }
   const back = $('jobs-back');
   if (back) back.addEventListener('click', () => { location.hash = ''; });
+  const watch = $('watch-line');
+  if (watch) {
+    watch.addEventListener('click', (event) => {
+      const btn = event.target.closest('[data-watch]');
+      if (btn) toggleWatch(btn.dataset.watch);
+    });
+  }
   state.wired = true;
 }

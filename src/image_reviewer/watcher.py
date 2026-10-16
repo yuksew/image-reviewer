@@ -35,9 +35,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from . import db, png_meta
+from .capture import text_output_for               # **（監査 A-3）英訳の取り出しは既存の口を使う**
 from .recipe import ComfyProbe, recipe_hash
 from .recipe_export import MARKER_PREFIX
 from .review import ReviewError
+from .store import normalize_path
 
 #: `watcher_state.name`。将来の監視を増やせるように名前で持つ（§2.1）
 WATCHER_NAME = "comfyui"
@@ -146,6 +148,9 @@ class ComfyWatcher:
         self._stop = threading.Event()
         #: 直近の周期の数え方（`GET /api/watcher` が返す）
         self.picked = {"results": 0, "texts": 0, "skipped_jobs": 0}
+        #: 出力先の控え（**（監査 A-2）`__init__` で必ず作る**。`start()` でしか作らないと、
+        #: 再起動して `status()` / `poll_once()` が読んだ瞬間に `AttributeError` で **500** になる）
+        self._out_dir_cache: str | None = None
 
     # ---- 状態（`watcher_state` の 1 行。**プロセスの状態ではない**）----
 
@@ -172,7 +177,11 @@ class ComfyWatcher:
             return settings_of(con)["output_dir"]
 
     def _saved_output_dir(self) -> str | None:
-        return self._out_dir_cache
+        """**設定 → 控え**の順で返す（**（監査 A-2）控えが無くても設定で答えられる**ように）。
+
+        再起動した直後は控えが空（`__init__` で `None`）なので、ここで `settings` を見る。
+        """
+        return self._configured() or self._out_dir_cache
 
     # ---- 開始 / 停止 ----
 
@@ -237,6 +246,16 @@ class ComfyWatcher:
                         (db.now(), WATCHER_NAME))
         return {"enabled": False}
 
+    def mark_stopped_on_boot(self) -> None:
+        """**（監査 A-2）起動時に「止まっている」に戻す**（設計 §4.3）。
+
+        `watcher_state.enabled` は**プロセスの状態ではなく DB の行**なので、前回の 1 が残っていると
+        **スレッドが居ないのに「動いている」と画面に出る**。行が無ければ何もしない。
+        """
+        with self.store.transaction() as con:
+            con.execute("UPDATE watcher_state SET enabled = 0, updated_at = ? WHERE name = ?",
+                        (db.now(), WATCHER_NAME))
+
     def _add_root(self, path: str) -> None:
         """出力先を**登録ルートに足す**（§0.9。出力は普通は登録ルートの外にある）。"""
         try:
@@ -275,7 +294,7 @@ class ComfyWatcher:
         if row is None or not row["enabled"]:
             return {"skipped": "stopped"}
         base = settings["url"]
-        out_dir = self._out_dir_cache or settings["output_dir"]
+        out_dir = self._saved_output_dir() or settings["output_dir"]
         baseline = int(row["baseline_create_time"] or 0)
         counters = {"results": 0, "texts": 0, "skipped_jobs": 0, "jobs": 0, "cached": 0, "error": None}
         try:
@@ -291,37 +310,58 @@ class ComfyWatcher:
                   if int(j.get("outputs_count") or 0) > 0
                   and int(j.get("create_time") or 0) > baseline
                   and str(j.get("id") or "") not in self._seen]
+        # **（監査 A-1）古い順に処理する。** 前の版は API の並び（新しい順）のまま
+        # `picked[:MAX_PER_CYCLE]` を取っていたので、**古い job を飛び越えて**基準を進め、
+        # **取り落とした job が永久に拾われなかった**（実測: 新しい job 25 件 → 20 行しか出ない）
+        picked.sort(key=lambda j: (int(j.get("create_time") or 0), str(j.get("id") or "")))
         counters["skipped_jobs"] = len(jobs) - len(picked)
         newest = baseline
+        #: **（監査 A-1）追い越しを止める印**。詳細が取れなかった job の**先へは進めない**
+        stopped = False
         for job in picked[:MAX_PER_CYCLE]:
             job_id = str(job.get("id") or "")
             if not job_id:
                 continue
             counters["jobs"] += 1
+            when = int(job.get("create_time") or 0)
+            if stopped:
+                continue                     # 数えるだけ（**基準は動かさない**）
             try:
                 detail = self._detail(base, job_id)
             except OSError:
-                continue                                 # **既読にしない**（次の周期で再試行）
+                # **既読にしない**（次の周期で再試行）。**ここで止める**ので、
+                # これより新しい job を追い越して基準を進めることもない
+                stopped = True
+                continue
             if self._cached_only(detail):
                 counters["cached"] += 1
                 self._seen.add(job_id)
-                newest = max(newest, int(job.get("create_time") or 0))
+                newest = max(newest, when)
                 continue
             got = self._take_images(detail, base, out_dir)
             counters["results"] += got["results"]
             counters["texts"] += got["texts"]
             self._seen.add(job_id)
-            newest = max(newest, int(job.get("create_time") or 0))
+            newest = max(newest, when)
+        if len(picked) > MAX_PER_CYCLE:
+            # **（監査 A-1）20 枚の上限に当たったら基準を上げない**（残りは次の周期で拾う。
+            # 処理済みは `_seen` が弾くので、同じ 20 枚を二度処理しない）
+            newest = baseline
         self.picked = {"results": counters["results"], "texts": counters["texts"],
                        "skipped_jobs": counters["skipped_jobs"]}
-        # **`failed` / `cancelled` は既読にだけする**（§0.9）
+        # **`failed` / `cancelled` は既読にだけする**（§0.9）。
+        # **（監査 A-1）基準を進めるのには使わない**（未処理の job を追い越してしまうため）。
+        # 既読にするのも**進んだ所まで**（それより新しい物は次の周期で判断する）
         for status in ("failed", "cancelled"):
-            for job in self._status_jobs(base, status) or []:
+            try:
+                failed_jobs = self._status_jobs(base, status)
+            except OSError:
+                failed_jobs = None          # 引けなければ判定に使わない
+            for job in failed_jobs or []:
                 job_id = str(job.get("id") or "")
                 when = int(job.get("create_time") or 0)
-                if job_id and when >= baseline:
+                if job_id and baseline <= when <= newest:
                     self._seen.add(job_id)
-                    newest = max(newest, when)
         # **進めない条件**: それより古い未完了（`pending` / `in_progress`）があれば、そこで止める
         # （点検 B-3-2）。引けない環境では判定に使わない（繋がらないだけで止まらない）
         clamp = self._unfinished_ct(base)
@@ -400,7 +440,77 @@ class ComfyWatcher:
                 got["results"] += 1
                 if made.get("text_captured"):
                     got["texts"] += 1
+        # **（監査 A-3）英訳を捕まえて記録を上げる**（画像が 1 枚も当たらなくても、
+        # その job の graph に `TextGenerate` があれば記録は上げられる）
+        got["texts"] += self._capture_texts(detail, images, base, out_dir)
         return got
+
+    def _capture_texts(self, detail: dict, images: list[dict], base: str,
+                       out_dir: str | None) -> int:
+        """**（監査 A-3 / §0.9 の ①〜③）job の `TextGenerate` の出力＝英訳を記録に取り込む。**
+
+        英訳は**実行の瞬間にしか無い**ので、ここで捕まえないと記録は `approx` のままになる
+        （実測: 実データの ja2en の 1 枚がこれだった）。捕まえたら `RecipeService.capture_text`
+        が `final_prompt` を組み直して**判定を上げる**（`text_not_captured` が消えて `exact`）。
+        """
+        graph = _graph_of(detail)
+        if not isinstance(graph, dict):
+            return 0
+        info = png_meta.analyze_graph(graph)
+        if not info.get("has_textgen"):
+            return 0
+        captured, node = text_output_for({"outputs": detail.get("outputs") or {}},
+                                         info.get("textgen_consumers"))
+        if not captured:
+            return 0
+        # どの画像の記録に取り込むか: **この job の出力画像の印から書き出しを引き、
+        # その書き出しの元画像（`recipe_record.source_asset_id`）に入れる**。
+        # **結果の画像 id を渡してはいけない**（記録は元画像に 1 つ。実測で踏んだ）
+        targets: list[str] = []
+        for image in images:
+            export = self._match(image, base, out_dir)
+            if export is None:
+                continue
+            asset_id = self._source_asset_of(export)
+            if asset_id and asset_id not in targets:
+                targets.append(asset_id)
+        done = 0
+        for asset_id in targets:
+            try:
+                got = self.recipes.capture_text(asset_id, text=captured, prompt_id=_prompt_id(detail),
+                                                node=node)
+            except Exception:                            # noqa: BLE001  記録側の失敗で監視を止めない
+                continue
+            if got is not None:
+                done += 1
+        return done
+
+    def _asset_of(self, path: Path | None) -> str | None:
+        """実体のパスから `asset.id` を引く（無ければ `None`）。
+
+        **`asset_location.path` は正規化した鍵**（`normalize_path` が大小文字と区切りを揃える。
+        `db.py` の 9 行目）なので、**こちらも正規化してから引く**——生の `str(path)` で引くと
+        Windows のドライブの大小文字で**当たらない**（実測で踏んだ）。
+        """
+        if path is None:
+            return None
+        with self.store.locked() as con:
+            row = con.execute("SELECT asset_id FROM asset_location WHERE path = ? LIMIT 1",
+                              (normalize_path(str(path)),)).fetchone()
+        return str(row["asset_id"]) if row is not None else None
+
+    def _source_asset_of(self, export) -> str | None:
+        """書き出しから**元画像の `asset.id`** を引く（束 → 記録）。
+
+        **（監査 A-3）英訳を入れる先は「元画像の記録」**であって、結果の画像ではない
+        （`recipe_record` は**画像 1 枚に 1 つ**で、`source_asset_id` を持つ）。
+        """
+        with self.store.locked() as con:
+            row = con.execute(
+                "SELECT r.source_asset_id AS a FROM recipe_export_attempt t"
+                " JOIN recipe_record r ON r.id = t.recipe_id WHERE t.attempt_id = ?",
+                (export["attempt_id"],)).fetchone()
+        return str(row["a"]) if row is not None else None
 
     def _match(self, image: dict, base: str, out_dir: str | None):
         """印から `recipe_export` の行を引く（§0.9 の照合）。
@@ -670,6 +780,20 @@ class ComfyWatcher:
 def _norm_sub(subfolder: Any) -> str:
     """`subfolder` を `/` 区切りにする（**Windows ではバックスラッシュで来る**。点検 B-4）。"""
     return str(subfolder or "").replace("\\", "/").strip("/")
+
+
+def _graph_of(detail: dict) -> dict | None:
+    """job の詳細から**実行されたグラフ**（API 形式）を取り出す（**（監査 A-3）**）。
+
+    `/api/jobs/{id}` は `workflow.prompt` に API 形式のグラフを入れて返す（実測）。
+    `/history` は 5 要素のリストで `[2]` がグラフなので、**どちらの形でも受ける**。
+    """
+    prompt = (detail.get("workflow") or {}).get("prompt") if isinstance(detail.get("workflow"), dict) else None
+    if isinstance(prompt, dict):
+        return prompt
+    if isinstance(prompt, (list, tuple)) and len(prompt) >= 3 and isinstance(prompt[2], dict):
+        return prompt[2]
+    return None
 
 
 def _images_of(detail: dict) -> list[dict]:

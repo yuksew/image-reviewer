@@ -89,7 +89,16 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         """監査 A1: 終了時に溜まっている分を書き出す（`threading.Timer` は daemon なので、
-        何もしないと最後の 2 秒の判断がファイルに出ないまま消える）。"""
+        何もしないと最後の 2 秒の判断がファイルに出ないまま消える）。
+
+        **（監査 A-2 / 設計 §4.3）起動時に監視を止まっている状態に戻す。** `watcher_state.enabled`
+        は**プロセスの状態ではなく DB の行**なので、落ちたまま（あるいは前回のまま）1 が残っていると、
+        **誰も回していないのに「動いている」と画面に出る**（実際にはスレッドが居ない）。
+        """
+        try:
+            watcher_svc.mark_stopped_on_boot()
+        except Exception:  # noqa: BLE001  起動を止めない
+            log.exception("監視の状態を戻せませんでした（続けます）")
         yield
         try:
             exporter.flush()

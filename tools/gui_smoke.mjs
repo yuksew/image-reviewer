@@ -855,6 +855,19 @@ check(jobsUi.pollActive() === true, '見ている間はポーリングする（�
 jobsUi.stopPoll();
 check(jobsUi.pollActive() === false, '離れたらポーリングを止める（§5.3）');
 
+// ---- P7-3 の監査（A-3）で足した監視の 1 行（P7-4 の残し）----
+
+check(jobsUi.watcherHtml({ enabled: true, output_dir: 'C:/ai/out', picked: { results: 2, texts: 1 } })
+  .includes('見ています') && jobsUi.watcherHtml({ enabled: true }).includes('止める'),
+  '監視の行に状態と「止める」が出る（§5.5）');
+check(jobsUi.watcherHtml({ enabled: false, output_dir_inferred: true, output_dir: 'C:/ai/out' })
+  .includes('止まっています') && jobsUi.watcherHtml({ enabled: false }).includes('見る'),
+  '止まっているときは「見る」が出る（§5.5）');
+check(jobsUi.watcherHtml({ enabled: false, picked: {} }).includes('出力先がまだ分かっていません'),
+  '出力先が分からないときは 1 行出す（§5.5）');
+check(jobsUi.watcherHtml({ enabled: true, last_error: '<script>alert(1)</script>' })
+  .includes('&lt;script&gt;'), '監視の行もエスケープする（§5.5）');
+
 // ---- P4-3 の監査で足した検査（A-1 / B-1 / C-2 / C-3 / C-5）----
 
 check(jobsUi.STATE_LABEL.queued === '待っています',

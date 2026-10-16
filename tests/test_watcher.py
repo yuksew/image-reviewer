@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from image_reviewer import db
+from image_reviewer import db, png_meta
 from image_reviewer.recipe import RecipeService, recipe_hash
 from image_reviewer.recipe_export import RecipeExportService
 from image_reviewer.review import ReviewError
@@ -476,3 +476,149 @@ def test_the_result_is_fetched_by_view_when_the_output_dir_is_unknown(env):
     assert got_cycle["results"] == 1, got_cycle
     taken = list((Path(env.store.data_dir) / "results").glob("*.png"))
     assert taken, "`/view` の取り込みが動いていない"
+
+
+# ---- 監査 A-1 / A-2 / A-3 の回帰（P7-3 の監査 → 修正）----
+
+
+def test_the_marker_never_overtakes_unprocessed_jobs(env):
+    """**何を壊すと落ちるか**（監査 A-1）: 一覧を**古い順に処理**し、**処理し切れなかった job を
+    追い越して基準を進めない**こと。前の版は API の並び（新しい順）で `[:MAX_PER_CYCLE]` を取り、
+    基準を newest に跳ばしていたので、**25 件あっても 20 行しか出ず、残り 5 件は永久に拾われなかった**。
+    """
+    from image_reviewer.watcher import MAX_PER_CYCLE
+
+    got = export_of(env)
+    sub = got["marker"].rsplit("/", 1)[0]
+    write_result(env, subfolder=sub, filename=f"{got['marker'].rsplit('/', 1)[1]}_00001_.png",
+                 graph=exported_graph(got))
+    # **25 件**（上限 20 を超える）。どれも「画像を出す job」にする
+    total = MAX_PER_CYCLE + 5
+    env.comfy.jobs = [job(f"j{i}", 1000 + i) for i in range(total)]
+    for i in range(total):
+        env.comfy.details[f"j{i}"] = detail(f"j{i}", graph=exported_graph(got), images=[
+            {"filename": f"{got['marker'].rsplit('/', 1)[1]}_00001_.png", "subfolder": sub,
+             "type": "output"}])
+    with env.store.transaction() as con:
+        con.execute("INSERT INTO settings(key, value) VALUES ('comfyui.output_dir', ?)",
+                    (str(env.tmp_path / "output"),))
+    env.watcher.start(actor="human", run=False)
+    bump(env)
+    # **1 周期目で「古い 20 件」を処理する**（新しい順だと 1 周期目が新しい 20 件になり、
+    # 古い物が次の周期まで飢える。**（監査 A-1）古い順に処理する**のが設計 §0.9）
+    first = env.watcher.poll_once()
+    seen = env.watcher._seen                           # noqa: SLF001  何を読んだかを見る
+    assert "j0" in seen, "古い job から処理していない（監査 A-1）"
+    assert f"j{MAX_PER_CYCLE - 1}" in seen, "上限の所まで処理していない"
+    assert f"j{total - 1}" not in seen, "1 周期で上限（20 枚）を超えて処理した"
+    assert first.get("error") is None, first
+    # **残りも次の周期で拾う**（取り落としが無い）
+    cycles = [env.watcher.poll_once() for _ in range(3)]
+    assert len(seen) >= total, f"取り落とした job がある（読んだ {len(seen)} / {total} 件）"
+    for cycle in cycles:
+        assert cycle.get("error") is None, cycle
+
+
+def test_a_failed_detail_is_retried_and_does_not_overtake(env):
+    """**何を壊すと落ちるか**（監査 A-1）: **詳細が取れなかった job は既読にせず、次の周期で拾う**。
+
+    前の版は取れなかった job を飛ばしつつ、**他の job が基準を進める**ので、
+    **古い job が永久に拾われなかった**（設計 §0.9「次の周期で再試行」に反する）。
+    """
+    import urllib.error
+
+    got = export_of(env)
+    sub = got["marker"].rsplit("/", 1)[0]
+    write_result(env, subfolder=sub, filename=f"{got['marker'].rsplit('/', 1)[1]}_00001_.png",
+                 graph=exported_graph(got))
+    env.comfy.jobs = [job("old", 1000), job("new", 2000)]
+    env.comfy.details = {"old": detail("old", graph=exported_graph(got), images=[]),
+                         "new": detail("new", graph=exported_graph(got), images=[])}
+    with env.store.transaction() as con:
+        con.execute("INSERT INTO settings(key, value) VALUES ('comfyui.output_dir', ?)",
+                    (str(env.tmp_path / "output"),))
+    env.watcher.start(actor="human", run=False)
+    bump(env)
+
+    real_http = env.comfy.__call__
+    boom = {"old": True}
+
+    def http(url, **kw):
+        if "/api/jobs/old" in url and boom["old"]:
+            boom["old"] = False
+            raise urllib.error.URLError("落ちた")
+        return real_http(url, **kw)
+
+    env.watcher._http = http                            # noqa: SLF001  1 回だけ落とす
+    env.watcher.poll_once()                             # 1 周期目: old の詳細で落ちる
+    assert "old" not in env.watcher._seen, "取れなかった job を既読にした（次の周期で拾えない）"
+    env.watcher.poll_once()                             # 2 周期目: 直ったので拾える
+    assert "old" in env.watcher._seen, "落ちた job が次の周期で拾われない（基準が追い越した）"
+
+
+def test_the_status_survives_a_restart(env):
+    """**何を壊すと落ちるか**（監査 A-2）: 再起動しても `GET /api/watcher` が **500 にならない**。
+
+    前の版は `_out_dir_cache` を `start()` でしか作らず、`status()` が読むので
+    **再起動直後に `AttributeError` → 500** になった（実測）。**起動時に `enabled` も 0 に戻す**。
+    """
+    env.watcher.start(actor="human", run=False)
+    with env.store.transaction() as con:
+        con.execute("UPDATE watcher_state SET enabled = 1")
+    # **新しいプロセスを真似る**（同じ DB を見る別の `ComfyWatcher`）
+    fresh = ComfyWatcher(env.store, env.recipes, env.exports, http=env.comfy,
+                         bytes_of=env.comfy.bytes_of, interval=0.01)
+    got = fresh.status()                                # 前の版はここで落ちた
+    assert got["enabled"] is True, "行の値を読めていない"
+    assert "output_dir" in got
+    fresh.mark_stopped_on_boot()                        # 起動時の 1 行（設計 §4.3）
+    assert fresh.status()["enabled"] is False, "起動時に止まっている状態へ戻していない"
+
+
+def test_a_text_output_is_captured_and_raises_the_verdict(env):
+    """**何を壊すと落ちるか**（監査 A-3）: job の `TextGenerate` の出力＝**英訳を捕まえて**、
+    `final_prompt` を組み直し、**判定を `approx` → `exact` に上げる**こと。
+
+    英訳は**実行の瞬間にしか無い**（PNG には残らない）ので、監視が捕まえないと `approx` のままになる
+    （実データの ja2en の 1 枚がこれ。§1.2 の線 2 の注記）。前の版は `capture.py` を使っておらず、
+    `texts` の数え方も「グラフがある」の意味になっていた。
+    """
+    got = export_of(env)
+    recipe_id = got["recipe_id"]
+    # 記録は `approx`（`CLIPTextEncode` はあるが文字列が分からない＝ja2en の形）
+    before = rows(env, "SELECT status, final_prompt, captured_text FROM recipe_record WHERE id = ?",
+                  (recipe_id,))[0]
+    assert before["final_prompt"] is None
+    sub = got["marker"].rsplit("/", 1)[0]
+    name = f"{got['marker'].rsplit('/', 1)[1]}_00001_.png"
+    path = write_result(env, subfolder=sub, filename=name, graph=exported_graph(got))
+    # **job の出力に英訳がある**（実測の形: `outputs["<消費ノード>"]["text"]`）。
+    # **job が実行したグラフは元のグラフ**（`TextGenerate` を持つ）——**書き出したグラフは
+    # `pin_text` が `TextGenerate` を外している**ので、そちらを渡すと捕まえる所が無い
+    # （実機でも同じ。だから「実行の瞬間にしか英訳は無い」）
+    job_graph = clone(GRAPH)
+    # **実物の ja2en の形**: `TextGenerate` の出力を **`PreviewAny`** に繋ぐ（設計 §0.9 の実測。
+    # `TextGenerate` は `output_node: false` なので、繋がないと `outputs` にテキストが出ない）
+    job_graph["11"] = {"class_type": "PreviewAny", "inputs": {"source": ["9", 0]}}
+    info = png_meta.analyze_graph(job_graph)
+    assert info.get("has_textgen"), "テストの前提: 元のグラフは TextGenerate を持つ"
+    job_detail = detail("j1", graph=job_graph,
+                        images=[{"filename": path.name, "subfolder": sub, "type": "output"}])
+    for cons in info.get("textgen_consumers") or []:
+        job_detail["outputs"][str(cons["node"])] = {"text": ["a girl looking out the window"]}
+    env.comfy.jobs = [job("j1", 1000)]
+    env.comfy.details = {"j1": job_detail}
+    with env.store.transaction() as con:
+        con.execute("INSERT INTO settings(key, value) VALUES ('comfyui.output_dir', ?)",
+                    (str(env.tmp_path / "output"),))
+    env.watcher.start(actor="human", run=False)
+    bump(env)
+    cycle = env.watcher.poll_once()
+
+    after = rows(env, "SELECT status, final_prompt, captured_text, captured_source"
+                      " FROM recipe_record WHERE id = ?", (recipe_id,))[0]
+    assert after["captured_text"] == "a girl looking out the window", "英訳を捕まえていない（監査 A-3）"
+    assert after["captured_source"] == "comfyui_history"
+    assert after["final_prompt"], "final_prompt を組み直していない（監査 A-3）"
+    assert after["status"] == "exact", f"判定が上がっていない（{before['status']} → {after['status']}）"
+    assert cycle["texts"] >= 1, "texts の数え方が英訳の捕獲を表していない（監査 A-3）"

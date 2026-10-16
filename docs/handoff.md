@@ -1,4 +1,4 @@
-# 引継書 — image-reviewer / P6 完了・P4 完了・**P7 完了**（2026-10-17 02:40 時点）
+# 引継書 — image-reviewer / P6 完了・P4 完了・**P7 は廃止**（2026-10-17 03:40 時点）
 
 このセッション（dsh・ワークツリー `dsh`）で進めた内容と、**次のセッションがそのまま続けられる形**の引継ぎです。
 読む順: **§0 危険な操作 → §1 いまの状態 → §2 Fable との往復 → §3 次の手順**。細部は §4 以降。
@@ -36,6 +36,19 @@
 > ⑦ **`seed` が NULL だと UNIQUE が効かない**（`COALESCE(seed,'')` の式の索引）／
 > ⑧ **`asset_location.path` は正規化した鍵**（生の `str(path)` では Windows のドライブの大小文字で当たらない）／
 > ⑨ **ComfyUI に繋がらないときは `system_stats` で打ち切る**（全 `class_type` を引き続けると 1 枚 20〜32 秒かけて全部 `impossible` になる）。
+>
+> **2026-10-17 03:40 の追記（P7 の廃止）**: **利用者の判断で P7（条件の記録。R12）を削除しました**
+> （理由: ①「前に作った絵をもう一回作る」ときは PNG を ComfyUI にドラッグすればワークフローが戻るので記録は重複 ②ja2en の英訳ももう一度実行すれば取れる。
+> 何を作って何を消したかは [`p7-decision.md`](p7-decision.md)）。
+> - **消した物**: サーバ（`recipe.py` / `recipe_export.py` / `watcher.py` / `api/recipes.py` / `api/watcher.py`）・画面（`recipe.js` / `recipelist.js` と
+>   `app.js` / `jobs.js` / `index.html` / `styles.css` の配線＝`#/jobs` の監視 1 行も）・道具（`probe_p7.py` / `check_contract_p7.py`、`gui_smoke` / `gui_layout` の P7 の検査）・
+>   テスト 5 本と `test_db.py` の v6・契約 `recipe-manifest.schema.json`。**`SCHEMA_VERSION` は 5** に戻した（`db.py` の「v6 はもう無い」の注記は**未追加**）。
+> - **数（実測）**: `pytest` **285 件**（403 → 285）・`gui_smoke` **129 検査**（164 → 129）・`gui_layout` **6 画面**（比較・要求・まとまり・注記とタグ・語の一覧・ジョブ）。
+>   複製のサーバで `/api/recipes`・`/api/watcher`・`/api/assets/{id}/recipe` は **404**、他の口は 200。
+> - **控え**: `.backup/pre-p7-removal-20261017-030324/db.sqlite3`（v6 のまま。`recipe_record` 4 行）。
+> - **実データ `.data/` はこの追記の時点（03:55）では `user_version` 6・25 表のまま**（v6 の 6 表は残っていて行は 0。`comfyui.*` の設定だけ消えている。
+>   `mode=ro` で確認）。**6 表の DROP と `user_version` 5 への戻しは実装者が再実行する**（`SCHEMA_VERSION = 5` のコードは v6 の DB でも起動する）。
+> - **次の段は P8** のまま。上の罠のカタログ（①〜⑨）は P7 以外でも効く（`/object_info/{class_type}`・`ALTER` で `CHECK` は足せない など）ので残す。
 
 ---
 
@@ -69,12 +82,12 @@
 | **P4-3（タグの画面）** | **完了**。実装 → 監査「直してから閉じる」→ **指摘 10 件を全部直した** → **再確認で「P4 を閉じてよい」**。再確認で新しく出た 2 件（**`GET /api/tags` の頁送りが壊れていた**・`gui_layout` の行高検査）も**私が直した**。**284 passed**・`gui_smoke` すべて ok・`gui_layout` **6 画面**すべて ok（**247 語の画像**も ok） | 記録 `docs/p4-3-implementation.md`、監査 `docs/p4-3-audit-report.md`、仕分け [`p4-3-audit-triage.md`](p4-3-audit-triage.md)、再確認 `docs/p4-3-audit-recheck.md` |
 | **P4-1 の線 8**（内蔵と ComfyUI の語の一致） | **達成**（2026-10-16。`onnxruntime`（CPU 版）を入れて実画像 4 枚で**語の集合が完全一致 4/4**。内蔵 1.30 秒/枚・ComfyUI の WD14 ノード 2.57 秒/枚）。**途中で不具合 1 件を発見して直した**（`BuiltinTagger.tag()` が `name` を受けず、内蔵のときだけ全件 `TypeError` で失敗） | [`p4-line8-note.md`](p4-line8-note.md) |
 | **`git` 管理 / GitHub** | **済み**。`https://github.com/yuksew/image-reviewer`（PUBLIC・main）。`.gitignore` は `.data/`・`.backup/`・`.tmp-audit-redo/`・`.venv/`・`.uv-cache/`・`tmp*/`・`.claude/skills/`（ジャンクション）を除外。`.gitattributes` で改行を LF に固定 | `git log` の初回コミット |
-| **P7（条件の記録。R12）の設計** | **完了**（982 行。点検 → 仕分け → 反映済み。**Q1〜Q6 と G-1〜G-7 は推奨どおりで確定**） | [`p7-design.md`](p7-design.md)、`docs/p7-review-report.md` ＋ [`p7-review-triage.md`](p7-review-triage.md) |
-| **P7-0（v6 の表と契約）** | **完了 → 監査「合格（条件つき）」→ 条件を反映済み**（**G-1〜G-5**＝`export_id` の CASCADE・`CHECK` 3 本・`noside`…実際は **`noseed`**・`ix_export_attempt` を外す・契約の `required`／**F-1** のテストの穴 5 通りは**壊して 5/5 落ちる**のを確認／**E-1〜E-3** の設計の字） | `docs/p7-0-audit-report.md` ＋ [`p7-0-audit-triage.md`](p7-0-audit-triage.md)、`docs/p7-0-implementation.md` |
-| **P7-1（記録と判定）** | **完了**（実装 → 監査「直してから次へ」→ **指摘 A-1〜A-4 / B-1〜B-3 / C-1〜C-3 / G-1〜G-6 を反映**）。`probe_p7.py --judge` が **`exact` 182 / `approx` 1 / `impossible` 80**（1 枚は ja2en で英訳が PNG に無い＝**この記録の存在理由**。**監視で英訳を捕まえて `exact` に上がる**） | `docs/p7-1-implementation.md`、`docs/p7-1-audit-report.md` ＋ [`p7-1-audit-triage.md`](p7-1-audit-triage.md) |
-| **P7-2（書き出し）** | **完了**（`mode` 3 つ・検査・印・seed 違い・manifest・`check`/`export`/`exports` の口）。**監査は P7-4 と一緒に受けた**（A-3 の「口が記録時の語と混ぜている」は P7 を閉じる修正で直した） | `docs/p7-2-implementation.md` |
-| **P7-3（監視と結果の紐付け）** | **完了 → 監査「直してから次へ」→ A-1〜A-3 を反映 → 再確認で「A-1〜A-3 は直った」**（**25 件 → 25 行**・古い順・上限で基準を上げない・詳細失敗の再試行・**再起動で `GET /api/watcher` が 200**・**英訳を捕まえて `approx` → `exact`**）。**再確認で残り 4 件（sidecar の置き場・根の通知・紐付けの seed・`note` の消失）＋ `_top_up_v6` の `CHECK` ＋ `texts` の二重計上を、P7-4 と一緒に直した** | `docs/p7-3-implementation.md`、`docs/p7-3-audit-report.md`、[`p7-3-audit-triage.md`](p7-3-audit-triage.md)、`docs/p7-3-audit-recheck.md` |
-| **P7-4（画面）** | **完了 → 監査「直してから次へ」→ A-1〜A-3（押しても動かない・入口が見えない・書き出し時の語が出ない）＋ B-1・C-1/C-2/C-4 を P7 を閉じる修正で反映** | `docs/p7-4-implementation.md`、`docs/p7-4-audit-report.md` |
+| **P7（条件の記録。R12）の設計** | **廃止（2026-10-17。利用者の判断）**。廃止前は **完了**（982 行。点検 → 仕分け → 反映済み。**Q1〜Q6 と G-1〜G-7 は推奨どおりで確定**） | [`p7-design.md`](p7-design.md)、`docs/p7-review-report.md` ＋ [`p7-review-triage.md`](p7-review-triage.md) |
+| **P7-0（v6 の表と契約）** | **廃止（2026-10-17。利用者の判断）**。廃止前は **完了 → 監査「合格（条件つき）」→ 条件を反映済み**（**G-1〜G-5**＝`export_id` の CASCADE・`CHECK` 3 本・`noside`…実際は **`noseed`**・`ix_export_attempt` を外す・契約の `required`／**F-1** のテストの穴 5 通りは**壊して 5/5 落ちる**のを確認／**E-1〜E-3** の設計の字） | `docs/p7-0-audit-report.md` ＋ [`p7-0-audit-triage.md`](p7-0-audit-triage.md)、`docs/p7-0-implementation.md` |
+| **P7-1（記録と判定）** | **廃止（2026-10-17。利用者の判断）**。廃止前は **完了**（実装 → 監査「直してから次へ」→ **指摘 A-1〜A-4 / B-1〜B-3 / C-1〜C-3 / G-1〜G-6 を反映**）。`probe_p7.py --judge` が **`exact` 182 / `approx` 1 / `impossible` 80**（1 枚は ja2en で英訳が PNG に無い＝**この記録の存在理由**。**監視で英訳を捕まえて `exact` に上がる**） | `docs/p7-1-implementation.md`、`docs/p7-1-audit-report.md` ＋ [`p7-1-audit-triage.md`](p7-1-audit-triage.md) |
+| **P7-2（書き出し）** | **廃止（2026-10-17。利用者の判断）**。廃止前は **完了**（`mode` 3 つ・検査・印・seed 違い・manifest・`check`/`export`/`exports` の口）。**監査は P7-4 と一緒に受けた**（A-3 の「口が記録時の語と混ぜている」は P7 を閉じる修正で直した） | `docs/p7-2-implementation.md` |
+| **P7-3（監視と結果の紐付け）** | **廃止（2026-10-17。利用者の判断）**。廃止前は **完了 → 監査「直してから次へ」→ A-1〜A-3 を反映 → 再確認で「A-1〜A-3 は直った」**（**25 件 → 25 行**・古い順・上限で基準を上げない・詳細失敗の再試行・**再起動で `GET /api/watcher` が 200**・**英訳を捕まえて `approx` → `exact`**）。**再確認で残り 4 件（sidecar の置き場・根の通知・紐付けの seed・`note` の消失）＋ `_top_up_v6` の `CHECK` ＋ `texts` の二重計上を、P7-4 と一緒に直した** | `docs/p7-3-implementation.md`、`docs/p7-3-audit-report.md`、[`p7-3-audit-triage.md`](p7-3-audit-triage.md)、`docs/p7-3-audit-recheck.md` |
+| **P7-4（画面）** | **廃止（2026-10-17。利用者の判断）**。廃止前は **完了 → 監査「直してから次へ」→ A-1〜A-3（押しても動かない・入口が見えない・書き出し時の語が出ない）＋ B-1・C-1/C-2/C-4 を P7 を閉じる修正で反映** | `docs/p7-4-implementation.md`、`docs/p7-4-audit-report.md` |
 | **P8（重複・削除・バックアップ）/ P9（仕上げ）** | 未着手（**次は P8**） | `docs/design.md` §14 |
 
 **テストは 260 passed**（P4-1 の監査修正まで。**P4-2 の実装中**）／`gui_smoke` すべて ok／`gui_layout` は**比較・要求・まとまり・注記の 4 画面**すべて ok。`SCHEMA_VERSION = 5`。

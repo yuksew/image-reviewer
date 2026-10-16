@@ -12,9 +12,6 @@ import { wireBadge } from './badge.js';
 import { mountTags, resetTags } from './tags.js';
 import { hideTags, showTags, wireTags } from './taglist.js';
 import { hideJobs, showJobs, wireJobs } from './jobs.js';
-// P7-4: 条件の記録（`#/asset/<id>/recipe` と `#/recipes`）
-import { hideRecipe, recipeLinkHtml, showRecipe, wireRecipe } from './recipe.js';
-import { hideRecipes, showRecipes, wireRecipes } from './recipelist.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -233,8 +230,6 @@ async function select(id) {
     <div class="stat" style="margin-top:6px">${esc(shortPath(asset.locations?.[0]?.path))}</div>
     ${asset.meta_note ? `<div class="note" style="margin-top:6px">${esc(asset.meta_note)}</div>` : ''}
 
-    <div class="prov-recipe">${recipeLinkHtml(id, null)}</div>
-
     <h3>タグ<span class="src">（PNG の語 / タガー / 手）</span></h3>
     <div id="tg-panel" class="tg-panel"></div>
 
@@ -340,33 +335,17 @@ function route() {
   const comparing = hash.startsWith('#/compare');
   const requesting = hash.startsWith('#/requests');
   const grouping = hash.startsWith('#/group/');
-  // **P7-4**: `#/asset/<id>/recipe` は `#/asset/<id>` より**先**に見る
-  // （後ろだと拡大の画面が勝ってしまう）
-  const recipeOf = hash.match(/^#\/asset\/([^/?]+)\/recipe/);
-  const recipeList = hash.startsWith('#/recipes');
-  const zooming = hash.startsWith('#/asset/') && !recipeOf;
+  const zooming = hash.startsWith('#/asset/');
   const tagging = hash.startsWith('#/tags');
   const jobbing = hash.startsWith('#/jobs');
   document.body.classList.toggle('comparing', comparing);
   document.body.classList.toggle('requests', requesting);
   document.body.classList.toggle('grouping', grouping);
-  if (recipeOf) {
-    hideRequests(); hideGroup(); hideTags(); hideJobs(); hideRecipes();
-    showRecipe(decodeURIComponent(recipeOf[1])).catch(() => {});
-    return;
-  }
-  if (recipeList) {
-    hideRequests(); hideGroup(); hideTags(); hideJobs(); hideRecipe();
-    showRecipes(queryOf(hash)).catch(() => {});
-    return;
-  }
   if (comparing) {
     hideRequests();
     hideGroup();
     hideTags();
     hideJobs();
-    hideRecipe();
-    hideRecipes();
     showCompare(queryOf(hash));
     return;
   }
@@ -375,8 +354,6 @@ function route() {
     hideGroup();
     hideTags();
     hideJobs();
-    hideRecipe();
-    hideRecipes();
     showRequests(queryOf(hash));
     return;
   }
@@ -384,8 +361,6 @@ function route() {
     hideRequests();
     hideTags();
     hideJobs();
-    hideRecipe();
-    hideRecipes();
     showGroup(pathOf(hash, '#/group/'));
     return;
   }
@@ -393,8 +368,6 @@ function route() {
     hideRequests();
     hideGroup();
     hideJobs();
-    hideRecipe();
-    hideRecipes();
     showTags(queryOf(hash)).catch(() => {});
     return;
   }
@@ -402,8 +375,6 @@ function route() {
     hideRequests();
     hideGroup();
     hideTags();
-    hideRecipe();
-    hideRecipes();
     showJobs().catch(() => {});
     return;
   }
@@ -411,8 +382,6 @@ function route() {
   hideGroup();
   hideTags();
   hideJobs();
-  hideRecipe();
-  hideRecipes();
   // 拡大（`#/asset/<id>`。まとまりレビューの「選んだ 1 枚を拡大で開く」の行き先）。
   // **注記の入口**（点検 C5）: ここで印を付けてから決める。
   // `?group=<id>` が付いていれば、そのまとまりの注記として記録する（要求の応答に出る）
@@ -466,8 +435,6 @@ wireGroup();
 // P4-3: タグの一覧とジョブ
 wireTags();
 wireJobs();
-wireRecipe();          // P7-4: 条件の記録（`#/asset/<id>/recipe`）
-wireRecipes();         // P7-4: 記録の一覧（`#/recipes`）
 // P6-1b: 画面を開いている間だけ 5 秒ごとに要求の件数を取る（SSE は作らない。§5.4 / §0.10）
 // P4-3: 同じ周期でジョブの進行も見る（`#/jobs` に入らなくても気づける。p4-design §5.5）
 wireBadge();

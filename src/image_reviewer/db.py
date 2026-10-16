@@ -21,11 +21,6 @@
   （主キー `(a_id, b_id)` の前置と重なる）。`algo_version` を持ち、**引くときも必ず条件に入れる**
 - `changed_at` / `exported_at` は `stamp()`（マイクロ秒）。秒までだと同じ秒の 2 件を取りこぼす（点検 B1）
 - **v4（P6-0）** は要求と注記、**v5（P4-0）** はタグとジョブ（それぞれ `V4_REQUEST_DDL` / `V5_TAG_DDL`）。
-- **v6（P7-0）**: 条件の記録（`recipe_record` / `recipe_export_attempt` / `recipe_export` /
-  `recipe_export_result` / `preset`）と監視の既読位置（`watcher_state`）を足す。**機能は足さない**。
-  **新しい表だけ**なので `ALTER TABLE` は使わず、**v6 の手当ては 1 回で終わる**（v5 のように
-  「版を上げずに列を足した」経緯が無いので `_top_up_v6` は作らない）。詳細は
-  `docs/p7-design.md` §2.1（**この段の正**）
 """
 
 from __future__ import annotations
@@ -36,7 +31,7 @@ import time
 import uuid
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 5
 
 # Cronford の base32（ULID）
 _B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -243,10 +238,7 @@ def migrate(con: sqlite3.Connection) -> int:
         # **版を上げずに列を足した版の手当て**（P4-1 の監査 A-1）。v5 は途中で
         # `tag.known` / `asset_tag.actor` / `job.note` を足したので、**先に v5 になった DB** が
         # 列の無いまま残りうる（`current < 5` の道を通らないので、ここで補う）。
-        # **v6 も同じ**（P7-4 で `recipe_export_result.fetched` を足した。表は空だったので
-        # v7 は作らず v6 の DDL を直し、**既に v6 の DB にはここで列を足す**）。
         _top_up_v5(con)
-        _top_up_v6(con)
         return current
     if current < 1:
         con.executescript(DDL)
@@ -259,9 +251,6 @@ def migrate(con: sqlite3.Connection) -> int:
         _migrate_v4(con)
     if current < 5:
         _migrate_v5(con)
-    if current < 6:
-        _migrate_v6(con)
-    _top_up_v6(con)
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -525,166 +514,6 @@ def _top_up_v5(con: sqlite3.Connection) -> None:
     if {row["name"] for row in con.execute("PRAGMA table_info(job_item)")}:
         con.execute("UPDATE job_item SET state = 'failed' WHERE state NOT IN"
                     " ('tagged', 'skipped', 'failed')")
-
-
-def _top_up_v6(con: sqlite3.Connection) -> None:
-    """v6 の**版を上げずに足した列**の手当て（P7-4）。
-
-    `recipe_export_result.fetched`（`GET /view` で取り込んだか）を後から足した。
-    表はまだ空だったので **v7 は作らず v6 の DDL を直した**が、**先に v6 になった DB**
-    （P7-0〜P7-3 の間に `migrate()` が走った物）には列が無い。`current >= SCHEMA_VERSION`
-    の early return 側からも呼ぶので、**既に v6 の DB にも 1 回で入る**。
-    `PRAGMA table_info` を見てから足す（`ALTER TABLE ADD COLUMN` は `IF NOT EXISTS` を
-    持たないため）。**何度呼んでも安全。**
-    """
-    have = {row["name"] for row in con.execute("PRAGMA table_info(recipe_export_result)")}
-    if have and "fetched" not in have:
-        # 既存の行は「取り込んでいない」＝ 0 で埋まる（この時点で行は 0 件のはずだが、
-        # 実データで 1 件でもあれば参照のままだった可能性が高いので 0 が正しい）
-        #
-        # **（再確認 G-5）`CHECK` も付ける**: 付けないと、**新規の v6**（DDL に `CHECK` がある）と
-        # **後から足した v6**（無い）で**同じ版番号なのに形が 2 つ**になる。
-        # SQLite の `ALTER TABLE ADD COLUMN` は列の制約として `CHECK` を受け付ける。
-        con.execute("ALTER TABLE recipe_export_result ADD COLUMN fetched INTEGER NOT NULL DEFAULT 0"
-                    " CHECK (fetched IN (0, 1))")
-
-
-# v6 で作る表（P7 の設計 §2.1。**点検 A-2 / B-3-1 / C-1〜C-4 / G-3〜G-5** を反映した形）。
-# **機能は足さない**（表だけ）。設計 §2.1 が**この段の正**。
-# - `recipe_record`: 元画像 1 枚の生成条件の写し（**生成はしない**）。`ux_recipe_source` で
-#   **画像 1 枚に 1 記録**（点検 C-1 / G-5）。`reasons` は**記録時の 7 語だけ**（点検 A-3。mode に
-#   依存する `text_pinned` / `llm_nondeterministic` / `manual_step` は書き出し時＝`checked_json` へ）
-# - `recipe_export_attempt`: **書き出しの束**（点検 A-2b）。前の版は束の表が無く、manifest・印の理由・
-#   検査の結果・`seed_node` の置き場が無かった。`client_token` の再送は**同じ `attempt_id`** を返す
-# - `recipe_export`: 束の中の **1 ファイル＝1 seed**。`marker` と `marker_skip_reason` は
-#   **片方だけ**（点検 A-2a の `CHECK`。前の版は `marker` が NOT NULL で「印なし」を表せなかった）
-# - `ux_export_attempt_seed` は **`COALESCE(seed,'')` の式の索引**（点検 A-2c）。前の版の
-#   `UNIQUE(attempt_id, seed)` は **seed が NULL のとき効かない**（実測で同じ束に 2 行入った）
-# - `recipe_export_result`: 結果 1 枚。`result_asset_id` は **`ON DELETE SET NULL`**（点検 C-3 / G-3。
-#   画像を消しても「どんな条件で出したか」は残す）。合否は上書き（`verdict_at` / `verdict_actor`）
-# - `preset`: 名前を付けた条件（§4.10）。`source_asset_id` も **`ON DELETE SET NULL`**
-# - `watcher_state`: 監視の既読位置（`design.md` §5.5 の DDL。**現物に無かったので P7 で作る**）。
-#   既読の基準は `baseline_create_time`（ms。点検 B-3-1。`last_prompt_id` は UUID なので順序に使えない）。
-#   `enabled` は**起動のたびに 0 に戻す**（勝手に ComfyUI を叩かない）
-# - **`recipe_record.source_asset_id` は RESTRICT のまま**（記録のある画像は消せない）。P8（重複・削除）へ
-#   「記録ごと消すか断るか」を申し送る（§2.1 の末尾）
-V6_RECIPE_DDL = """
-CREATE TABLE IF NOT EXISTS recipe_record (
-  id              TEXT PRIMARY KEY,
-  source_asset_id TEXT NOT NULL REFERENCES asset(id),
-  mode            TEXT NOT NULL CHECK (mode IN ('pin_text', 'rerun_graph', 'manual_text')),
-  recipe_hash     TEXT NOT NULL,
-  graph_path      TEXT,
-  graph_kind      TEXT CHECK (graph_kind IN ('api', 'api+ui')),   -- 点検 G-2（NULL は許す）
-  record_json     TEXT NOT NULL,
-  final_prompt    TEXT,
-  final_prompt_source TEXT CHECK (final_prompt_source IN ('png_literal', 'reconstructed', 'manual')),
-  captured_text   TEXT,
-  captured_source TEXT CHECK (captured_source IN
-                    ('comfyui_history', 'sidecar', 'textgenerate', 'manual')),  -- 点検 G-2（NULL は許す）
-  text_probe      TEXT,
-  env_snapshot    TEXT NOT NULL,
-  status          TEXT NOT NULL CHECK (status IN ('exact', 'approx', 'impossible')),
-  reasons         TEXT,
-  actor           TEXT NOT NULL CHECK (actor IN ('human', 'agent')),
-  client_token    TEXT,
-  created_at      TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_recipe_source ON recipe_record(source_asset_id);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_recipe_token
-  ON recipe_record(client_token) WHERE client_token IS NOT NULL;
-CREATE INDEX IF NOT EXISTS ix_recipe_created ON recipe_record(created_at DESC, id DESC);
-
-CREATE TABLE IF NOT EXISTS recipe_export_attempt (
-  attempt_id    TEXT PRIMARY KEY,
-  recipe_id     TEXT NOT NULL REFERENCES recipe_record(id),
-  mode          TEXT NOT NULL CHECK (mode IN ('pin_text', 'rerun_graph', 'manual_text')),
-  client_token  TEXT,
-  marker_skip_reason TEXT CHECK (marker_skip_reason IN ('前提1', '前提2', '前提3')),
-  checked_json  TEXT,
-  manifest_path TEXT,
-  export_dir    TEXT NOT NULL,
-  seed_node     TEXT,
-  created_at    TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_attempt_token
-  ON recipe_export_attempt(client_token) WHERE client_token IS NOT NULL;
-CREATE INDEX IF NOT EXISTS ix_attempt_recipe
-  ON recipe_export_attempt(recipe_id, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS recipe_export (
-  id            TEXT PRIMARY KEY,
-  attempt_id    TEXT NOT NULL REFERENCES recipe_export_attempt(attempt_id) ON DELETE CASCADE,
-  seed          TEXT,
-  recipe_hash   TEXT NOT NULL,
-  graph_path    TEXT NOT NULL,
-  marker        TEXT,
-  marker_skip_reason TEXT CHECK (marker_skip_reason IN ('前提1', '前提2', '前提3')),
-  created_at    TEXT NOT NULL,
-  CHECK ((marker IS NULL) <> (marker_skip_reason IS NULL))
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_export_attempt_seed
-  ON recipe_export(attempt_id, COALESCE(seed, ''));
--- **`ix_export_attempt` は作らない**（点検 C-2 / G-4）: 主キーが `attempt_id` の前置と重なる
--- （`ix_attempt_recipe` が同じ役目。P5 の D1 と同じ判断）
-
-CREATE TABLE IF NOT EXISTS recipe_export_result (
-  id              TEXT PRIMARY KEY,
-  -- **束を消すと結果も消える**（点検 G-1。束 → ファイルの CASCADE と揃える）
-  export_id       TEXT NOT NULL REFERENCES recipe_export(id) ON DELETE CASCADE,
-  prompt_id       TEXT,
-  result_asset_id TEXT REFERENCES asset(id) ON DELETE SET NULL,
-  matched_by      TEXT NOT NULL CHECK (matched_by IN ('marker', 'manual', 'conditions')),
-  result_hash     TEXT,
-  same_hash       INTEGER NOT NULL DEFAULT 0,
-  ssim REAL, phash_distance INTEGER, changed_fraction REAL, mean_abs REAL,
-  seed_changed    INTEGER NOT NULL DEFAULT 0,
-  verdict         TEXT CHECK (verdict IN ('same', 'close', 'different', 'failed')),
-  verdict_at      TEXT,
-  verdict_actor   TEXT CHECK (verdict_actor IN ('human', 'agent')),
-  note            TEXT,
-  -- **`GET /view` で `<data>/results/` に取り込んだか**（P7-4 で足した。1 = 取り込んだ＝
-  -- 複製を持っている、0 = ComfyUI の出力フォルダの実体を指しているだけ）。
-  -- **参照のままか複製か**を画面と後始末（P8）が区別できるようにする
-  fetched         INTEGER NOT NULL DEFAULT 0 CHECK (fetched IN (0, 1)),
-  created_at      TEXT NOT NULL,
-  -- **合否と人は対で入る**（点検 G-2。片方だけの行を作らせない）
-  CHECK ((verdict IS NULL) = (verdict_actor IS NULL))
-);
-CREATE INDEX IF NOT EXISTS ix_result_export ON recipe_export_result(export_id, created_at);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_result_asset
-  ON recipe_export_result(export_id, result_asset_id);
-
-CREATE TABLE IF NOT EXISTS preset (
-  id              TEXT PRIMARY KEY,
-  name            TEXT NOT NULL,
-  note            TEXT,
-  source_asset_id TEXT REFERENCES asset(id) ON DELETE SET NULL,
-  record_json     TEXT NOT NULL,
-  actor           TEXT NOT NULL CHECK (actor IN ('human', 'agent')),
-  created_at      TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_preset_created ON preset(created_at DESC, id DESC);
-
-CREATE TABLE IF NOT EXISTS watcher_state (
-  name           TEXT PRIMARY KEY,
-  last_prompt_id TEXT,
-  baseline_create_time INTEGER,
-  last_polled_at TEXT,
-  enabled        INTEGER NOT NULL DEFAULT 0,
-  updated_at     TEXT
-);
-"""
-
-
-def _migrate_v6(con: sqlite3.Connection) -> None:
-    """v6: 条件の記録と監視の既読位置を足す（P7-0）。**機能は足さない**（表だけ）。
-
-    DDL はすべて `IF NOT EXISTS` なので、途中で落ちてもやり直せば同じ状態になる（v2〜v5 と同じ流儀）。
-    **新しい表だけ**なので `ALTER TABLE` を見る必要が無く、`_top_up_v6` は作らない
-    （v5 は「版を上げずに列を足した」ので `_top_up_v5` が要った。v6 にはその経緯が無い）。
-    """
-    con.executescript(V6_RECIPE_DDL)
 
 
 def _seed_settings(con: sqlite3.Connection) -> None:

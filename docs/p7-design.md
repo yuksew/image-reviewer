@@ -1,3 +1,5 @@
+> **廃止（2026-10-17。利用者の判断）**: この段は**削除しました**。理由と控えは [`p7-decision.md`](p7-decision.md) を見てください（①PNG を ComfyUI にドラッグすればワークフローが戻るので記録は重複 ②ja2en の英訳も実行すれば取り直せる）。**記録として残しています。**
+
 # P7 の設計（条件の記録。R12）
 
 - 対象: `C:\work\image-reviwer`（Python + FastAPI + SQLite + numpy + Pillow + 素の JS の GUI）

@@ -55,14 +55,8 @@ def gloss_of(request: Request):
     return request.app.state.gloss
 
 
-def recipes_of(request: Request):
-    """条件の記録（P7-1）。`app.state` から取る（閉包で掴まない）。"""
-    return request.app.state.recipes
 
 
-def recipe_exports_of(request: Request):
-    """書き出し（P7-2）。`app.state` から取る（閉包で掴まない）。"""
-    return request.app.state.recipe_exports
 
 
 def actor_of(request: Request) -> str:
@@ -88,6 +82,3 @@ def review_error_handler(request: Request, exc: ReviewError) -> JSONResponse:
         body["details"] = exc.details
     return JSONResponse(body, status_code=exc.status)
 
-def watcher_of(request: Request):
-    """監視（P7-3）。`app.state` から取る（閉包で掴まない）。"""
-    return request.app.state.watcher

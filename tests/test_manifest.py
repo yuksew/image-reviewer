@@ -162,8 +162,10 @@ def test_the_contract_itself_is_the_designed_shape():
     schema = load_schema()
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["additionalProperties"] is False
+    # 点検 G-5: `generated_at` と `marker_skipped` を必須にした（P7-2 の書き手は必ず両方書く）
     assert schema["required"] == ["schema", "abi", "attempt_id", "recipe_id", "recipe_hash",
-                                  "mode", "export_hashes", "seeds", "source", "notes"]
+                                  "mode", "generated_at", "export_hashes", "seeds", "source",
+                                  "marker_skipped", "notes"]
     assert schema["properties"]["notes"]["required"] == ["status", "reasons", "inspected",
                                                          "instruction"]
     assert schema["properties"]["seeds"]["minItems"] == 1
@@ -199,6 +201,9 @@ def test_a_manifest_without_a_sampler_has_one_null_seed():
     ("seeds に expected_prefix が無い", lambda d: d["seeds"][0].pop("expected_prefix")),
     ("generated_at の形が違う", lambda d: d.update(generated_at="2026/10/16 09:00")),
     ("notes に契約に無い鍵", lambda d: d["notes"].update(extra="x")),
+    # 監査 F-1 の X6: seed は**文字列だけ**（数値を通すと、記録の鍵と突き合わせられなくなる。点検 B-6）
+    ("seeds の seed が数値", lambda d: d["seeds"][0].update(seed=12345)),
+    ("source の seed が数値", lambda d: d["source"].update(seed=12345)),
 ])
 def test_the_contract_rejects_broken_manifests(name, mutate):
     """§8.1 の 41（点検 B-5）: **壊れた manifest は落ちる**。

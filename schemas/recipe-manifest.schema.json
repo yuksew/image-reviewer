@@ -5,7 +5,7 @@
   "description": "条件を書き出した束（1 回の書き出し＝1 つの attempt）の目録（P7 の設計 §6.1・§4.7.3）。`<data>/recipes/<recipe_id>/<attempt_id>/manifest.json` に置く。人がフォルダを開いて中身を判断できることと、他ツールが `attempt_id` / `recipe_hash` / `export_hashes` で突き合わせられることの両方を満たす。`seeds[].expected_prefix` は**前方一致**で見る（連番の桁数は ComfyUI の実装依存。§4.7.3）。**生成はしない**（この文書は「これをドロップして Queue を押す」までの案内）。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "abi", "attempt_id", "recipe_id", "recipe_hash", "mode", "export_hashes", "seeds", "source", "notes"],
+  "required": ["schema", "abi", "attempt_id", "recipe_id", "recipe_hash", "mode", "generated_at", "export_hashes", "seeds", "source", "marker_skipped", "notes"],
   "properties": {
     "schema": { "const": "urn:image-reviewer:schema:recipe-manifest" },
     "abi": {

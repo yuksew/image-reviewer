@@ -886,3 +886,165 @@ def test_recipe_vocabularies_are_constrained(tmp_path: Path):
                            ).fetchone()["enabled"] == 0
     finally:
         con.close()
+
+
+# ---- P7-0 の監査 F-1: 監査者が「壊しても落ちない」と見つけた 5 通りを守る ----
+
+
+def _recipe_with_attempt(con, *, sha: str = "7" * 64, rid: str = "rec-x",
+                         attempt: str = "attempt-x") -> str:
+    """記録 1 つと束 1 つを作る（下ごしらえ）。画像の id を返す。"""
+    a = _asset(con, sha)
+    con.execute(
+        "INSERT INTO recipe_record(id, source_asset_id, mode, recipe_hash, record_json,"
+        " env_snapshot, status, actor, created_at) VALUES (?, ?, 'pin_text', 'sha256:x', '{}', '{}',"
+        " 'exact', 'human', ?)", (rid, a, db.now()))
+    con.execute(
+        "INSERT INTO recipe_export_attempt(attempt_id, recipe_id, mode, export_dir, created_at)"
+        " VALUES (?, ?, 'pin_text', ?, ?)", (attempt, rid, f"recipes/{rid}/{attempt}", db.now()))
+    return a
+
+
+def test_deleting_an_attempt_cascades_to_files_and_results(tmp_path: Path):
+    """監査 F-1 の **X1**（点検 G-1）: 束を消すと**ファイルの行も結果の行も**消える。
+
+    `recipe_export.attempt_id` の `ON DELETE CASCADE` を外すと、束を消してもファイルの行が残って落ちる。
+    `recipe_export_result.export_id` の `CASCADE`（G-1）を外すと、結果が残って落ちる。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        _recipe_with_attempt(con)
+        con.execute(
+            "INSERT INTO recipe_export(id, attempt_id, seed, recipe_hash, graph_path, marker,"
+            " created_at) VALUES ('exp1','attempt-x','1','sha256:x','p','repro-attempt-x/seed-1',?)",
+            (db.now(),))
+        con.execute(
+            "INSERT INTO recipe_export_result(id, export_id, matched_by, created_at)"
+            " VALUES ('res1','exp1','marker',?)", (db.now(),))
+
+        con.execute("DELETE FROM recipe_export_attempt WHERE attempt_id = 'attempt-x'")
+        assert con.execute("SELECT count(*) AS n FROM recipe_export").fetchone()["n"] == 0, \
+            "束を消してもファイルの行が残った（X1: ON DELETE CASCADE が外れている）"
+        assert con.execute("SELECT count(*) AS n FROM recipe_export_result").fetchone()["n"] == 0, \
+            "束を消しても結果の行が残った（G-1: export_id の CASCADE が外れている）"
+    finally:
+        con.close()
+
+
+def test_an_attempt_needs_a_real_recipe_and_a_record_with_attempts_cannot_go(tmp_path: Path):
+    """監査 F-1 の **X2**: `recipe_export_attempt.recipe_id` の `REFERENCES` が効く。
+
+    - 知らない `recipe_id` の束は入らない
+    - **束のある記録は消せない**（`RESTRICT`。設計 §2.2「条件の記録は R12 の目的物なので黙って消さない」）
+    `REFERENCES` を外すとどちらも通って落ちる。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        _recipe_with_attempt(con)
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(
+                "INSERT INTO recipe_export_attempt(attempt_id, recipe_id, mode, export_dir,"
+                " created_at) VALUES ('nope01','no-such-record','pin_text','x',?)", (db.now(),))
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("DELETE FROM recipe_record WHERE id = 'rec-x'")
+    finally:
+        con.close()
+
+
+def test_a_result_needs_a_real_export(tmp_path: Path):
+    """監査 F-1 の **X4**: `recipe_export_result.export_id` の `REFERENCES` が効く。
+
+    知らない `export_id` の結果は入らない。`REFERENCES` を外すと通って落ちる。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        _recipe_with_attempt(con)
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(
+                "INSERT INTO recipe_export_result(id, export_id, matched_by, created_at)"
+                " VALUES ('res9','no-such-export','marker',?)", (db.now(),))
+    finally:
+        con.close()
+
+
+def test_the_attempt_recipe_index_is_used_and_the_duplicate_is_gone(tmp_path: Path):
+    """監査 F-1 の **X3** と C-2 / G-4: `ix_attempt_recipe` が引かれ、**重複索引を作らない**。
+
+    `ix_attempt_recipe` を外すと `EXPLAIN QUERY PLAN` に出ずに落ちる。
+    `ix_export_attempt`（主キーの前置と重なる）が復活しても落ちる。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        plan = " ".join(str(r["detail"]) for r in con.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM recipe_export_attempt WHERE recipe_id = ?"
+            " ORDER BY created_at DESC", ("rec-x",)))
+        assert "ix_attempt_recipe" in plan, f"索引が引かれない（X3）: {plan}"
+        names = {r["name"] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'")}
+        assert "ix_export_attempt" not in names, "重複索引が復活した（C-2 / G-4）"
+    finally:
+        con.close()
+
+
+def test_the_migration_run_twice_gives_the_same_sql_not_only_the_same_names(tmp_path: Path):
+    """監査 F: 「3 回呼んでも同じ」は**表の名前だけ**では足りない（索引だけ消える壊し方を見逃す）。
+
+    `sqlite_master` の `sql` まで比べる（表・索引・トリガの定義）。
+    """
+    con = db.connect(tmp_path / "same-sql")
+    try:
+        con.executescript(db.DDL)
+        con.execute("PRAGMA user_version = 1")
+        db.migrate(con)
+        first = {r["name"]: r["sql"] for r in con.execute(
+            "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL")}
+        db.migrate(con)
+        db.migrate(con)
+        again = {r["name"]: r["sql"] for r in con.execute(
+            "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL")}
+        assert again == first, "2 回目以降で定義が変わった（索引が消える壊し方を見逃す）"
+    finally:
+        con.close()
+
+
+def test_the_new_vocabularies_and_the_verdict_pair_are_constrained(tmp_path: Path):
+    """点検 G-2: `graph_kind` / `captured_source` の語彙と、**合否と人は対**で入ること。
+
+    サービス層だけで守ると、口を足したときに素通りする（家風「語彙は DB でも守る」）。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        a = _asset(con, "8" * 64)
+
+        def record(rid, **kw):
+            con.execute(
+                "INSERT INTO recipe_record(id, source_asset_id, mode, recipe_hash, record_json,"
+                " env_snapshot, status, actor, created_at, graph_kind, captured_source)"
+                " VALUES (?, ?, 'pin_text', 'sha256:x', '{}', '{}', 'exact', 'human', ?, ?, ?)",
+                (rid, a, db.now(), kw.get("graph_kind"), kw.get("captured_source")))
+
+        record("ok1", graph_kind="api", captured_source="comfyui_history")   # 語彙の中
+        with pytest.raises(sqlite3.IntegrityError):
+            record("ng1", graph_kind="ui")                                   # 語彙の外
+        with pytest.raises(sqlite3.IntegrityError):
+            record("ng2", captured_source="nope")                            # 語彙の外
+
+        _recipe_with_attempt(con, sha="9" * 64, rid="rec-v", attempt="attempt-v")
+        con.execute(
+            "INSERT INTO recipe_export(id, attempt_id, seed, recipe_hash, graph_path, marker,"
+            " created_at) VALUES ('expv','attempt-v','1','sha256:x','p','m',?)", (db.now(),))
+
+        def result(rid, verdict, actor):
+            con.execute(
+                "INSERT INTO recipe_export_result(id, export_id, matched_by, created_at, verdict,"
+                " verdict_actor) VALUES (?, 'expv', 'marker', ?, ?, ?)",
+                (rid, db.now(), verdict, actor))
+
+        result("r-ok", "same", "human")                  # 対で入る
+        result("r-none", None, None)                     # どちらも無い
+        with pytest.raises(sqlite3.IntegrityError):
+            result("r-half1", "same", None)              # 合否だけ
+        with pytest.raises(sqlite3.IntegrityError):
+            result("r-half2", None, "human")             # 人だけ
+    finally:
+        con.close()

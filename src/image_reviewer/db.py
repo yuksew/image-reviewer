@@ -550,12 +550,13 @@ CREATE TABLE IF NOT EXISTS recipe_record (
   mode            TEXT NOT NULL CHECK (mode IN ('pin_text', 'rerun_graph', 'manual_text')),
   recipe_hash     TEXT NOT NULL,
   graph_path      TEXT,
-  graph_kind      TEXT,
+  graph_kind      TEXT CHECK (graph_kind IN ('api', 'api+ui')),   -- 点検 G-2（NULL は許す）
   record_json     TEXT NOT NULL,
   final_prompt    TEXT,
   final_prompt_source TEXT CHECK (final_prompt_source IN ('png_literal', 'reconstructed', 'manual')),
   captured_text   TEXT,
-  captured_source TEXT,
+  captured_source TEXT CHECK (captured_source IN
+                    ('comfyui_history', 'sidecar', 'textgenerate', 'manual')),  -- 点検 G-2（NULL は許す）
   text_probe      TEXT,
   env_snapshot    TEXT NOT NULL,
   status          TEXT NOT NULL CHECK (status IN ('exact', 'approx', 'impossible')),
@@ -599,11 +600,13 @@ CREATE TABLE IF NOT EXISTS recipe_export (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_export_attempt_seed
   ON recipe_export(attempt_id, COALESCE(seed, ''));
-CREATE INDEX IF NOT EXISTS ix_export_attempt ON recipe_export(attempt_id);
+-- **`ix_export_attempt` は作らない**（点検 C-2 / G-4）: 主キーが `attempt_id` の前置と重なる
+-- （`ix_attempt_recipe` が同じ役目。P5 の D1 と同じ判断）
 
 CREATE TABLE IF NOT EXISTS recipe_export_result (
   id              TEXT PRIMARY KEY,
-  export_id       TEXT NOT NULL REFERENCES recipe_export(id),
+  -- **束を消すと結果も消える**（点検 G-1。束 → ファイルの CASCADE と揃える）
+  export_id       TEXT NOT NULL REFERENCES recipe_export(id) ON DELETE CASCADE,
   prompt_id       TEXT,
   result_asset_id TEXT REFERENCES asset(id) ON DELETE SET NULL,
   matched_by      TEXT NOT NULL CHECK (matched_by IN ('marker', 'manual', 'conditions')),
@@ -615,7 +618,9 @@ CREATE TABLE IF NOT EXISTS recipe_export_result (
   verdict_at      TEXT,
   verdict_actor   TEXT CHECK (verdict_actor IN ('human', 'agent')),
   note            TEXT,
-  created_at      TEXT NOT NULL
+  created_at      TEXT NOT NULL,
+  -- **合否と人は対で入る**（点検 G-2。片方だけの行を作らせない）
+  CHECK ((verdict IS NULL) = (verdict_actor IS NULL))
 );
 CREATE INDEX IF NOT EXISTS ix_result_export ON recipe_export_result(export_id, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_result_asset

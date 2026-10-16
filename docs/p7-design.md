@@ -143,7 +143,7 @@ L1 既定の記録が全部 `approx` になり `exact` が常に 0 になる。�
 ### 0.7 印（marker）の前提と「印あり」の認定（本文の §4.7.1 を確定する）
 
 - **前提 3 つ**（§4.7.1 の表）を**そのまま**実装し、1 つでも外れたら**印を付けない**。外れた理由
-  （`前提 1` / `前提 2` / `前提 3`）は**束の表**に残す（**（点検 A-2a）`recipe_export.marker` は NULL 可**にして、
+  （`前提1` / `前提2` / `前提3`。**空白なしが正**。DDL の `CHECK` は空白ありを弾く）は**束の表**に残す（**（点検 A-2a）`recipe_export.marker` は NULL 可**にして、
   `marker` と `marker_skip_reason` の**片方だけが入る**ことを `CHECK` で守る）。
 - **`attempt_id` は 8 文字以上の `[a-z0-9]`**（点検 D-12）。前の版は 6 文字（例 `r7k2m4`）で、
   **`subfolder` の部分一致が他人の名前に当たり得た**（`repro-r7k2m4` と `repro-r7k2m40`）。**正確な一致を主**にする。
@@ -435,7 +435,7 @@ CREATE TABLE IF NOT EXISTS recipe_export (
 -- 同じ束に 2 行入った。実測で確認）。**式の索引**で NULL を '' に寄せる
 CREATE UNIQUE INDEX IF NOT EXISTS ux_export_attempt_seed
   ON recipe_export(attempt_id, COALESCE(seed, ''));
-CREATE INDEX IF NOT EXISTS ix_export_attempt ON recipe_export(attempt_id);
+-- **`ix_export_attempt` は作らない**（点検 C-2 / G-4。主キーの前置と重なる）
 
 -- 結果（監視で入るか、人が登録する。1 回の書き出しに複数枚あり得る）
 CREATE TABLE IF NOT EXISTS recipe_export_result (
@@ -497,10 +497,10 @@ CREATE TABLE IF NOT EXISTS watcher_state (
 | `ux_attempt_token` | **（点検 A-2b）書き出しの再送**で束を増やさない（同じ `client_token` は同じ `attempt_id`） |
 | `ux_export_attempt_seed` | 同じ `attempt_id` の同じ seed を 2 回作らせない（**再送の冪等性**。**（点検 A-2c）`COALESCE(seed,'')` の式の索引**なので seed 無しでも効く） |
 | `ux_result_asset` | 同じ結果画像を同じ書き出しに 2 回入れない |
-| `ix_recipe_created` / `ix_attempt_recipe` / `ix_export_attempt` / `ix_result_export` / `ix_preset_created` | 一覧（新しい順）と、束・書き出し・結果の展開 |
+| `ix_recipe_created` / `ix_attempt_recipe` / `ix_result_export` / `ix_preset_created` | 一覧（新しい順）と、束・書き出し・結果の展開 |
 
 - **（点検 C-0）`EXPLAIN QUERY PLAN` で 6 つの問い合わせが意図した索引を使うことを実測済み**
-  （`ux_recipe_source` / `ux_recipe_token` / `ix_recipe_created` / `ix_export_recipe` / `ix_result_export` /
+  （`ux_recipe_source` / `ux_recipe_token` / `ix_recipe_created` / `ix_attempt_recipe` / `ix_result_export` /
   `ux_export_attempt_seed`）。束の表を足したので、**`ix_attempt_recipe` / `ux_attempt_token` も §8.1 の 22 で見る**。
 
 ### 2.3 グラフの置き場（§0.4 の決め）
@@ -686,7 +686,7 @@ POST /api/watcher/stop  → 200 {"enabled": false}
 - 書き出しの束（§4.9）: `attempt_id`・印・フォルダ・manifest・seed の一覧。**「JSON を保存」と「フォルダを開く」**。
 - 結果の行（§4.10）: サムネ・紐付けの根拠（`marker` / `manual` / `conditions`）・指標・`seed_changed` の印。
 - 合否の入力（§4.11）: 4 つのボタン＋メモ。**押したら残る**（消えない）。
-- **印を付けられなかったとき**は「印を付けられません」＋理由（前提 1/2/3）を 1 行で出し、
+- **印を付けられなかったとき**は「印を付けられません」＋理由（`前提1` / `前提2` / `前提3`。**字は空白なし**）を 1 行で出し、
   **「印なしで書き出す」**を選ばせる（§4.7.1 の落とし方）。
 
 ### 5.2 `#/recipes?sort=`（記録した条件とプリセット）
@@ -725,7 +725,7 @@ POST /api/watcher/stop  → 200 {"enabled": false}
     "mode": {"type": "string", "enum": ["pin_text", "rerun_graph", "manual_text"],   // ★（点検 B-5）
              "description": "この束を書き出したレベル"},
     "recipe_hash": {"type": "string", "description": "記録の再現キー（sha256:…）"},
-    "export_hashes": {"type": "object", "description": "seed（10 進の文字列）→ 書き出したグラフの再現キー",
+    "export_hashes": {"type": "object", "description": "**seed（10 進の文字列）または `noseed`**（seed 無しの束。点検 G-3）→ 書き出したグラフの再現キー",
                       "additionalProperties": {"type": "string", "pattern": "^sha256:"}},   // ★（点検 B-5）
     "marker_skipped": {"type": ["string", "null"], "enum": ["前提1", "前提2", "前提3", null],   // ★（点検 B-5）
                        "description": "印を付けなかった理由（付けたなら null）"},
@@ -829,7 +829,7 @@ POST /api/watcher/stop  → 200 {"enabled": false}
 | 27 | 新しい `POST` の守りを外す | `POST /api/assets/{id}/recipe`・`/check`・`/export`・`/verdict`・`/watcher/start` に
 **`Host: evil` と `Content-Type: text/plain` で 403** | P6 の点検 C8（口を足すたびに書く） |
 | 28 | `actor` の検査を外す | 記録・書き出し・紐付け・合否・監視の開始が **`agent` で 403**、`GET` は 200 | §0.10（判断と同じ規律） |
-| 29 | 索引を外す | `EXPLAIN QUERY PLAN` に `ux_recipe_source` と `ix_export_recipe` が出る | P5 の D1 の教訓 |
+| 29 | 索引を外す | `EXPLAIN QUERY PLAN` に `ux_recipe_source` と `ix_attempt_recipe` が出る | P5 の D1 の教訓 |
 | 30 | 結果の seed の確認を外す | 結果の PNG の `KSampler.seed` が書き出しと違うとき `seed_changed=1` | §4.7.2 の 2 |
 
 - **実データ依存のテストを書かない。** 合成の PNG（Pillow で作り `prompt` チャンクを入れる）と、
@@ -894,7 +894,7 @@ POST /api/watcher/stop  → 200 {"enabled": false}
 
 | 段 | 内容 | 合格の線 | 監査の単位 |
 | --- | --- | --- | --- |
-| **P7-0** | v6 の移行（5 表）・`recipe-manifest` 契約・`review.json` を変えないことのテスト | 既存が緑。v1/v5 → v6・3 回呼び | 表と契約（P6-0・P4-0 と同じ） |
+| **P7-0** | v6 の移行（**6 表**。`recipe_export_attempt` を足したので 5 → 6。点検 E-3）・`recipe-manifest` 契約・`review.json` を変えないことのテスト | 既存が緑。v1/v5 → v6・3 回呼び | 表と契約（P6-0・P4-0 と同じ） |
 | **P7-1** | `recipe_hash`（純関数）・`record_json`・`env_snapshot`・判定・グラフの置き場・記録の口 | 線 1・2 | 記録と判定（**再現キーの除外**が主眼） |
 | **P7-2** | 検査・L1/L2/L3・印・seed 違い・manifest | 線 3・4・5 | 書き出し（**印の前提**と**検査**） |
 | **P7-3** | 監視の最小形・印の照合・指標・sidecar・合否 | 線 6・7 | 監視と紐付け（**画像を出さない job** と**再起動**） |
@@ -980,3 +980,15 @@ POST /api/watcher/stop  → 200 {"enabled": false}
 - **6（気づいていない前提）** は点検が **A-1（動的コンボ）・B-1（出力の実体パス）・B-2（`/object_info` の費用）** を
   見つけた（いずれも反映済み）。
 - **7（`design.md` の書き換え）** に **E の 11 件**を足した（§0.15 の 9〜14 と §12-7 の一覧）。
+
+### 0.16 P7-0 の監査で確定したこと（2026-10-16。**推奨どおり**）
+
+| # | 論点 | 決定 | 反映先 |
+| --- | --- | --- | --- |
+| **G-1** | `recipe_export_result.export_id` の `ON DELETE` | **`CASCADE`**（束を消すと結果も消える。束 → ファイルの `CASCADE` と揃える） | §2.1 |
+| **G-2** | 語彙の `CHECK` 3 本 | **`graph_kind IN ('api','api+ui')`**・**`captured_source IN ('comfyui_history','sidecar','textgenerate','manual')`**・**`CHECK ((verdict IS NULL) = (verdict_actor IS NULL))`**（合否と人は対） | §2.1（**表が空のうちに入れる**。`ALTER` では後から足せない） |
+| **G-3** | seed 無しの `export_hashes` の鍵 | **`"noseed"`**（`expected_prefix` とファイル名と同じ字） | §6.1 |
+| **G-4** | `ix_export_attempt` | **作らない**（主キーの前置と重なる。P5 の D1 と同じ判断） | §2.2・§8.1-29 |
+| **G-5** | 契約の `required` | **`generated_at` と `marker_skipped` を足す**（書き手は必ず両方書く） | §6.1 |
+| **E-1** | `marker_skip_reason` の字 | **`'前提1'`（空白なし）が正**。設計の本文もこの字に揃えた（空白ありは `CHECK` で落ちる） | §0.7・§5.1・§8.1-7 |
+| **E-2 / E-3** | 索引の名と表の数 | **`ix_attempt_recipe`**（`ix_export_recipe` は名残り）／**6 表**（`recipe_export_attempt` を足した） | §2.2・§8.1-29・§0.1・§9 |

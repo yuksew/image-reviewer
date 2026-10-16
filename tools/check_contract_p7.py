@@ -43,8 +43,10 @@ OK = True
 V6_TABLES = ("recipe_record", "recipe_export_attempt", "recipe_export",
              "recipe_export_result", "preset", "watcher_state")
 V6_INDEXES = ("ux_recipe_source", "ux_recipe_token", "ix_recipe_created", "ux_attempt_token",
-              "ix_attempt_recipe", "ux_export_attempt_seed", "ix_export_attempt",
+              "ix_attempt_recipe", "ux_export_attempt_seed",
               "ix_result_export", "ux_result_asset", "ix_preset_created")
+#: **作らない索引**（点検 C-2 / G-4。主キーの前置と重なる）
+V6_ABSENT_INDEXES = ("ix_export_attempt",)
 
 
 def say(title: str, ok: bool, note: str = "") -> None:
@@ -207,7 +209,9 @@ def main() -> int:
         idx = {r["name"] for r in con.execute(
             "SELECT name FROM sqlite_master WHERE type = 'index'")}
         missing_idx = set(V6_INDEXES) - idx
-        say("v6 の索引が 10 本ある", not missing_idx, f"足りない: {sorted(missing_idx)}")
+        say(f"v6 の索引が {len(V6_INDEXES)} 本ある", not missing_idx, f"足りない: {sorted(missing_idx)}")
+        extra_idx = set(V6_ABSENT_INDEXES) & idx
+        say("重複索引を作っていない（点検 C-2 / G-4）", not extra_idx, f"余分: {sorted(extra_idx)}")
         got = db.integrity(con)
         say("integrity() が綺麗", got["quick_check"] == "ok"
             and got["foreign_key_violations"] == 0, json.dumps(got))

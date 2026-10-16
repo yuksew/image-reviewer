@@ -1446,7 +1446,7 @@ C:\work\image-reviewer\
 | **P5-2 比較の基本** | 並べる、来歴の差分表、同期ズーム | 8 枚を来歴つきで比べ、**違う行だけ**が既定で見える |
 | **P5-3 比較の重い見方** | 差分ヒートマップ、似ている順、`comparison_cache`、pHash/dHash の背景ジョブ | 近い組でヒートマップが出る／pHash の実測を記録する |
 | **P6 要求と注記** | `review_request`（受付・上書き・一覧・閉じる・断る）、要求の一覧画面、AI の下書きの表示、`annotation`（矩形と楕円、座標 JSON と切り出し） | エージェントが要求を投げ、投げてすぐ返る（**R10**）。要求の一覧から開いて判断し、判断で閉じる。AI の推しと理由が両方残る。囲んでメモを付け、座標と切り出しを書き出せる（**R11**） |
-| **P7 条件の記録** | `recipe_record` / `recipe_export` / `recipe_export_result` / `preset`、再現キー、判定（完全/近似/不可）、書き出し前の検査、印つきの書き出し、seed 違いの書き出し、監視での結果取り込み、比較、合否の記録 | 条件が記録され、判定と理由が出る。印つきのグラフを書き出せる（**R12**）。**書き出した印から結果の画像が紐付き**、人が合否を記録できる（[`workflow-reproduction.md`](workflow-reproduction.md)） |
+| **P7 条件の記録**（**済み。2026-10-17**） | `recipe_record` / **`recipe_export_attempt`** / `recipe_export` / `recipe_export_result` / `preset` / `watcher_state`、再現キー、判定（完全/近似/不可）、書き出し前の検査、印つきの書き出し、seed 違いの書き出し、監視での結果取り込み、比較、合否の記録 | 条件が記録され、判定と理由が出る。印つきのグラフを書き出せる（**R12**）。**書き出した印から結果の画像が紐付き**、人が合否を記録できる（[`workflow-reproduction.md`](workflow-reproduction.md)）。**P7-0〜P7-4 の実装と 4 段の監査を経て、§16.5 のとおり確定**（**合格の門は線 6**） |
 | **P8 重複・削除・バックアップ** | 完全重複と準重複の検出、重複の整理、削除の 3 段階、**5 分の取り消し**、再リンク、日次バックアップ、`backup` / `restore` | 重複候補が出て代表を選べる。**実削除のあと 5 分以内なら取り消せ、元の場所に別のファイルがあっても上書きしない**。DB を消しても sidecar と PNG から来歴を組み直せる（[`duplicates-deletion-backup.md`](duplicates-deletion-backup.md)） |
 | **P9 仕上げ** | 性能調整、**未計測の項目（1024px サムネ、一覧 API、表示速度）を実測**、テストの締め、exe 化の判断 | **§12.1 の「目標」の行がすべて実測で裏づけられる**。全テスト green |
 
@@ -1665,6 +1665,35 @@ P6 の設計 [`p6-design.md`](p6-design.md) §0 が**拘束力のある差分**�
 | **切り出しの PNG** | **`compress_level=1`**（無劣化のまま。1024² 全面 66 → 21 ms） | §7 |
 | **要求の一覧** | `ai.pick_index`（AI の推しが対象の何番目か。1 始まり）と `?group_id=` の絞り込みを足した | §6.1, 契約 |
 | **メモしか無い画像の切り出し** | **200 で `crops: []`**（書けた分だけ返す。名指しで領域なしのときだけ 422） | §6.1 |
+
+---
+
+### 16.5 P7（条件の記録）で確定したこと
+
+P7 の設計 [`p7-design.md`](p7-design.md) §0 が**拘束力のある差分**で、点検（[`p7-review-report.md`](p7-review-report.md)）と
+4 段の監査（[`p7-0-audit-report.md`](p7-0-audit-report.md) / [`p7-1-audit-report.md`](p7-1-audit-report.md) /
+[`p7-3-audit-report.md`](p7-3-audit-report.md) / [`p7-4-audit-report.md`](p7-4-audit-report.md)）と再確認
+（[`p7-3-audit-recheck.md`](p7-3-audit-recheck.md)）を経て、**利用者が Q1〜Q6 と G-1〜G-7 を推奨どおりで確定**した。
+本文（本設計書）に反映済み:
+
+| 論点 | 決定 | 反映先 |
+| --- | --- | --- |
+| **監視を P7 に入れる** | **最小形（2 秒ポーリング・手で開始/停止・常駐しない）を P7 に**。**P3 には `userdata` への設置・`#/ingest`・起動時の救済走査・訳し直しを残す** | §5.6, §6.1 |
+| **v6 の表 6 つ** | `recipe_record` / **`recipe_export_attempt`（束）** / `recipe_export` / `recipe_export_result` / `preset` / `watcher_state`。**`recipe_export_result.fetched`**（`/view` で取り込んだか）を含む | §5.6 |
+| **再現キー** | **グラフだけの純関数**（保存ノードから遡る部分グラフ。**`filename_prefix` と `_meta` を除く**。キー昇順・空白なしの JSON → SHA-256）。**環境の値（`size` / `mtime` / 版 / GPU）を混ぜない**（`env_snapshot` と `hash_mismatch` の材料に留める） | §8.5 |
+| **印** | `SaveImage.filename_prefix` を **`repro-<attempt_id>/seed-<seed>`** に（`attempt_id` は 8 文字以上の `[a-z0-9]`）。**前提 3 つ**（保存ノードが 1 つ・`filename_prefix` がリテラル・入力キーが宣言にある）を満たさないときは**印なし＋理由 `前提1`〜`前提3`**（**空白なし**） | §8.5 |
+| **判定** | **記録時は 7 語**（`missing` / `text_not_captured` / `node_missing` / `unresolved` / `version_differs` / `hash_mismatch` / `gpu_differs`）、**書き出し時は 3 語**（`text_pinned` / `llm_nondeterministic` / `manual_step`）。**混ぜない**。**選択肢に無いモデルは致命（`impossible`）**（`reason_details[].fatal`） | §8.5, §6.1 |
+| **動的コンボ** | **`COMFY_DYNAMICCOMBO_V3` の入れ子を展開してから**入力キーを照合する（展開できない `COMFY_DYNAMIC*` は対象外にして `notes`） | §8.5 |
+| **宣言の引き方** | **`/object_info/{class_type}` だけ**引く（`/object_info` の一括は **2.39 MB・0.41〜0.91 秒**で使えない）。**ComfyUI に繋がらないときは `system_stats` で打ち切り**、`inspected=false` を残す | §7, §8.5 |
+| **グラフの置き場** | **`<data>/workflows/<画像の sha256>.json`**（API 形式。原子的に書く。**印違いで上書きしない**）。消えていたら **`GET` は `null`・`POST` が PNG から作り直す** | §5.6, §6.1 |
+| **監視と取り込み** | **`/api/jobs` の一覧で画像を出す job だけ**を選び（タグ付けは `outputs_count: 0`）、`/api/jobs/{id}` で詳細。**既読は `create_time`（ms）＋処理済み集合**で**古い順**、**未処理を追い越さない**（上限 20 枚・詳細失敗は次の周期）。**`execution_cached` は保存ノードが `cached` にあるか**で見分ける | §8.5, §6.1 |
+| **結果の紐付け** | **`subfolder` の前方一致＋PNG の `prompt` チャンクの保険**で `recipe_export` の印に当て、**`recipe_export_result` に 1 行**（`matched_by` = `marker` / `prefix` / `manual`）。**実体は設定 `comfyui.output_dir`**（無ければ `/internal/folder_paths` から推定。当たらなければ `GET /view` で取り込む＝`fetched=1`）。**指標**（`same_hash` / `seed_changed` / `hash_mismatch` / SSIM / pHash）と **sidecar**（`<data>/sidecar`） | §5.6, §6.1, §8.5 |
+| **合否** | **人が 1 枚ずつ**（`human` だけ）。**上書き＋`verdict_at` / `verdict_actor`**。**送らなかった `note` は消さない** | §5.6, §6.1 |
+| **契約** | **`review.json` は変えない**（`recipes` / `presets` を足さない。**足していないことをテストで固定**）。新しい契約は **`schemas/recipe-manifest.schema.json`** だけ | §6.2 |
+| **線 9（利用者に 1 回生成を頼む）** | **任意の確認**に格下げし、**合格の門は線 6（印から結果が紐付く）**にした | §14 |
+
+**P7 の段の結果**: **`pytest` 403 件・`gui_smoke` 164 検査・`gui_layout` 8 画面**が緑。**実データ `.data/` は v6**
+（263 枚・判断 3 件は無傷。`recipe_record` の行はまだ 0）。
 
 ---
 

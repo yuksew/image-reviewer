@@ -514,38 +514,34 @@ def test_two_posts_at_once_do_not_fail(env):
 
     錠を離れて ComfyUI に聞く間に 2 本目が入るので、`INSERT` は `ON CONFLICT DO NOTHING` にして
     負けた側は読み直して返す。`IntegrityError` を投げると 500 になる（前の版）。
+
+    **衝突を決定的に起こす**: 錠の外で ComfyUI に聞いているまさにその瞬間に、**別の接続
+    （別の `Store`）から同じ画像の記録を先に入れる**。前の版は 2 本のスレッドのタイミングに
+    任せていたので、**衝突の経路を通ったり通らなかったりして揺れた**
+    （実測: 単独 10 回中 2 回・全体で 3 回中 2 回、落ちた。**揺れるテストは穴を隠す**）。
     """
-    import threading
-
     asset_id, _ = add_asset(env, PLAIN_GRAPH)
-    got: list = []
-    barrier = threading.Barrier(2)
-    # **錠の外に 2 本が同時に居る**ことを保証する（これが無いと、片方が先に書き終えて
-    # もう片方が「既存がある」道に落ち、**衝突の経路を通らない**まま緑になりうる）
-    inside = threading.Barrier(2, timeout=20)
-    real_stats = env.probe.system_stats
+    real = env.probe.system_stats
+    other_store = Store(env.tmp_path / "data")
+    other = RecipeService(other_store, probe_factory=lambda settings: env.probe)
+    fired: list[bool] = []
 
-    def blocking_stats():
-        inside.wait()
-        return real_stats()
+    def stats_with_a_competitor():
+        # **1 回だけ**（相手は錠の外に居る）。`fired` が無いと自分の `record` で無限に再入する
+        if not fired:
+            fired.append(True)
+            other.record(asset_id, mode="pin_text", actor="human")
+        return real()
 
-    env.probe.system_stats = blocking_stats
-
-    def one() -> None:
-        barrier.wait()
-        try:
-            got.append(env.svc.record(asset_id, mode="pin_text", actor="human"))
-        except Exception as exc:                       # noqa: BLE001  何が出たかを記録する
-            got.append(exc)
-
-    threads = [threading.Thread(target=one) for _ in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=30)
-    assert not [g for g in got if isinstance(g, Exception)], f"同時投入で例外: {got}"
+    env.probe.system_stats = stats_with_a_competitor
+    try:
+        got = env.svc.record(asset_id, mode="pin_text", actor="human")
+    finally:
+        env.probe.system_stats = real
+        other_store.close()
+    assert fired, "衝突の経路を通らなかった（相手が先に入れていない＝このテストは何も守っていない）"
+    assert got["replayed"] is True, "負けた側が既存を返さなかった（500 になる経路）"
     assert len(rows(env, "SELECT * FROM recipe_record WHERE source_asset_id = ?", (asset_id,))) == 1
-    assert sum(1 for g in got if g.get("replayed") is False) == 1, "どちらも新規になった"
 
 
 def test_a_deleted_graph_file_is_null_then_rebuilt(env):

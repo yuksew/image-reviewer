@@ -518,7 +518,7 @@ CREATE TABLE annotation (
 CREATE INDEX ix_annotation_asset ON annotation(asset_id, created_at);
 -- **まとまり全体へのメモは作らない**（P6 の決定 A1 / G4）。その用途は `review_group.note`（判断のメモ）にある
 
--- 名前を付けた条件（R12）。人間が参照できればよい（適用やエージェント提供はしない）
+-- **（廃止。2026-10-17）** 名前を付けた条件（R12）。P7 で作ったが、利用者の判断で消した（§16.5）
 CREATE TABLE preset (
   id              TEXT PRIMARY KEY,
   name            TEXT NOT NULL,
@@ -552,10 +552,10 @@ CREATE TABLE tag_gloss (
 | `duplicate_exclusion` | 同 §2.4 | 「別物として確定」した組 |
 | `deletion_log` | 同 §3.3 | 削除の段階・保留領域・取り消し・purge_at |
 | `location_history` | 同 §1.4 | 同じパスの内容が入れ替わった事実 |
-| `recipe_record` | [`workflow-reproduction.md`](workflow-reproduction.md) §4.9 | 生成条件の記録 |
-| `recipe_export` | 同 §4.9 | 書き出したグラフ（印・attempt_id・seed） |
-| `recipe_export_result` | 同 §4.9 | 出てきた画像と指標・人の合否 |
-| `preset` | 同 §4.10 | 名前を付けた条件 |
+| `recipe_record` | [`workflow-reproduction.md`](workflow-reproduction.md) §4.9 | **（廃止。2026-10-17）** 生成条件の記録。P7 で作って消した（§16.5） |
+| `recipe_export` | 同 §4.9 | **（廃止）** 書き出したグラフ（印・attempt_id・seed） |
+| `recipe_export_result` | 同 §4.9 | **（廃止）** 出てきた画像と指標・人の合否 |
+| `preset` | 同 §4.10 | **（廃止）** 名前を付けた条件 |
 
 > **点検で見つかった誤り**: §5 にこれらが無いのに §14 の工程が前提にしていた。
 > 表を**写す**のではなく**参照する**形にして直した（写すと必ず食い違う。実際に
@@ -682,7 +682,8 @@ POST   /api/assets/{id}/annotations/export   {format:'crops'}  -- **書くのは
                                   -- 座標と文の JSON、または囲んだ範囲ちょうどの切り出し画像
 GET    /api/annotations/{id}/crop               -- その場で作って返す（ディスクに書かない）
 
-# 条件の記録と再利用（R12。実行はしない）
+# **（廃止。2026-10-17。利用者の判断）** 条件の記録と再利用（R12。実行はしない）
+#   —— 以下の口は P7 で実装したが、削除した（理由は §16.5 と `p7-decision.md`）。**歴史として残す**
 GET    /api/assets/{id}/recipe                -- 記録と判定（完全/近似/不可＋理由）
 POST   /api/assets/{id}/recipe                {mode:'pin_text'|'rerun_graph'|'manual_text', text?}
 GET    /api/recipes               ?cursor=&limit=
@@ -1260,12 +1261,12 @@ POST /api/review-requests
 | 画面 | 役割 | 主な操作 | 詳細 |
 | --- | --- | --- | --- |
 | ライブラリ（主画面） | 集めて見る・探す・選ぶ | 入れ物の選択、検索、複数選択、まとまりを作る、走査 | `frontend-design.md` §2.4 |
-| 拡大（ルーペ） | 1 枚を大きく見る。来歴とタグを並べる | キープ / ボツ、理由、タグの語釈、注記、グラフの書き出し、条件の記録 | 同 §4 |
+| 拡大（ルーペ） | 1 枚を大きく見る。来歴とタグを並べる | キープ / ボツ、理由、タグの語釈、注記、グラフの書き出し（**条件の記録は廃止**） | 同 §4 |
 | まとまりレビュー | キープする 1 枚を決める（R6） | 1 枚に決める / 全部ボツ / 保留 | 同 §2.4, §11 |
 | 比較 | 2〜8 枚を比べる | 見方の切替、同期ズーム、並び替え、来歴の差分 | [`comparison.md`](comparison.md) |
 | 要求の一覧 | エージェントの要求をさばく（R10） | 開いて決める / あとで / 断る | `frontend-design.md` §4.4 |
 | 重複 | 完全重複と準重複の整理 | 代表を選ぶ、別物として確定、削除へ | [`duplicates-deletion-backup.md`](duplicates-deletion-backup.md) |
-| **条件の記録と再利用** | 生成条件の記録、判定（完全/近似/不可）、印つきの書き出し、結果の照合、合否、プリセット（R12） | 書き出す、結果をひも付ける、合否を記録する、条件をコピーする | [`workflow-reproduction.md`](workflow-reproduction.md)、`frontend-design.md` §4.7 |
+| **条件の記録と再利用**（**廃止（2026-10-17。利用者の判断）**） | 生成条件の記録、判定（完全/近似/不可）、印つきの書き出し、結果の照合、合否、プリセット（R12） | 書き出す、結果をひも付ける、合否を記録する、条件をコピーする | [`workflow-reproduction.md`](workflow-reproduction.md)、`frontend-design.md` §4.7 |
 | **最近の削除** | **取り消せる削除**（残り時間つき）を常設で見せる | 取り消す、待って消す | `frontend-design.md` §4.6 |
 | 取り込み | 走査の設定、進行、失敗の一覧 | ルート追加、参照/取込、URL とクリップボード、走査の開始 | `frontend-design.md` §3 |
 | タグ | 語の一覧、件数、日本語の語釈 | 一括タグ付け、語釈の確認と修正 | 同 §8.4 |
@@ -1399,14 +1400,15 @@ C:\work\image-reviewer\
     models.py         # pydantic（API の入出力）
     tray.py           # タスクトレイ（起動・停止・ブラウザ・要求があるとアイコンを変える）
     api\              # ルーター（assets / locations / folders / tags / reviews / groups / requests /
-                      #          annotations / recipes / presets / duplicates / export / comfyui / jobs / events）
+                      #          annotations / duplicates / export / comfyui / jobs / events）
+                      #          **（廃止）** recipes / presets は P7 で作って消した（§16.5）
     services\
       catalog.py      # フォルダ、スマートフォルダ、検索
       assets.py       # 走査、登録、ハッシュ、取込（D&D / クリップボード / URL）、参照切れ
       metadata.py     # PNG と JPEG の解析、来歴
       translate.py    # 訳し直し（TextGenerate）、タグの日本語の語釈
-      graph.py        # グラフの書き出し、ComfyUI への設置、印の付与、seed の差し替え
-      recipe.py       # 記録、判定（完全/近似/不可）、書き出し前の検査、結果の照合
+      graph.py        # グラフの書き出し、ComfyUI への設置、印の付与、seed の差し替え（**未実装**）
+      # **（廃止。2026-10-17）** recipe.py（記録・判定・検査・結果の照合）は P7 で作って消した（§16.5）
       compare.py      # 来歴の差分、pHash / SSIM / 色、差分ヒートマップ
       duplicates.py   # 完全重複・準重複、帯索引
       tags.py         # 内蔵 WD14 / ComfyUI 経由
@@ -1452,7 +1454,8 @@ C:\work\image-reviewer\
 
 **順序は点検 G11 で確定**: **P5（判断と比較）を先に**やる。判断がこの道具の主目的で、
 来歴の表示はプロトタイプで既に足りているため。P4（タグ）は判断の材料として後から厚くする。
-下の表は番号順だが、**着手は P1 → P2 → P3 → P5 → P6 → P4 → P7 → P8 → P9** とする。
+下の表は番号順だが、**着手は P1 → P2 → P3 → P5 → P6 → P4 → P7 → P8 → P9** とする
+（**P7（条件の記録）は 2026-10-17 に廃止した**ので、次は **P8**）。
 **P8（重複と削除）を P5 より先にしない**（重複の整理がまとまりレビューを使うため）。
 **P5 の前に A5（エージェントは判断を書けない）を実装する**（台帳の意味が変わるため）。
 
@@ -1699,9 +1702,9 @@ P7（R12）は [`p7-design.md`](p7-design.md) に沿って P7-0〜P7-4 を作り
 | 来歴（provenance） | 生成パラメータ、日本語原文、英訳、ワークフロー |
 | 訳し直しの英訳 | 後から訳した英訳。当時の訳ではない（画面で区別する） |
 | 語釈（gloss） | Danbooru タグの日本語。タグ用語として通る日本語 |
-| 再現キー（`recipe_hash`） | 生成に寄与する部分グラフの hash。判断やカタログを変えても変わらない |
-| 完全 / 近似 / 不可 | 書き出すときの判定。**完全＝条件が同一**であり、画素の一致ではない |
-| L1 / L2 / L3 | 書き出すグラフの作り方。L1＝捕獲した英文を固定、L2＝グラフごと（訳が変わりうる）、L3＝人が訳を貼る |
+| 再現キー（`recipe_hash`） | **（廃止。2026-10-17）** 生成に寄与する部分グラフの hash。判断やカタログを変えても変わらない |
+| 完全 / 近似 / 不可 | **（廃止）** 書き出すときの判定。**完全＝条件が同一**であり、画素の一致ではない |
+| L1 / L2 / L3 | **（廃止）** 書き出すグラフの作り方。L1＝捕獲した英文を固定、L2＝グラフごと（訳が変わりうる）、L3＝人が訳を貼る |
 | **印（marker）** | 書き出したグラフの `filename_prefix` に入れる識別子。できた画像を書き出しに結び付ける |
 | 監視（watcher） | ComfyUI の `/api/jobs` を見て、生成の瞬間の値（英訳）と結果を捕まえる仕組み |
 | 保留領域（pending-delete） | 実削除の前に 5 分間だけ置く場所。そこから戻せる |

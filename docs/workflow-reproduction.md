@@ -1,5 +1,10 @@
 # ワークフローの再現の設計
 
+> **廃止（2026-10-17。利用者の判断）**: この設計に沿って **P7（条件の記録。R12）を作ったが、削除した**
+> （理由: 「前に作った絵をもう一回作る」ときは **PNG を ComfyUI にドラッグすればワークフローが戻る**ので記録は重複。
+> ja2en の英訳も**もう一度実行すれば取れる**）。**この文書は歴史として残す**——
+> 何を作ってなぜ消したかは [`p7-decision.md`](p7-decision.md)、`design.md` §16.5。
+
 画像を「もう一度作れる」ようにするには何が必要か、を詰める。
 実機で確かめた事実は [`comfyui-reproduction-findings.md`](comfyui-reproduction-findings.md)（ComfyUI 側、836 行）と
 [`metadata-findings.md`](metadata-findings.md)（PNG 側）にある。この文書はその上での設計。

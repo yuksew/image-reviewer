@@ -360,22 +360,29 @@ def main() -> int:
                 OK = False
                 print("  NG: 内蔵が使えない（onnxruntime 未導入。§0.4・Q4）")
             else:
+                # **ワーカーは 1 本**なので、次の job を投げる前に**終わるまで待つ**
+                # （待たないと 409 `job_running` が返り、`job_id` が無くて落ちる。P4-2 の実測で踏んだ）
+                wait_job(base, builtin_job[1]["job_id"])
                 got_builtin = {one: set(words_of(base, one, "wd14")) for one in ids}
                 comfy = call("POST", f"{base}/api/assets/tag",
                              {"asset_ids": ids, "engine": "comfyui", "sources": ["wd14"],
                               "force": True})
-                wait_job(base, comfy[1]["job_id"])
-                same = 0
-                for one in ids:
-                    comfy_words = set(words_of(base, one, "wd14"))
-                    if comfy_words == got_builtin[one]:
-                        same += 1
-                    else:
-                        print(f"    差: {one} 内蔵 {len(got_builtin[one])} 語 / ComfyUI"
-                              f" {len(comfy_words)} 語 だけ={sorted(comfy_words ^ got_builtin[one])[:6]}")
-                print(f"  一致 {same} / {len(ids)}")
-                if same != len(ids):
+                if comfy[0] != 202:
                     OK = False
+                    print(f"  NG: ComfyUI 経由を投げられない（{comfy[0]} {comfy[1]}）")
+                else:
+                    wait_job(base, comfy[1]["job_id"])
+                    same = 0
+                    for one in ids:
+                        comfy_words = set(words_of(base, one, "wd14"))
+                        if comfy_words == got_builtin[one]:
+                            same += 1
+                        else:
+                            print(f"    差: {one} 内蔵 {len(got_builtin[one])} 語 / ComfyUI"
+                                  f" {len(comfy_words)} 語 だけ={sorted(comfy_words ^ got_builtin[one])[:6]}")
+                    print(f"  一致 {same} / {len(ids)}")
+                    if same != len(ids):
+                        OK = False
     finally:
         if proc is not None:
             proc.terminate()

@@ -13,6 +13,14 @@ dependencies = [
     "numpy>=1.26",
 ]
 
+[project.optional-dependencies]
+# P4 の内蔵タガー（任意依存。**入らなくても ComfyUI 経由で動く**）。
+# 入れると `auto` の既定が内蔵になる（GPU で 0.063 秒/枚、CPU で 0.75 秒/枚。
+# ComfyUI の `IllustTagger` は 0.27 秒/枚なので、CPU だけなら ComfyUI の方が速いこともある）。
+# `onnxruntime-gpu` は **CUDA の DLL が無いと黙って CPU に落ちる**ので、
+# 入れたら起動時のログ（`doctor`）で `get_available_providers()` の実値を確かめること。
+tagger = ["onnxruntime>=1.20"]
+
 [project.scripts]
 image-reviewer = "image_reviewer.cli:main"
 

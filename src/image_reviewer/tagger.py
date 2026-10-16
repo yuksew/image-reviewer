@@ -345,8 +345,14 @@ class BuiltinTagger:
             return f"使えます（{got}）"
         return f"使えます（{got}。CUDA の DLL が見つかりません）"
 
-    def tag(self, image_path: str | Path) -> list[tuple[str, float | None]]:
-        """1 枚を読んで語を返す。**スコアはこの段では入れない**（§0.10。語名だけ）。"""
+    def tag(self, image_path: str | Path, *, name: str | None = None) -> list[tuple[str, float | None]]:
+        """1 枚を読んで語を返す。**スコアはこの段では入れない**（§0.10。語名だけ）。
+
+        `name` は**受け取るだけで使わない**（ComfyUI 経由は複製の名前が要るが、内蔵は要らない）。
+        **口を揃えておく**: `jobs.py` は方式を選ばずに `tag(path, name=...)` と呼ぶので、
+        これが無いと内蔵のときだけ `TypeError` で全件失敗する（`onnxruntime` を入れて初めて踏んだ。
+        P4-2 の実測で発覚）。
+        """
         import numpy as np
         from PIL import Image
 

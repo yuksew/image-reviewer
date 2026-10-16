@@ -403,3 +403,22 @@ def test_the_tag_list_pages_by_the_same_key_as_the_order(env):
     assert len(set(names)) == 25, "頁をまたいで語が重複した（頁送りの鍵が並びと違う）"
     assert page1["total"] == page2["total"] == 25, "total が cursor で減った"
     assert page3["next_cursor"] is None, "最後の頁で next_cursor が残った"
+
+
+def test_both_taggers_accept_the_same_call_shape():
+    """`jobs.py` は方式を選ばずに `tag(path, name=...)` と呼ぶ（P4-2 の実測で踏んだ不具合）。
+
+    内蔵（`BuiltinTagger`）が `name` を受けていなかったので、**`onnxruntime` を入れて初めて**
+    内蔵のときだけ全件 `TypeError: tag() got an unexpected keyword argument 'name'` で失敗した
+    （ジョブは `failed`、語は 0。実データの複製で再現）。**口が揃っていることをここで固定する**
+    （本物の模型は呼ばない＝`inspect` で見る）。
+    """
+    import inspect
+
+    from image_reviewer.tagger import BuiltinTagger, ComfyTagger
+
+    for cls in (BuiltinTagger, ComfyTagger):
+        params = inspect.signature(cls.tag).parameters
+        assert "name" in params, f"{cls.__name__}.tag が name を受けない（jobs.py の呼び方と食い違う）"
+        assert params["name"].kind is inspect.Parameter.KEYWORD_ONLY, \
+            f"{cls.__name__}.tag の name はキーワード専用であること"

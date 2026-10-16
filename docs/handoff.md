@@ -1,7 +1,13 @@
-# 引継書 — image-reviewer / P6 完了・P4 途中（2026-10-16 10:00 時点）
+# 引継書 — image-reviewer / P6 完了・P4 完了（2026-10-16 12:50 時点）
 
 このセッション（dsh・ワークツリー `dsh`）で進めた内容と、**次のセッションがそのまま続けられる形**の引継ぎです。
 読む順: **§0 危険な操作 → §1 いまの状態 → §2 Fable との往復 → §3 次の手順**。細部は §4 以降。
+
+> **2026-10-16 12:50 の追記**: **利用者の了解で `onnxruntime`（CPU 版）を入れ、P4 の線 8 を測って達成**しました
+> （実画像 4 枚で**語の集合が完全一致**。詳しくは [`p4-line8-note.md`](p4-line8-note.md)）。
+> **`git` 管理にして GitHub に push 済み**（`https://github.com/yuksew/image-reviewer`・main・初回コミット）。
+> **利用者のアプリはいま止めてあります**（`onnxruntime` の導入で止めた）。**次に起動すると `.data` が v3 → v5** に上がります
+> （控えは `.backup/pre-p4-20261016-093705`）。
 
 ---
 
@@ -33,7 +39,8 @@
 | **P4-1（タガーと背景ジョブ）** | 実装完了・**監査は「線 1・2・7 通過」** → 指摘 3 件＋中程度は**反映済み** | `docs/p4-1-audit-report.md` |
 | **P4-2（日本語の語釈）** | 実装完了（**278 passed**）・**監査は「合格。P4-3 へ進んでよい」** → 指摘（B-1 / C-1・C-2・C-3 / E）は**反映済み**（**282 passed**） | `docs/p4-2-implementation.md`、`docs/p4-2-audit-report.md` ＋ [`p4-2-audit-triage.md`](p4-2-audit-triage.md) |
 | **P4-3（タグの画面）** | **完了**。実装 → 監査「直してから閉じる」→ **指摘 10 件を全部直した** → **再確認で「P4 を閉じてよい」**。再確認で新しく出た 2 件（**`GET /api/tags` の頁送りが壊れていた**・`gui_layout` の行高検査）も**私が直した**。**284 passed**・`gui_smoke` すべて ok・`gui_layout` **6 画面**すべて ok（**247 語の画像**も ok） | 記録 `docs/p4-3-implementation.md`、監査 `docs/p4-3-audit-report.md`、仕分け [`p4-3-audit-triage.md`](p4-3-audit-triage.md)、再確認 `docs/p4-3-audit-recheck.md` |
-| **P4-1 の線 8**（内蔵と ComfyUI の語の一致） | **未達**（`onnxruntime` が要る。**利用者のサーバを止める許可待ち**） | `docs/p4-1-audit-report.md` |
+| **P4-1 の線 8**（内蔵と ComfyUI の語の一致） | **達成**（2026-10-16。`onnxruntime`（CPU 版）を入れて実画像 4 枚で**語の集合が完全一致 4/4**。内蔵 1.30 秒/枚・ComfyUI の WD14 ノード 2.57 秒/枚）。**途中で不具合 1 件を発見して直した**（`BuiltinTagger.tag()` が `name` を受けず、内蔵のときだけ全件 `TypeError` で失敗） | [`p4-line8-note.md`](p4-line8-note.md) |
+| **`git` 管理 / GitHub** | **済み**。`https://github.com/yuksew/image-reviewer`（PUBLIC・main）。`.gitignore` は `.data/`・`.backup/`・`.tmp-audit-redo/`・`.venv/`・`.uv-cache/`・`tmp*/`・`.claude/skills/`（ジャンクション）を除外。`.gitattributes` で改行を LF に固定 | `git log` の初回コミット |
 
 **テストは 260 passed**（P4-1 の監査修正まで。**P4-2 の実装中**）／`gui_smoke` すべて ok／`gui_layout` は**比較・要求・まとまり・注記の 4 画面**すべて ok。`SCHEMA_VERSION = 5`。
 

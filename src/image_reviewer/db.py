@@ -243,8 +243,10 @@ def migrate(con: sqlite3.Connection) -> int:
         # **版を上げずに列を足した版の手当て**（P4-1 の監査 A-1）。v5 は途中で
         # `tag.known` / `asset_tag.actor` / `job.note` を足したので、**先に v5 になった DB** が
         # 列の無いまま残りうる（`current < 5` の道を通らないので、ここで補う）。
-        # **v6 は新しい表だけ**なので、ここで補うものは無い（`_top_up_v6` は作らない）
+        # **v6 も同じ**（P7-4 で `recipe_export_result.fetched` を足した。表は空だったので
+        # v7 は作らず v6 の DDL を直し、**既に v6 の DB にはここで列を足す**）。
         _top_up_v5(con)
+        _top_up_v6(con)
         return current
     if current < 1:
         con.executescript(DDL)
@@ -259,6 +261,7 @@ def migrate(con: sqlite3.Connection) -> int:
         _migrate_v5(con)
     if current < 6:
         _migrate_v6(con)
+    _top_up_v6(con)
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -524,6 +527,23 @@ def _top_up_v5(con: sqlite3.Connection) -> None:
                     " ('tagged', 'skipped', 'failed')")
 
 
+def _top_up_v6(con: sqlite3.Connection) -> None:
+    """v6 の**版を上げずに足した列**の手当て（P7-4）。
+
+    `recipe_export_result.fetched`（`GET /view` で取り込んだか）を後から足した。
+    表はまだ空だったので **v7 は作らず v6 の DDL を直した**が、**先に v6 になった DB**
+    （P7-0〜P7-3 の間に `migrate()` が走った物）には列が無い。`current >= SCHEMA_VERSION`
+    の early return 側からも呼ぶので、**既に v6 の DB にも 1 回で入る**。
+    `PRAGMA table_info` を見てから足す（`ALTER TABLE ADD COLUMN` は `IF NOT EXISTS` を
+    持たないため）。**何度呼んでも安全。**
+    """
+    have = {row["name"] for row in con.execute("PRAGMA table_info(recipe_export_result)")}
+    if have and "fetched" not in have:
+        # 既存の行は「取り込んでいない」＝ 0 で埋まる（この時点で行は 0 件のはずだが、
+        # 実データで 1 件でもあれば参照のままだった可能性が高いので 0 が正しい）
+        con.execute("ALTER TABLE recipe_export_result ADD COLUMN fetched INTEGER NOT NULL DEFAULT 0")
+
+
 # v6 で作る表（P7 の設計 §2.1。**点検 A-2 / B-3-1 / C-1〜C-4 / G-3〜G-5** を反映した形）。
 # **機能は足さない**（表だけ）。設計 §2.1 が**この段の正**。
 # - `recipe_record`: 元画像 1 枚の生成条件の写し（**生成はしない**）。`ux_recipe_source` で
@@ -618,6 +638,10 @@ CREATE TABLE IF NOT EXISTS recipe_export_result (
   verdict_at      TEXT,
   verdict_actor   TEXT CHECK (verdict_actor IN ('human', 'agent')),
   note            TEXT,
+  -- **`GET /view` で `<data>/results/` に取り込んだか**（P7-4 で足した。1 = 取り込んだ＝
+  -- 複製を持っている、0 = ComfyUI の出力フォルダの実体を指しているだけ）。
+  -- **参照のままか複製か**を画面と後始末（P8）が区別できるようにする
+  fetched         INTEGER NOT NULL DEFAULT 0 CHECK (fetched IN (0, 1)),
   created_at      TEXT NOT NULL,
   -- **合否と人は対で入る**（点検 G-2。片方だけの行を作らせない）
   CHECK ((verdict IS NULL) = (verdict_actor IS NULL))

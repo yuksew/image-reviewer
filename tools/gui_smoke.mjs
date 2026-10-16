@@ -898,5 +898,80 @@ badge.renderJobBadge([justDone], Date.now() + 1000);
 check(el('stat-jobs').textContent === textAfter, '同じジョブで二度言わない（監査 C-3）');
 badge.resetBadge();
 
+// ---- P7-4: 条件の記録の画面（`#/asset/<id>/recipe` と `#/recipes`）----
+
+const recipeUi = await import('../apps/gui/recipe.js');
+const recipesUi = await import('../apps/gui/recipelist.js');
+
+const RECIPE = { recipe_id: 'rec1', asset_id: 'a1', mode: 'pin_text',
+  recipe_hash: 'sha256:abc', graph_path: 'C:/data/workflows/x.json', graph_source: 'png',
+  status: 'approx', reasons: ['text_not_captured'], inspected: true,
+  notes: ['COMFY_DYNAMIC* の展開はできません'] };
+const EXPORTS = { recipe_id: 'rec1', items: [
+  { attempt_id: 'att1', mode: 'rerun_graph', marker_skip_reason: '前提1', export_dir: 'd',
+    manifest_path: 'm', seed_node: '4', created_at: '2026-10-17T00:00:00Z', checked: null,
+    files: [{ seed: '1', recipe_hash: 'sha256:abc', graph_path: 'g', marker: 'repro-att1/seed-1' }],
+    results: [{ id: 'res1', attempt_id: 'att1', seed: '1', result_asset_id: 'a2',
+      matched_by: 'marker', result_hash: 'sha256:xyz', same_hash: false, ssim: 0.9,
+      phash_distance: 3, changed_fraction: 0.1, mean_abs: 2.0, seed_changed: true,
+      fetched: true, verdict: null, verdict_at: null, verdict_actor: null, note: null }] },
+] };
+const RECIPE_LIST = { items: [
+  { recipe_id: 'rec1', asset_id: 'a1', mode: 'pin_text', recipe_hash: 'sha256:abc',
+    graph_kind: 'api', graph_path: 'x', status: 'approx', reasons: ['text_not_captured'],
+    actor: 'human', created_at: '2026-10-17T00:00:00Z' },
+], next_cursor: 'c1' };
+
+const writesBefore = writes.length;
+const askedBefore = asked.length;
+globalThis.fetch = async (url, options) => {
+  const u = String(url);
+  const method = String(options?.method || 'GET').toUpperCase();
+  asked.push(u);
+  if (method !== 'GET') writes.push({ url: u, method, body: options?.body });
+  const asJson = (body, status = 200) => ({ ok: status < 400, status,
+    text: async () => JSON.stringify(body), json: async () => JSON.parse(JSON.stringify(body)) });
+  if (u.includes('/recipe') && u.includes('/api/assets/')) return asJson(RECIPE);
+  if (u.includes('/exports')) return asJson(EXPORTS);
+  if (u.startsWith('/api/recipes?')) return asJson(RECIPE_LIST);
+  return asJson({ items: [] });
+};
+
+await recipeUi.showRecipe('a1');
+const rcHtml = String(el('recipe').innerHTML || '');
+check(rcHtml.includes('近似'), '記録の画面が判定を出す（§5.2）');
+check(rcHtml.includes(recipeUi.REASON_LABEL.text_not_captured), '記録時の理由を日本語で出す');
+check(el('recipe-body') !== undefined && rcHtml.includes('rc-attempt'), '書き出しの束を出す');
+check(rcHtml.includes('印なし'), '印が付かない理由を出す（§5.3）');
+check(rcHtml.includes('data-verdict="same"') && rcHtml.includes('data-verdict="failed"'),
+  '合否のボタンを 4 つ出す（§3.6）');
+check(rcHtml.includes('取り込み'), '取り込んだかどうかを出す（P7-4 の fetched）');
+check(rcHtml.includes('seed が違う'), 'seed が違うことを出す');
+check(!rcHtml.includes('<script'), '理由や語釈はエスケープして出す（esc）');
+
+// **記録時の 7 語と書き出し時の 3 語を混ぜない**（点検 A-3）
+const mix = Object.keys(recipeUi.REASON_LABEL).filter((k) => k in recipeUi.EXPORT_REASON_LABEL);
+check(mix.length === 0, `記録時と書き出し時の理由が混ざっている: ${mix.join(',')}`);
+check(Object.keys(recipeUi.REASON_LABEL).length === 7, '記録時の理由は 7 語（§0.6）');
+check(Object.keys(recipeUi.EXPORT_REASON_LABEL).length === 3, '書き出し時の理由は 3 語（§0.6）');
+
+// **理由に `<script>` が入っても文字のまま**（実物で効くことを軽い DOM でも押さえる）
+const dirty = recipeUi.statusHtml({ status: 'approx', reasons: ['<script>alert(1)</script>'],
+                                    inspected: true, notes: [] }, null);
+check(!dirty.includes('<script') && dirty.includes('&lt;script&gt;'),
+  '理由のエスケープ（<script> を要素にしない）');
+
+await recipesUi.showRecipes('');
+const rlHtml = String(el('recipes-list').innerHTML || '');
+check(rlHtml.includes('#/asset/a1/recipe'), '一覧から 1 枚の画面へ行ける（§5.4）');
+check(rlHtml.includes('近似'), '一覧が判定を出す');
+check(rlHtml.includes('次の 50 件'), '続きを読む口を出す（next_cursor）');
+check(recipesUi.query('?status=approx').status === 'approx'
+  && recipesUi.query('?status=nope').status === 'all', 'status の絞り込みを読む');
+
+// **`GET` は 1 バイトも書かない**（画面を開くだけで行が増えない。§0.10）
+check(writes.length === writesBefore, `画面を開くだけで書いた: ${JSON.stringify(writes.slice(writesBefore))}`);
+check(asked.length > askedBefore, '読みはしている（書いていないことの対照）');
+
 console.log(failures.length ? `\n${failures.length} 件 NG` : '\nすべて ok');
 process.exit(failures.length ? 1 : 0);

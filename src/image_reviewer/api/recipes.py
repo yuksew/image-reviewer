@@ -26,9 +26,10 @@ def get_recipe(request: Request, asset_id: str):
 
 
 @router.get("/recipes")
-def list_recipes(request: Request, limit: int = 50, cursor: str | None = None):
-    """記録の一覧（キーセット）。**書かない**。"""
-    return recipes_of(request).list(limit=limit, cursor=cursor)
+def list_recipes(request: Request, limit: int = 50, cursor: str | None = None,
+                 status: str | None = None):
+    """記録の一覧（キーセット）。**書かない**。`status` で判定を絞れる（P7-4）。"""
+    return recipes_of(request).list(limit=limit, cursor=cursor, status=status)
 
 
 @router.post("/assets/{asset_id}/recipe")

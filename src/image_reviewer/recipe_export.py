@@ -688,5 +688,7 @@ def _result_doc(row) -> dict:
             "same_hash": bool(row["same_hash"]), "ssim": row["ssim"],
             "phash_distance": row["phash_distance"], "changed_fraction": row["changed_fraction"],
             "mean_abs": row["mean_abs"], "seed_changed": bool(row["seed_changed"]),
+            # **P7-4**: `GET /view` で取り込んだか（1 = `<data>/results/` に複製を持っている）
+            "fetched": bool(row["fetched"]),
             "verdict": row["verdict"], "verdict_at": row["verdict_at"],
             "verdict_actor": row["verdict_actor"], "note": row["note"]}

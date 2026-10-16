@@ -921,6 +921,18 @@ POST /api/watcher/stop  → 200 {"enabled": false}
 
 ---
 
+### 0.18 P7-4（画面）で決めたこと
+
+- **`recipe_export_result.fetched` を足した**（`GET /view` で `<data>/results/` に取り込んだか）。
+  表は空だったので **v7 は作らず v6 の DDL を直し**、**既に v6 の DB には `_top_up_v6` が
+  `PRAGMA table_info` を見て `ALTER TABLE ADD COLUMN`** する（P7-0 の C-1 / G-2 と同じ判断）。
+  `GET …/exports` と `watcher.results()` が **`fetched` を返す**（画面が「取り込み / 参照」を出す）。
+- **`GET /api/recipes` に `?status=` を足した**（画面 §5.4 の「判定で絞る」）。語彙は
+  `exact` / `approx` / `impossible` だけで、外れたら **422**（`CHECK` に当てて 500 にしない）。
+- **理由の語は画面でも混ぜない**（記録時 7 語 / 書き出し時 3 語。監査 A-3 の帰結）。
+- **`#/asset/<id>/recipe` は `#/asset/<id>` より先に判定する**（ルータの順序。後ろだと拡大が勝つ）。
+- **来歴のすぐ下に「条件の記録」への 1 行**を出す（P6-2 の注記と同じ位置の考え方）。
+
 ## 10. 未確認とリスク（**推測で埋めない**）
 
 | # | 未確認・リスク | どう扱うか |

@@ -496,11 +496,11 @@ class ComfyWatcher:
             con.execute(
                 "INSERT INTO recipe_export_result(id, export_id, prompt_id, result_asset_id,"
                 " matched_by, result_hash, same_hash, ssim, phash_distance, changed_fraction,"
-                " mean_abs, seed_changed, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " mean_abs, seed_changed, fetched, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (result_id, export["id"], _prompt_id(detail), asset_id, "marker", result_hash, same,
                  metrics.get("ssim"), metrics.get("phash_distance"), metrics.get("changed_fraction"),
-                 metrics.get("mean_abs"), seed_changed, db.now()))
+                 metrics.get("mean_abs"), seed_changed, int(taken), db.now()))
         sidecar = self._sidecar(path, row, export, result_id, result_hash, same, seed_changed, metrics)
         return {"id": result_id, "asset_id": asset_id, "replayed": False, "sidecar": sidecar,
                 "taken": taken, "text_captured": bool(prov.get("info"))}
@@ -657,6 +657,8 @@ class ComfyWatcher:
              "same_hash": bool(r["same_hash"]), "ssim": r["ssim"],
              "phash_distance": r["phash_distance"], "changed_fraction": r["changed_fraction"],
              "mean_abs": r["mean_abs"], "seed_changed": bool(r["seed_changed"]),
+             # **取り込んだか**（1 = `<data>/results/` に複製を持っている。0 = 出力フォルダの実体を指す）
+             "fetched": bool(r["fetched"]),
              "verdict": r["verdict"], "verdict_at": r["verdict_at"],
              "verdict_actor": r["verdict_actor"], "note": r["note"]}
             for r in rows]}

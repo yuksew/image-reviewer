@@ -530,18 +530,30 @@ class RecipeService:
             raise ReviewError(404, "この画像の記録はありません", details={"asset_id": asset_id})
         return self._doc_of(row)
 
-    def list(self, *, limit: int = 50, cursor: str | None = None) -> dict:
-        """一覧（`GET /api/recipes`）。**キーセット**（`created_at DESC, id DESC`）。**書かない**。"""
+    def list(self, *, limit: int = 50, cursor: str | None = None,
+             status: str | None = None) -> dict:
+        """一覧（`GET /api/recipes`）。**キーセット**（`created_at DESC, id DESC`）。**書かない**。
+
+        **（P7-4）`status` で判定を絞れる**（画面 §5.4 の「判定で絞る」）。語彙は
+        `exact` / `approx` / `impossible` だけで、外れたら **422**（`CHECK` に当てて 500 にしない）。
+        """
         size = max(1, min(int(limit or 50), 200))
-        where, args = "", []
+        where, args = [], []
+        if status:
+            if status not in ("exact", "approx", "impossible"):
+                raise ReviewError(422, "status は exact | approx | impossible です",
+                                  details={"status": status})
+            where.append("status = ?")
+            args.append(status)
         if cursor:
             pair = str(cursor).split("|", 1)
             if len(pair) != 2:
                 raise ReviewError(422, "cursor が不正です", details={"cursor": str(cursor)})
-            where = " WHERE (created_at < ? OR (created_at = ? AND id < ?))"
-            args = [pair[0], pair[0], pair[1]]
+            where.append("(created_at < ? OR (created_at = ? AND id < ?))")
+            args.extend([pair[0], pair[0], pair[1]])
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
         with self.store.locked() as con:
-            rows = con.execute("SELECT * FROM recipe_record" + where
+            rows = con.execute("SELECT * FROM recipe_record" + clause
                                + " ORDER BY created_at DESC, id DESC LIMIT ?",
                                [*args, size + 1]).fetchall()
         more = len(rows) > size
@@ -588,6 +600,10 @@ class RecipeService:
             "recipe_hash": row["recipe_hash"],
             "graph_path": _existing_path(row["graph_path"]),
             "graph_kind": row["graph_kind"],
+            # **（P7-4）`graph_source` も `GET` で返す**（`{'png','history','sidecar'}`）。
+            # `POST` の応答には前から入っていたが、`GET` には無かったので
+            # **画面の「出所」が `—` になっていた**（記録の由来を画面で確かめられない）
+            "graph_source": (rec.get("graph_source") if isinstance(rec, dict) else None),
             "record": rec,
             "final_prompt": row["final_prompt"],
             "final_prompt_source": row["final_prompt_source"],

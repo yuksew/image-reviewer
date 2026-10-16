@@ -154,6 +154,37 @@
     </div>
   </div>
 
+  <!-- 条件の記録（P7-4）。`#/asset/<id>/recipe`。**GET では何も書かない**（設計 §0.10） -->
+  <div id="recipe">
+    <div class="topbar">
+      <a class="back" href="#" id="recipe-back">← 拡大</a>
+      <span class="name">条件の記録</span>
+      <span class="stat" id="rc-msg">—</span>
+      <span class="spacer"></span>
+      <a class="back" href="#/recipes">記録の一覧へ</a>
+    </div>
+    <div class="rc-body" id="recipe-body"></div>
+    <div class="rc-help" id="recipe-help">
+      画像に残っている条件を読んで、<b>同じ条件で開き直せるか</b>を判定します。判定は
+      <b>完全 / 近似 / 再現できない</b>の 3 つで、理由を 1 行ずつ出します。
+    </div>
+  </div>
+
+  <!-- 記録の一覧（P7-4）。`#/recipes`。**要約だけ**（点検 G-6-(a)） -->
+  <div id="recipes">
+    <div class="topbar">
+      <a class="back" href="#" id="recipes-back">← 一覧</a>
+      <span class="name">記録の一覧</span>
+      <span class="stat" id="recipes-brief">—</span>
+      <span class="spacer"></span>
+      <button id="recipes-status" title="判定で絞る">判定: すべて</button>
+    </div>
+    <div class="rl-list" id="recipes-list"></div>
+    <div class="rl-help" id="recipes-help">
+      記録の要約です。中身（環境の写し・条件の全体）は 1 枚の画面で見ます。
+    </div>
+  </div>
+
   <!-- ジョブ（P4-3）。`#/jobs`。開いている間だけ 2 秒ごとに更新する（設計 §5.3） -->
   <div id="jobs">
     <div class="topbar">

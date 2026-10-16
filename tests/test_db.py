@@ -1048,3 +1048,52 @@ def test_the_new_vocabularies_and_the_verdict_pair_are_constrained(tmp_path: Pat
             result("r-half2", None, "human")             # 人だけ
     finally:
         con.close()
+
+
+def test_the_fetched_column_is_topped_up_on_an_older_v6_database(tmp_path: Path):
+    """P7-4: `recipe_export_result.fetched` は**後から足した列**（`_top_up_v6`）。
+
+    表が空だったので **v7 を作らず v6 の DDL を直した**が、**先に v6 になった DB**
+    （P7-0〜P7-3 の間に `migrate()` が走った物）には列が無い。`migrate()` が
+    `PRAGMA table_info` を見て足さないと、監視の `INSERT` が
+    **`no column named fetched` で落ちる**（P4-1 の監査 A-1 と同じ型の穴）。
+    **列を落とした v6** を手で作ってから `migrate()` を当て、列が入ることを見る。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        # 「先に v6 になった DB」を模す（列を落とした表に作り替える）
+        con.executescript("""
+            PRAGMA foreign_keys = 0;
+            ALTER TABLE recipe_export_result RENAME TO _old_result;
+            CREATE TABLE recipe_export_result (
+              id TEXT PRIMARY KEY,
+              export_id TEXT NOT NULL REFERENCES recipe_export(id) ON DELETE CASCADE,
+              prompt_id TEXT,
+              result_asset_id TEXT REFERENCES asset(id) ON DELETE SET NULL,
+              matched_by TEXT NOT NULL,
+              result_hash TEXT, same_hash INTEGER NOT NULL DEFAULT 0,
+              ssim REAL, phash_distance INTEGER, changed_fraction REAL, mean_abs REAL,
+              seed_changed INTEGER NOT NULL DEFAULT 0,
+              verdict TEXT, verdict_at TEXT, verdict_actor TEXT, note TEXT,
+              created_at TEXT NOT NULL);
+            DROP TABLE _old_result;
+            PRAGMA foreign_keys = 1;
+        """)
+        before = {row["name"] for row in con.execute("PRAGMA table_info(recipe_export_result)")}
+        assert "fetched" not in before, "前提: この時点では列が無い"
+
+        assert db.migrate(con) == db.SCHEMA_VERSION          # **v7 に上げずに**列が入る
+        after = {row["name"] for row in con.execute("PRAGMA table_info(recipe_export_result)")}
+        assert "fetched" in after, "古い v6 に fetched が入っていない（_top_up_v6 が効いていない）"
+
+        # **既定は 0**（＝取り込んでいない）。親（`recipe_export`）を作らずに 1 行入れるので
+        # **この 1 文だけ外部キーを外す**（列の既定を見るのが目的）
+        con.execute("PRAGMA foreign_keys = 0")
+        con.execute("INSERT INTO recipe_export_result(id, export_id, matched_by, created_at)"
+                    " VALUES ('r1', 'e1', 'marker', '2026-01-01T00:00:00Z')")
+        con.execute("PRAGMA foreign_keys = 1")
+        assert con.execute("SELECT fetched FROM recipe_export_result WHERE id = 'r1'"
+                           ).fetchone()["fetched"] == 0
+        assert db.migrate(con) == db.SCHEMA_VERSION          # 何度呼んでも同じ
+    finally:
+        con.close()

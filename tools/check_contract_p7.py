@@ -147,9 +147,15 @@ def check_manifests_on_disk(data_dir: str, validator) -> tuple[int, int]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default=os.path.join(ROOT, ".tmp-p7-0", "contract"))
+    ap.add_argument("--data", default=os.path.join(ROOT, ".tmp-p7-0", "contract"),
+                    help="下見の DB を作る場所。**既にある物は消さない**"
+                         "（`<data>/recipes/**/manifest.json` があればそれも検証する）")
+    ap.add_argument("--fresh", action="store_true",
+                    help="下見の DB を作り直す（**--data の中を消す**。既定は消さない）")
     args = ap.parse_args()
-    if os.path.exists(args.data):
+    # **`--data` を丸ごと消さない**（P7-2 の実装で踏んだ: 書き出した `recipes/` ごと消えて、
+    # probe の成果が消えた）。消すのは `--fresh` を付けたときだけにする
+    if args.fresh and os.path.exists(args.data):
         shutil.rmtree(args.data)
 
     try:

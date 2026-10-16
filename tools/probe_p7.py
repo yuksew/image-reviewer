@@ -113,10 +113,91 @@ def http_check(data: Path, base: str, take: int = 5) -> dict:
     return {"items": out}
 
 
+def export_of(data: Path, *, keep: bool) -> dict:
+    """**書き出し（P7-2）を実物で通す**（設計 §1.2 の線 3・4・5）。
+
+    複製から**グラフを持つ 1 枚**を選び、記録してから **seed を 2 つ**指定して書き出す:
+    - `seed-<1>.json` / `seed-<2>.json` / `manifest.json` の **3 ファイル**
+    - **印**（`SaveImage.filename_prefix` が `repro-<attempt_id>/seed-<seed>` に変わり、
+      **鍵（`recipe_hash`）は変わらない**）
+    - **manifest が契約（本物の `jsonschema`）を通る**
+    """
+    import json
+    from pathlib import Path as _Path
+
+    from image_reviewer.recipe import RecipeService
+    from image_reviewer.recipe_export import RecipeExportService
+    from image_reviewer.review import ReviewError
+    from image_reviewer.store import Store
+
+    store = Store(data)
+    recipes = RecipeService(store)
+    exports = RecipeExportService(store, recipes)
+    try:
+        # **保存ノードのある本物のグラフ**を持つ記録を選ぶ（契約の検査が入れた見本の行
+        # `rec1` のような、グラフのファイルが無い物は飛ばす）
+        with store.locked() as con:
+            rows = [dict(r) for r in con.execute(
+                "SELECT id, source_asset_id FROM recipe_record ORDER BY created_at LIMIT 50")]
+        recipe_id = None
+        for row in rows:
+            _record, graph = exports._load(row["id"])
+            if graph and any(str(n.get("class_type")) in ("SaveImage", "PreviewImage")
+                             for n in graph.values() if isinstance(n, dict)):
+                recipe_id = row["id"]
+                break
+        if recipe_id is None:
+            # 無ければ、グラフを持つ 1 枚に記録を作る
+            with store.locked() as con:
+                asset = con.execute("SELECT id FROM asset ORDER BY id").fetchone()
+            if asset is None:
+                return {"ok": False, "why": "画像がありません"}
+            recipe_id = recipes.record(asset["id"], mode="pin_text", actor="human")["recipe_id"]
+        before = recipes.get(_recipe_asset(store, recipe_id))["recipe_hash"]
+        # **`KSampler` の無いグラフ**（upscale など。実データに 3 枚）は seed を指定できない
+        # （422 `no_sampler`）。そのときは seed 無しで 1 ファイル（印は `…/noseed`）に落とす
+        try:
+            got = exports.export(recipe_id, seeds=["1", "2"], actor="human")
+            noseed = False
+        except ReviewError as exc:
+            if exc.status != 422 or exc.code != "no_sampler":
+                raise
+            got = exports.export(recipe_id, actor="human")
+            noseed = True
+        after = recipes.get(_recipe_asset(store, recipe_id))["recipe_hash"]
+        out = _Path(got["export_dir"])
+        names = sorted(p.name for p in out.iterdir())
+        first = "seed-noseed.json" if noseed else "seed-1.json"
+        marked = json.loads((out / first).read_text(encoding="utf-8"))
+        prefix = next((n["inputs"].get("filename_prefix") for n in marked.values()
+                       if isinstance(n, dict) and n.get("class_type") == "SaveImage"), None)
+        manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+        want = (["manifest.json", "seed-noseed.json"] if noseed
+                else ["manifest.json", "seed-1.json", "seed-2.json"])
+        return {"ok": names == want and prefix == got["marker"] and before == after,
+                "noseed": noseed,
+                "recipe_id": recipe_id, "attempt_id": got["attempt_id"], "dir": str(out),
+                "names": names, "marker": got["marker"], "marker_skipped": got["marker_skipped"],
+                "prefix_in_graph": prefix, "hash_before": before, "hash_after": after,
+                "seed_node": got["seed_node"], "reasons": got["reasons"],
+                "manifest_hashes": sorted(manifest.get("export_hashes", {})),
+                "manifest_path": str(out / "manifest.json")}
+    finally:
+        store.close()
+
+
+def _recipe_asset(store, recipe_id: str) -> str:
+    with store.locked() as con:
+        return con.execute("SELECT source_asset_id FROM recipe_record WHERE id = ?",
+                           (recipe_id,)).fetchone()["source_asset_id"]
+
+
 def main() -> int:
     global OK
     parser = argparse.ArgumentParser(description="P7 の実測")
     parser.add_argument("--judge", action="store_true", help="複製で 263 枚に記録を付けて数える")
+    parser.add_argument("--export", action="store_true",
+                        help="複製の 1 枚から seed 2 つを書き出す（P7-2 の線 3・4・5）")
     parser.add_argument("--http", action="store_true", help="複製にサーバを立てて口から確かめる")
     parser.add_argument("--data", default=None, help="複製の置き場（既定は .tmp-audit-redo/p7/judge/data）")
     parser.add_argument("--limit", type=int, default=0, help="枚数を絞る（既定は全部）")
@@ -161,6 +242,26 @@ def main() -> int:
             else:
                 OK = False
                 say(f"  NG: 期待 {want} と違う。理由の内訳を見ること")
+
+    if args.export:
+        say("\n=== 書き出し（P7-2。複製から 1 枚）===")
+        if not (data / "db.sqlite3").exists():
+            copy_real(data)
+            say(f"  複製を作った: {data}")
+        got = export_of(data, keep=args.keep)
+        if not got.get("ok"):
+            OK = False
+        say(f"  レシピ {got.get('recipe_id')} → 束 {got.get('attempt_id')}")
+        say(f"  置き場: {got.get('dir')}")
+        say(f"  ファイル: {got.get('names')}")
+        say(f"  印: {got.get('marker')}（グラフの中: {got.get('prefix_in_graph')}）"
+            f" / 印を省いた理由: {got.get('marker_skipped')}")
+        say(f"  鍵: 書き出しの前 {got.get('hash_before')} / 後 {got.get('hash_after')}"
+            f"（**同じなら印で鍵が変わっていない**）")
+        say(f"  seed ノード: {got.get('seed_node')} / 理由: {got.get('reasons')}")
+        say(f"  manifest の export_hashes: {got.get('manifest_hashes')}")
+        say(f"  manifest: {got.get('manifest_path')}"
+            "（`uv run --with jsonschema python tools/check_contract_p7.py` が拾って検証する）")
 
     if args.http:
         say("\n=== 口から（5 枚）===")

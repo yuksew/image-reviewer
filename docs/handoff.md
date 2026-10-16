@@ -47,6 +47,12 @@
 | **P4-3（タグの画面）** | **完了**。実装 → 監査「直してから閉じる」→ **指摘 10 件を全部直した** → **再確認で「P4 を閉じてよい」**。再確認で新しく出た 2 件（**`GET /api/tags` の頁送りが壊れていた**・`gui_layout` の行高検査）も**私が直した**。**284 passed**・`gui_smoke` すべて ok・`gui_layout` **6 画面**すべて ok（**247 語の画像**も ok） | 記録 `docs/p4-3-implementation.md`、監査 `docs/p4-3-audit-report.md`、仕分け [`p4-3-audit-triage.md`](p4-3-audit-triage.md)、再確認 `docs/p4-3-audit-recheck.md` |
 | **P4-1 の線 8**（内蔵と ComfyUI の語の一致） | **達成**（2026-10-16。`onnxruntime`（CPU 版）を入れて実画像 4 枚で**語の集合が完全一致 4/4**。内蔵 1.30 秒/枚・ComfyUI の WD14 ノード 2.57 秒/枚）。**途中で不具合 1 件を発見して直した**（`BuiltinTagger.tag()` が `name` を受けず、内蔵のときだけ全件 `TypeError` で失敗） | [`p4-line8-note.md`](p4-line8-note.md) |
 | **`git` 管理 / GitHub** | **済み**。`https://github.com/yuksew/image-reviewer`（PUBLIC・main）。`.gitignore` は `.data/`・`.backup/`・`.tmp-audit-redo/`・`.venv/`・`.uv-cache/`・`tmp*/`・`.claude/skills/`（ジャンクション）を除外。`.gitattributes` で改行を LF に固定 | `git log` の初回コミット |
+| **P7（条件の記録。R12）の設計** | **完了**（982 行。点検 → 仕分け → 反映済み。**Q1〜Q6 と G-1〜G-7 は推奨どおりで確定**） | [`p7-design.md`](p7-design.md)、`docs/p7-review-report.md` ＋ [`p7-review-triage.md`](p7-review-triage.md) |
+| **P7-0（v6 の表と契約）** | **完了 → 監査「合格（条件つき）」→ 条件を反映済み**（**G-1〜G-5**＝`export_id` の CASCADE・`CHECK` 3 本・`noside`…実際は **`noseed`**・`ix_export_attempt` を外す・契約の `required`／**F-1** のテストの穴 5 通りは**壊して 5/5 落ちる**のを確認／**E-1〜E-3** の設計の字） | `docs/p7-0-audit-report.md` ＋ [`p7-0-audit-triage.md`](p7-0-audit-triage.md)、`docs/p7-0-implementation.md` |
+| **P7-1（記録と判定）** | **実装完了**（**340 passed**・`probe_p7.py --judge` が **`exact` 182 / `approx` 1 / `impossible` 80**。1 枚は ja2en で英訳が PNG に無い＝**この記録の存在理由**。**設計の期待値をこの実測に直した**）。**Fable が監査中** | `docs/p7-1-implementation.md`、`docs/p7-audit-brief-p7-1.md`、`docs/p7-1-audit-report.md`（実行中） |
+| **P7-2（書き出し）** | **実装中**（`mode` 3 つ・検査・印・seed 違い・manifest・`check`/`export`/`exports` の口） | 指示書 [`p7-2-implementation-brief.md`](p7-2-implementation-brief.md) |
+| **P7-3（監視と結果の紐付け）/ P7-4（画面）** | 未着手 | `docs/p7-design.md` §9 |
+| **P8（重複・削除・バックアップ）/ P9（仕上げ）** | 未着手 | `docs/design.md` §14 |
 
 **テストは 260 passed**（P4-1 の監査修正まで。**P4-2 の実装中**）／`gui_smoke` すべて ok／`gui_layout` は**比較・要求・まとまり・注記の 4 画面**すべて ok。`SCHEMA_VERSION = 5`。
 

@@ -150,7 +150,10 @@ def record_doc(*, asset_id: str, prov: dict, mode: str, text: str | None) -> dic
     doc["graph_source"] = "png" if prov.get("graph") else None
     doc["width"] = prov.get("width")
     doc["height"] = prov.get("height")
-    if mode == "manual_text" and text:
+    if mode in ("manual_text", "pin_text") and text:
+        # **監査 C-2**: `pin_text` でも貼られた英文を**残す**（前に `manual_text` だけだったので、
+        # `pin_text` に `text` を添えた再送が「同じ token で違う内容」と誤判定されて 409 になっていた）。
+        # 出所は `manual`（**人が渡した文**。CHECK の語彙は `png_literal` / `reconstructed` / `manual`）
         doc["final_prompt"] = text
         doc["final_prompt_source"] = "manual"
     # **取れなかった項目を名指しする**（「記録が無い」と「取れなかった」を区別する。§3.2）
@@ -239,15 +242,22 @@ def collect_env(probe: ComfyProbe | None, graph: dict | None, info: dict | None)
         return env, False
     stats = probe.system_stats()
     inspected = isinstance(stats, dict)
-    if isinstance(stats, dict):
-        sysinfo = stats.get("system") or {}
-        env["comfyui_version"] = sysinfo.get("comfyui_version")
-        env["frontend_version"] = (stats.get("system") or {}).get("frontend_version")
-        env["pytorch"] = sysinfo.get("pytorch_version")
-        devices = stats.get("devices") or []
-        env["devices"] = devices
-        if devices and isinstance(devices[0], dict):
-            env["cuda"] = devices[0].get("cuda_version") or devices[0].get("name")
+    if not inspected:
+        # **P7-1 の監査 A-1**: 繋がらないときは**ここで打ち切る**。
+        # 前の版は `installed_nodes()` と全 `class_type` の `/object_info` を引き続けたので、
+        # 閉じた port への接続（1.8 秒 × 11〜17 回）で **1 枚 20〜32 秒**かかり、しかも
+        # 引けなかった `None` を「引いたが無かった」と読んで **`node_missing` を並べていた**
+        # （`impossible` になる。設計 §0.8「繋がらないときは `impossible` にしない」に反する）。
+        # `declarations` は `None`（**未検査**）のまま。**`node_missing` / `unresolved` を足さない**。
+        return env, False
+    sysinfo = stats.get("system") or {}
+    env["comfyui_version"] = sysinfo.get("comfyui_version")
+    env["frontend_version"] = (stats.get("system") or {}).get("frontend_version")
+    env["pytorch"] = sysinfo.get("pytorch_version")
+    devices = stats.get("devices") or []
+    env["devices"] = devices
+    if devices and isinstance(devices[0], dict):
+        env["cuda"] = devices[0].get("cuda_version") or devices[0].get("name")
     nodes = probe.installed_nodes()
     if nodes is not None:
         env["nodes"] = nodes if isinstance(nodes, dict) else None
@@ -257,10 +267,13 @@ def collect_env(probe: ComfyProbe | None, graph: dict | None, info: dict | None)
     declarations: dict[str, Any] = {}
     for class_type in class_types:
         got = probe.object_info(class_type)
-        declarations[class_type] = (got or {}).get(class_type) if isinstance(got, dict) else None
+        if isinstance(got, dict):
+            # **引いたが無かった**（知らない `class_type`）→ `{}`（監査 A-1）
+            declarations[class_type] = got.get(class_type, {})
+        else:
+            # **引けなかった**（通信の失敗）→ `None`。**この 2 つを混ぜない**
+            declarations[class_type] = None
     env["declarations"] = declarations
-    if not inspected:
-        return env, False
     # モデルの `(name, size, mtime)`（**名前だけで足りないときの材料**。鍵には入れない。§0.5）
     wanted: dict[str, str] = {}
     for key, value in (("model", (info or {}).get("model")), ("vae", (info or {}).get("vae")),
@@ -372,8 +385,12 @@ def declaration_notes(graph: dict, declarations: dict | None) -> tuple[list[dict
         class_type = node.get("class_type")
         declaration = declarations.get(class_type)
         if declaration is None:
-            # **引いたが無かった＝今の環境に無い**（`collect_env` は到達した `class_type` を必ず入れる。
-            # 値が `None` なのは ComfyUI が知らないノード）。**impossible**
+            # **引けなかった**（その 1 回の `/object_info` が落ちた）→ **検査していない**。
+            # 監査 A-1: 前の版はここを「今の環境に無い」と読んで `node_missing` を並べていた
+            notes.append(f"{class_type} の宣言が取れなかった（検査していない）")
+            continue
+        if declaration == {}:
+            # **引いたが無かった＝ComfyUI が知らないノード**（今の環境に無い）。**impossible**
             reasons.append(_reason("node_missing", f"{class_type}（ノード {node_id}）"))
             continue
         inputs = node.get("inputs") or {}
@@ -404,16 +421,57 @@ def declaration_notes(graph: dict, declarations: dict | None) -> tuple[list[dict
             if isinstance(value, str):
                 options = combos(declaration, key)
                 if options is not None and value not in options:
+                    # **P7-1 の監査 A-2**: モデル / LoRA / VAE が選択肢に無いのは**致命**（§0.6。
+                    # その値では二度と実行できない）。**語彙は増やさず** `fatal` の印で `judge` に伝える
                     reasons.append(_reason("unresolved",
-                                           f"{class_type}.{key}={value}（選択肢に無い）"))
+                                           f"{class_type}.{key}={value}（選択肢に無い）",
+                                           fatal=_is_model_input(class_type, key)))
     return reasons, notes
 
 
-def _reason(kind: str, detail: str) -> dict:
-    return {"kind": kind, "detail": detail}
+#: モデルを指す入力の名前（`unet_name` / `ckpt_name` / `lora_name` / `vae_name` / …）。
+#: **選択肢に無ければ致命**（監査 A-2）。`_name` で終わる物とローダーの class で見る
+MODEL_INPUT_KEYS = ("model", "model_name", "unet_name", "ckpt_name", "lora_name", "vae_name",
+                    "clip_name", "clip_name1", "clip_name2", "text_encoder_name",
+                    "control_net_name", "style_model_name", "embedding_name")
+
+
+def _is_model_input(class_type: Any, key: str) -> bool:
+    """その入力が**モデルの実体**を指すか（監査 A-2。選択肢に無ければ `impossible`）。"""
+    if key in MODEL_INPUT_KEYS or key.endswith("_name"):
+        return True
+    return "Loader" in str(class_type or "")
+
+
+def _reason(kind: str, detail: str, *, fatal: bool = False) -> dict:
+    """理由 1 つ。`fatal=True` は「その値では実行できない」（監査 A-2。**語彙は増やさない**）。"""
+    got = {"kind": kind, "detail": detail}
+    if fatal:
+        got["fatal"] = True
+    return got
 
 
 # ---- 判定（§0.6）----
+
+
+def text_unknown(graph: dict) -> bool:
+    """到達部分グラフに `CLIPTextEncode` があり、**その `text` が分からない**か（§0.6 / 監査 B-2）。
+
+    **分かっている**の定義: `text` がリテラルの文字列、または結線先をたどって文字列に行き着く
+    （`resolve_input`。`png_meta` の `final_prompt` は**主の `KSampler` の正側から**しか埋まらないので、
+    `SamplerCustomAdvanced` のような経路では `final_prompt` が `None` でも文字列は分かっている。
+    前の版はそれでも `text_not_captured` を付けていた）。
+    """
+    graph = {str(k): v for k, v in (graph or {}).items() if isinstance(v, dict)}
+    for nid in reachable_from_outputs(graph):
+        node = graph[nid]
+        if node.get("class_type") != "CLIPTextEncode":
+            continue
+        # `resolve_input` は `(値, 出所)` を返す（`png_meta.py`）
+        got, _source = resolve_input(graph, node, "text")
+        if not (isinstance(got, str) and got.strip()):
+            return True                     # **文字列が分からない**（例: `TextGenerate` の出力を参照）
+    return False
 
 
 def has_text_encoder(graph: dict) -> bool:
@@ -438,13 +496,14 @@ def judge(*, prov: dict, doc: dict, env: dict, inspected: bool,
     else:
         for item in (prov.get("info") or {}).get("unresolved") or []:
             reasons.append(_reason("unresolved", str(item)))
-        if has_text_encoder(graph) and not doc.get("final_prompt"):
+        if text_unknown(graph) and not doc.get("final_prompt"):
             reasons.append(_reason("text_not_captured",
                                    "CLIPTextEncode があるのに文字列が分からない（ja2en のリンク参照）"))
         reasons.extend(extra)
     if not inspected:
         out_notes.append("ComfyUI に繋がらなかったので宣言は確かめていない")
-    fatal = any(r["kind"] in FATAL_REASONS for r in reasons)
+    # **監査 A-2**: 選択肢に無いモデルなどは `fatal` の印で `impossible` に上げる（**語彙は 7 語のまま**）
+    fatal = any(r["kind"] in FATAL_REASONS or r.get("fatal") for r in reasons)
     status = "impossible" if fatal else ("approx" if reasons else "exact")
     return {"status": status, "reasons": reasons, "inspected": bool(inspected), "notes": out_notes}
 
@@ -487,9 +546,27 @@ class RecipeService:
                                [*args, size + 1]).fetchall()
         more = len(rows) > size
         rows = rows[:size]
-        items = [self._doc_of(r) for r in rows]
+        # **監査 G-6-(a)**: 一覧は**要約だけ**（`record` / `env` は 1 枚の口で取る）
+        items = [self._summary_of(r) for r in rows]
         return {"items": items,
                 "next_cursor": f"{rows[-1]['created_at']}|{rows[-1]['id']}" if (more and rows) else None}
+
+    @staticmethod
+    def _summary_of(row) -> dict:
+        """一覧の 1 行（**要約**。監査 G-6-(a)）。`record` / `env` は入れない。"""
+        details = _load(row["reasons"]) or []
+        return {
+            "recipe_id": row["id"],
+            "asset_id": row["source_asset_id"],
+            "mode": row["mode"],
+            "recipe_hash": row["recipe_hash"],
+            "graph_kind": row["graph_kind"],
+            "graph_path": _existing_path(row["graph_path"]),
+            "status": row["status"],
+            "reasons": [r.get("kind") for r in details if isinstance(r, dict)],
+            "actor": row["actor"],
+            "created_at": row["created_at"],
+        }
 
     @staticmethod
     def _doc_of(row) -> dict:
@@ -497,16 +574,21 @@ class RecipeService:
 
         **`reasons` は語（`kind`）の配列**（§3.2 の応答例と同じ形。**書き込みでも再送でも同じ形**にする）。
         詳しい説明は `reason_details` に入れる（画面が「なぜ近似なのか」を出せるように）。
+
+        **（監査 A-4）`graph_path` は実体があるときだけ返す**（消えていれば `null`。`GET` は書かない）。
+        **（監査 B-3）`inspected` と `notes` は `record_json` に残す**（201 の応答だけに出して
+        `GET` で消えると、「確かめた `exact`」と「繋がらなかった `exact`」を区別できない）。
         """
         details = _load(row["reasons"]) or []
+        rec = _load(row["record_json"]) or {}
         return {
             "recipe_id": row["id"],
             "asset_id": row["source_asset_id"],
             "mode": row["mode"],
             "recipe_hash": row["recipe_hash"],
-            "graph_path": row["graph_path"],
+            "graph_path": _existing_path(row["graph_path"]),
             "graph_kind": row["graph_kind"],
-            "record": _load(row["record_json"]),
+            "record": rec,
             "final_prompt": row["final_prompt"],
             "final_prompt_source": row["final_prompt_source"],
             "captured_text": row["captured_text"],
@@ -516,6 +598,8 @@ class RecipeService:
             "status": row["status"],
             "reasons": [r.get("kind") for r in details if isinstance(r, dict)],
             "reason_details": details,
+            "inspected": rec.get("inspected"),
+            "notes": rec.get("notes") or [],
             "actor": row["actor"],
             "created_at": row["created_at"],
         }
@@ -547,7 +631,9 @@ class RecipeService:
             existing = con.execute("SELECT * FROM recipe_record WHERE source_asset_id = ?",
                                    (asset_id,)).fetchone()
             if existing is not None:
-                return {**self._doc_of(existing), "replayed": True}
+                # **監査 A-4**: グラフのファイルが消えていたら**ここで作り直す**（`POST` だけが書く）。
+                # 無ければそのまま 200 で返す（`_doc_of` が `graph_path: null` にする）
+                return self._ensure_graph_file(existing)
             paths = [r["path"] for r in con.execute(
                 "SELECT path FROM asset_location WHERE asset_id = ?"
                 " ORDER BY is_primary DESC, path", (asset_id,))]
@@ -561,20 +647,35 @@ class RecipeService:
         doc = record_doc(asset_id=asset_id, prov=prov, mode=mode, text=text)
         verdict = judge(prov=prov, doc=doc, env=env, inspected=inspected,
                         extra=extra, notes=notes)
+        # **監査 B-3**: 「確かめたか」「検査の注記」を**行に残す**（応答だけにしない）
+        doc["inspected"] = verdict["inspected"]
+        doc["notes"] = verdict["notes"]
         digest = recipe_hash(graph) if graph else "sha256:" + hashlib.sha256(b"").hexdigest()
-        graph_path = str(save_graph(self.store.data_dir, graph, digest)) if graph else None
+        # **監査 B-1**: ファイル名は**画像の内容ハッシュ**（§2.3）。`recipe_hash` を名前に入れると、
+        # **同じ鍵で `filename_prefix` だけ違う 2 枚目が 1 枚目のファイルを黙って書き換える**
+        graph_path = (str(save_graph(self.store.data_dir, graph, _asset_digest(asset)))
+                      if graph else None)
         # --- ③ 短い 1 取引で書く ---
         recipe_id = db.ulid()
         with self.store.transaction() as con:
+            # **監査 A-3**: 同じ画像への同時 `POST` で 2 本目が `IntegrityError` → 500 になっていた
+            # （錠を離れて ComfyUI に聞く間に別の 1 本が入る）。**衝突したら黙って譲り**、
+            # 入っている行を読み直して 200 で返す（`docs/p6-1a-audit-report.md` §2-2 と同じ型）
             con.execute(
                 "INSERT INTO recipe_record(id, source_asset_id, mode, recipe_hash, graph_path,"
                 " graph_kind, record_json, final_prompt, final_prompt_source, captured_text,"
                 " captured_source, text_probe, env_snapshot, status, reasons, actor, client_token,"
-                " created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT DO NOTHING",
                 (recipe_id, asset_id, mode, digest, graph_path,
-                 "api" if graph else None, _dump(doc), doc.get("final_prompt"),
+                 doc.get("graph_format") if graph else None, _dump(doc), doc.get("final_prompt"),
                  doc.get("final_prompt_source"), None, None, None, _dump(env),
                  verdict["status"], _dump(verdict["reasons"]), actor, client_token, db.now()))
+            stored = con.execute("SELECT * FROM recipe_record WHERE source_asset_id = ?",
+                                 (asset_id,)).fetchone()
+            if stored is None or stored["id"] != recipe_id:
+                # 負けた側（別の 1 本が先に入れた）。**その行を返す**（`replayed=True`）
+                return {**self._doc_of(stored), "replayed": True}
         return {"recipe_id": recipe_id, "asset_id": asset_id, "mode": mode,
                 "recipe_hash": digest, "graph_path": graph_path,
                 "graph_source": doc.get("graph_source"),
@@ -582,6 +683,30 @@ class RecipeService:
                 "reasons": [r["kind"] for r in verdict["reasons"]],
                 "inspected": verdict["inspected"], "notes": verdict["notes"],
                 "replayed": False}
+
+    def _ensure_graph_file(self, row) -> dict:
+        """**消えたグラフのファイルを作り直す**（監査 A-4。`POST` だけが書く）。
+
+        `GET` は書かないので、消えていれば `graph_path: null` を返す（`_doc_of`）。
+        ここは記録の口（`POST`）から来たときだけ呼ぶ。PNG から読めなければそのまま返す。
+        """
+        path = row["graph_path"]
+        if path and not Path(str(path)).exists():
+            with self.store.locked() as con:
+                paths = [r["path"] for r in con.execute(
+                    "SELECT path FROM asset_location WHERE asset_id = ?"
+                    " ORDER BY is_primary DESC, path", (row["source_asset_id"],))]
+            graph = _provenance_of(paths).get("graph")
+            if graph:
+                with self.store.locked() as con:
+                    asset = con.execute("SELECT * FROM asset WHERE id = ?",
+                                        (row["source_asset_id"],)).fetchone()
+                new_path = str(save_graph(self.store.data_dir, graph, _asset_digest(asset)))
+                with self.store.transaction() as con:
+                    con.execute("UPDATE recipe_record SET graph_path = ? WHERE id = ?",
+                                (new_path, row["id"]))
+                row = {**dict(row), "graph_path": new_path}
+        return {**self._doc_of(row), "replayed": True}
 
     # ---- 道具 ----
 
@@ -609,6 +734,24 @@ class RecipeService:
 def _dump(value: Any) -> str:
     """JSON の文字列（キー順を固定して、比較と決定性を守る）。"""
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _asset_digest(asset) -> str:
+    """グラフのファイル名に使う**画像の内容ハッシュ**（§2.3。監査 B-1）。
+
+    前の版は `recipe_hash`（条件の鍵）を名前に入れていたので、**同じ鍵で `filename_prefix` だけ
+    違う 2 枚目が 1 枚目のファイルを黙って書き換えていた**（鍵からは `filename_prefix` を除いてある）。
+    **同じ画像なら同じファイル**（§0.4）にもなる。
+    """
+    sha = str((asset or {}).get("sha256") if hasattr(asset, "get") else asset["sha256"] or "")
+    return sha if ":" in sha else f"sha256:{sha}"
+
+
+def _existing_path(path: Any) -> str | None:
+    """**実体があるときだけ**パスを返す（監査 A-4。`GET` は書かないので、無ければ `null`）。"""
+    if path and Path(str(path)).exists():
+        return str(path)
+    return None
 
 
 def _load(raw: Any) -> Any:

@@ -34,6 +34,7 @@ from .api import review_error_handler
 from .export import ExportService
 from .gloss import GlossService
 from .jobs import JobService
+from .recipe_export import RecipeExportService
 from .recipe import RecipeService
 from .review import ReviewError, ReviewService
 from .review_requests import ReviewRequestService
@@ -77,6 +78,8 @@ def create_app() -> FastAPI:
     gloss_svc = GlossService(store)
     # P7-1: 条件の記録（R12 の前半）。**ComfyUI へは環境の写しを取るときだけ GET する**
     recipes_svc = RecipeService(store)
+    # P7-2: 書き出し（R12 の中盤）。**ファイルを書くのは POST のときだけ**（`GET` は書かない）
+    recipe_exports_svc = RecipeExportService(store, recipes_svc)
     exporter.flush_dirty()
 
     @asynccontextmanager
@@ -104,6 +107,7 @@ def create_app() -> FastAPI:
     app.state.jobs = jobs_svc
     app.state.gloss = gloss_svc
     app.state.recipes = recipes_svc
+    app.state.recipe_exports = recipe_exports_svc
     app.add_exception_handler(ReviewError, review_error_handler)
 
     @app.middleware("http")

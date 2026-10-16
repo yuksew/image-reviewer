@@ -28,6 +28,7 @@ from image_reviewer.recipe import (
     judge,
     recipe_hash,
     record_doc,
+    text_unknown,
 )
 from image_reviewer.review import ReviewError
 from image_reviewer.store import Store
@@ -262,20 +263,39 @@ def test_an_unknown_dynamic_combo_is_not_inspected():
 
 
 def test_a_model_missing_from_the_combo_is_impossible():
-    """§0.6: **モデルが選択肢に無い → `impossible`**（`unresolved` の重い側。点検 G-7）。"""
+    """§0.6: **モデルが選択肢に無い → `impossible`**（`unresolved` の重い側。監査 A-2）。
+
+    前の版はここが `approx` のままだった（`unresolved` を `kind` だけで見ていた）。**`status` まで見る**。
+    """
     other = clone(GRAPH)
     other["3"]["inputs"]["unet_name"] = "no-such-model.safetensors"
     reasons, _ = declaration_notes(other, DECLARATIONS)
     assert [r["kind"] for r in reasons] == ["unresolved"]
     assert "選択肢に無い" in reasons[0]["detail"]
+    assert reasons[0].get("fatal") is True, "モデルの欠落が fatal の印を持っていない（監査 A-2）"
+    got = judge(prov={"graph": other, "info": {}}, doc={"final_prompt": "x"},
+                env={}, inspected=True, extra=reasons)
+    assert got["status"] == "impossible", f"選択肢に無いモデルが {got['status']} になった（監査 A-2）"
 
 
 def test_a_missing_node_is_impossible():
-    """§8.1 の 11: 宣言を引いたが無いノードは `node_missing`（**impossible**）。"""
+    """§8.1 の 11 / 監査 A-1: **引いたが無かった**（`{}`）ノードは `node_missing`（impossible）。
+
+    **引けなかった**（`None`）と混ぜない（混ぜると ComfyUI 不通で全部 `impossible` になっていた）。
+    """
     declarations = dict(DECLARATIONS)
-    declarations.pop("KSampler")
+    declarations["KSampler"] = {}                       # **引いたが、知らない class_type**
     reasons, _ = declaration_notes(GRAPH, declarations)
     assert "node_missing" in [r["kind"] for r in reasons]
+
+
+def test_a_declaration_we_could_not_fetch_is_not_node_missing():
+    """監査 A-1: **引けなかった**（`None`）は `node_missing` にしない（**検査していない**だけ）。"""
+    declarations = dict(DECLARATIONS)
+    declarations["KSampler"] = None
+    reasons, notes = declaration_notes(GRAPH, declarations)
+    assert [r["kind"] for r in reasons] == [], "引けなかった宣言を node_missing にした（監査 A-1）"
+    assert any("宣言が取れなかった" in n for n in notes), notes
 
 
 def test_graph_without_a_prompt_chunk_is_impossible_with_missing(env):
@@ -445,3 +465,163 @@ def test_the_endpoints_are_guarded_and_agent_is_403(tmp_path, monkeypatch):
         assert client.get("/api/recipes?limit=5").status_code == 200
         # 知らない画像は 404
         assert client.get("/api/assets/01MISSING/recipe").status_code == 404
+
+
+# ---- P7-1 の監査の指摘（A-1〜A-4 / B-1〜B-3 / C-2 / C-3 / G-6）----
+
+
+def make_png_with_ui(path: Path, graph: dict, *, color=(40, 60, 90)) -> Path:
+    """`prompt` と `workflow` の**両方**を持つ PNG（`api+ui`。監査 C-3）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    im = Image.new("RGB", (48, 64), color)
+    info = PngImagePlugin.PngInfo()
+    info.add_text("prompt", json.dumps(graph))
+    info.add_text("workflow", json.dumps({"nodes": [], "links": []}))
+    im.save(path, pnginfo=info)
+    return path
+
+
+def test_no_comfyui_means_graph_only_and_inspected_false(tmp_path):
+    """監査 A-1: **繋がらないときはグラフだけで判定**し、`inspected=false` を残す。
+
+    - 前の版は全 `class_type` の `/object_info` を引き続けて **1 枚 20〜32 秒**かかり、
+      `node_missing` を並べて **`impossible`** にしていた（設計 §0.8 に反する）。
+    - **`object_info` を 1 回も呼ばない**こと（打ち切り）を `calls` で見る。
+    """
+    store = Store(tmp_path / "data")
+    probe = FakeProbe(stats=False)
+    svc = RecipeService(store, probe_factory=lambda settings: probe)
+    try:
+        path = make_png(tmp_path / "images" / "down.png", PLAIN_GRAPH)
+        asset_id, _ = store.register(sha256="e" * 64, path=str(path), size=path.stat().st_size,
+                                     mtime_ns=path.stat().st_mtime_ns, width=48, height=64,
+                                     fmt="png", meta=None, note=None)
+        got = svc.record(asset_id, mode="pin_text", actor="human")
+        assert got["inspected"] is False
+        assert got["status"] == "exact", f"繋がらないだけで {got['status']} になった（監査 A-1）"
+        assert "node_missing" not in got["reasons"], got["reasons"]
+        assert probe.calls == [], f"打ち切っていない（{len(probe.calls)} 回引いた。監査 A-1）"
+        # **行に残る**（監査 B-3）
+        doc = svc.get(asset_id)
+        assert doc["inspected"] is False
+        assert any("繋がらなかった" in n for n in doc["notes"]), doc["notes"]
+    finally:
+        store.close()
+
+
+def test_two_posts_at_once_do_not_fail(env):
+    """監査 A-3: 同じ画像への同時 `POST` で 500 にしない（**1 行のまま**）。
+
+    錠を離れて ComfyUI に聞く間に 2 本目が入るので、`INSERT` は `ON CONFLICT DO NOTHING` にして
+    負けた側は読み直して返す。`IntegrityError` を投げると 500 になる（前の版）。
+    """
+    import threading
+
+    asset_id, _ = add_asset(env, PLAIN_GRAPH)
+    got: list = []
+    barrier = threading.Barrier(2)
+    # **錠の外に 2 本が同時に居る**ことを保証する（これが無いと、片方が先に書き終えて
+    # もう片方が「既存がある」道に落ち、**衝突の経路を通らない**まま緑になりうる）
+    inside = threading.Barrier(2, timeout=20)
+    real_stats = env.probe.system_stats
+
+    def blocking_stats():
+        inside.wait()
+        return real_stats()
+
+    env.probe.system_stats = blocking_stats
+
+    def one() -> None:
+        barrier.wait()
+        try:
+            got.append(env.svc.record(asset_id, mode="pin_text", actor="human"))
+        except Exception as exc:                       # noqa: BLE001  何が出たかを記録する
+            got.append(exc)
+
+    threads = [threading.Thread(target=one) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert not [g for g in got if isinstance(g, Exception)], f"同時投入で例外: {got}"
+    assert len(rows(env, "SELECT * FROM recipe_record WHERE source_asset_id = ?", (asset_id,))) == 1
+    assert sum(1 for g in got if g.get("replayed") is False) == 1, "どちらも新規になった"
+
+
+def test_a_deleted_graph_file_is_null_then_rebuilt(env):
+    """監査 A-4: 消えたグラフは `GET` が `null`、`POST` が作り直す（§0.4 / §0.10）。"""
+    asset_id, _ = add_asset(env, PLAIN_GRAPH)
+    got = env.svc.record(asset_id, mode="pin_text", actor="human")
+    path = Path(got["graph_path"])
+    assert path.exists()
+    path.unlink()
+    assert env.svc.get(asset_id)["graph_path"] is None, "消えたファイルのパスを返した（監査 A-4）"
+    again = env.svc.record(asset_id, mode="pin_text", actor="human")
+    assert again["replayed"] is True
+    assert again["graph_path"] and Path(again["graph_path"]).exists(), "作り直していない（監査 A-4）"
+
+
+def test_the_graph_file_is_named_after_the_image(env):
+    """監査 B-1: ファイル名は**画像の内容ハッシュ**（§2.3）。
+
+    `recipe_hash` を名前にすると、**同じ鍵で `filename_prefix` だけ違う 2 枚目が
+    1 枚目のファイルを黙って書き換える**（鍵から `filename_prefix` を除いてあるため）。
+    """
+    first, _ = add_asset(env, PLAIN_GRAPH, name="one.png", sha="1" * 64)
+    got = env.svc.record(first, mode="pin_text", actor="human")
+    assert ("1" * 64) in got["graph_path"], f"画像のハッシュが名前に入っていない: {got['graph_path']}"
+    body = Path(got["graph_path"]).read_text(encoding="utf-8")
+
+    other = clone(PLAIN_GRAPH)
+    other["17"]["inputs"]["filename_prefix"] = "repro-other/seed-9"
+    assert recipe_hash(other) == recipe_hash(PLAIN_GRAPH), "前提: 印だけ違う（鍵は同じ）"
+    second, _ = add_asset(env, other, name="two.png", sha="2" * 64)
+    env.svc.record(second, mode="pin_text", actor="human")
+    assert Path(got["graph_path"]).read_text(encoding="utf-8") == body, \
+        "2 枚目が 1 枚目のファイルを書き換えた（監査 B-1）"
+
+
+def test_text_not_captured_only_when_the_string_is_unknown():
+    """監査 B-2: **文字列が分かっている**なら `text_not_captured` を付けない。
+
+    前の版は `has_text_encoder()` だけで見ていたので、`SamplerCustomAdvanced` のように
+    `final_prompt` が埋まらない経路（`KSampler` が無い）で**リテラルでも**付いていた。
+    """
+    literal = clone(PLAIN_GRAPH)
+    assert text_unknown(literal) is False, "リテラルの文字列を「分からない」にした（監査 B-2）"
+    linked = clone(GRAPH)                     # `12` の text は `10`（StringConcatenate）→ `9`（TextGenerate）
+    assert text_unknown(linked) is True, "リンク参照の文字列を「分かる」と見なした"
+
+
+def test_pin_text_replay_with_the_same_token_is_200(env):
+    """監査 C-2: `pin_text` に `text` を添えた再送は **200**（409 になっていた）。"""
+    asset_id, _ = add_asset(env, PLAIN_GRAPH)
+    first = env.svc.record(asset_id, mode="pin_text", text="1girl, classroom",
+                           actor="human", client_token="tok-1")
+    again = env.svc.record(asset_id, mode="pin_text", text="1girl, classroom",
+                           actor="human", client_token="tok-1")
+    assert again["replayed"] is True and again["recipe_id"] == first["recipe_id"]
+
+
+def test_graph_kind_reports_api_plus_ui(env):
+    """監査 C-3: `prompt` と `workflow` の両方がある PNG は `api+ui`（常に `api` になっていた）。"""
+    path = make_png_with_ui(env.tmp_path / "images" / "both.png", PLAIN_GRAPH)
+    asset_id, _ = env.store.register(sha256="3" * 64, path=str(path), size=path.stat().st_size,
+                                     mtime_ns=path.stat().st_mtime_ns, width=48, height=64,
+                                     fmt="png", meta=None, note=None)
+    got = env.svc.record(asset_id, mode="pin_text", actor="human")
+    assert got["graph_path"], "グラフを保存していない"
+    assert env.svc.get(asset_id)["graph_kind"] == "api+ui", "graph_kind が api+ui になっていない（監査 C-3）"
+
+
+def test_the_list_returns_summaries_only(env):
+    """監査 G-6-(a): 一覧は**要約だけ**（`record` / `env` は 1 枚の口で取る）。"""
+    asset_id, _ = add_asset(env, PLAIN_GRAPH)
+    env.svc.record(asset_id, mode="pin_text", actor="human")
+    page = env.svc.list()
+    assert page["items"], "一覧が空"
+    item = page["items"][0]
+    assert "record" not in item and "env" not in item, "一覧が重い（監査 G-6）"
+    assert item["status"] and item["recipe_hash"].startswith("sha256:")
+    one = env.svc.get(asset_id)
+    assert one["record"] and one["env"], "1 枚の口が要約だけになっている"

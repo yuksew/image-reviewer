@@ -14,7 +14,7 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse
 
 from ..tags import require_human                      # 人の検査は 1 か所（§0.10。P4 と同じ）
-from . import actor_of, recipes_of
+from . import actor_of, recipe_exports_of, recipes_of
 
 router = APIRouter(prefix="/api", tags=["recipes"])
 
@@ -43,4 +43,35 @@ def record_recipe(request: Request, asset_id: str, payload: dict = Body(default=
         actor=actor,
         client_token=payload.get("client_token"))
     # 201 = 新しい記録、200 = 再送（`replayed`）または既存（同じ画像に 1 記録）
+    return JSONResponse(got, status_code=200 if got.get("replayed") else 201)
+
+
+# ---- P7-2: 書き出し ----
+
+
+@router.post("/recipes/{recipe_id}/check")
+def check_recipe(request: Request, recipe_id: str):
+    """**書き出す前の検査**（§0.8）。**1 バイトも書かない**（ComfyUI に聞くだけ）。"""
+    return recipe_exports_of(request).check(recipe_id)
+
+
+@router.get("/recipes/{recipe_id}/exports")
+def list_exports(request: Request, recipe_id: str):
+    """書き出しの一覧（束ごと）。**書かない**。"""
+    return recipe_exports_of(request).exports(recipe_id)
+
+
+@router.post("/recipes/{recipe_id}/export")
+def export_recipe(request: Request, recipe_id: str, payload: dict = Body(default={})):
+    """書き出す（**人だけ**）。201 = 新しい束、200 = `client_token` の再送（**同じ `attempt_id`**）。"""
+    actor = actor_of(request)
+    require_human(actor)                              # `agent` は 403（§0.10）
+    got = recipe_exports_of(request).export(
+        recipe_id,
+        mode=payload.get("mode"),
+        seeds=payload.get("seeds"),
+        count=payload.get("count"),
+        marker=bool(payload.get("marker", True)),
+        actor=actor,
+        client_token=payload.get("client_token"))
     return JSONResponse(got, status_code=200 if got.get("replayed") else 201)

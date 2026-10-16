@@ -132,6 +132,21 @@ L1 既定の記録が全部 `approx` になり `exact` が常に 0 になる。�
 
 - **`text_not_captured` は「到達部分グラフに `CLIPTextEncode` があるのに文字列が分からないとき」だけ**付ける。
   **テキストを使わないグラフは「欠けていない」**（前の版はこれを区別していなかった）。
+  - **（P7-1 の監査 B-2）「分かっている」の定義を足す**: `text` が**リテラル**、または**結線先をたどって
+    文字列に行き着く**（`resolve_input`）なら**分かっている**。`png_meta` の `final_prompt` は
+    **主の `KSampler` の正側から**しか埋まらないので、`SamplerCustomAdvanced` のような経路
+    （`KSampler` が無い）では `final_prompt` が `None` でも**文字列は分かっている**。
+    前の版はそれでも付けていた（実装: `text_unknown()`）。
+- **（P7-1 の監査 A-2）選択肢に無いモデル / LoRA / VAE は `fatal` の印で `impossible` にする。**
+  **語彙（7 語）は増やさない**。`reasons[].fatal=true` を `reason_details` に足し、`judge` がそれを見る
+  （`_is_model_input()`＝`*_name` の入力か `Loader` を含む class）。
+- **（P7-1 の監査 A-1）ComfyUI に繋がらないとき**は **`system_stats` で打ち切る**。
+  **全 `class_type` の `/object_info` を引かない**（引くと閉じたポートへの接続 1.8 秒 × 11〜17 回で
+  **1 枚 20〜32 秒**かかり、しかも「引けなかった `None`」を「引いたが無かった」と読んで
+  **`node_missing` を並べて `impossible` にしていた**）。`declarations=None`（**未検査**）のまま
+  **`node_missing` / `unresolved` を足さない**。**`None`（引けなかった）と `{}`（引いたが無かった）を区別**する
+  （`{}` は `node_missing`＝`impossible`、`None` は「検査していない」＋`notes`）。
+  **`inspected=false` は行に残す**（下の B-3）。
 - `status` の決め方（**記録した時点**。書き出しの口でもう一度評価する）:
   `impossible` ⊃ {グラフが無い, 必須のノード/モデルが今の環境に無い} / `approx` ⊃ {記録時の理由が 1 つ以上ある} /
   `exact` ⊃ {記録時の理由が 0 件}。
@@ -992,3 +1007,24 @@ POST /api/watcher/stop  → 200 {"enabled": false}
 | **G-5** | 契約の `required` | **`generated_at` と `marker_skipped` を足す**（書き手は必ず両方書く） | §6.1 |
 | **E-1** | `marker_skip_reason` の字 | **`'前提1'`（空白なし）が正**。設計の本文もこの字に揃えた（空白ありは `CHECK` で落ちる） | §0.7・§5.1・§8.1-7 |
 | **E-2 / E-3** | 索引の名と表の数 | **`ix_attempt_recipe`**（`ix_export_recipe` は名残り）／**6 表**（`recipe_export_attempt` を足した） | §2.2・§8.1-29・§0.1・§9 |
+
+### 0.17 P7-1 の監査で確定したこと（2026-10-16。**推奨どおり**）
+
+監査の判定は「**直してから次へ**」。理由は「落ちているのは**端の経路**（ComfyUI 不通・選択肢に無いモデル・
+同時投入・消えたグラフ）で、うち 2 つは指示書が名指しした観点の設計の約束」。**すべて直した**
+（`tests/test_recipe.py` に 9 件のテストを足して **369 passed**）。
+
+| # | 論点 | 決定 | 反映先 |
+| --- | --- | --- | --- |
+| **A-1 / G-1-(a)** | ComfyUI に繋がらないとき | **グラフだけで判定**し、**`system_stats` で打ち切る**（1 枚 20〜32 秒 → 1 往復）。**`node_missing` / `unresolved` を足さない**。**`inspected=false` を残す**。**`None`（引けなかった）と `{}`（引いたが無かった）を区別** | §0.6・§3.2（`collect_env` / `declaration_notes`） |
+| **A-2 / G-2-(a)** | 選択肢に無いモデル / LoRA / VAE | **`reason_details[].fatal=true`** を足し、**`judge` が `impossible`** にする（**7 語は増やさない**） | §0.6（`_is_model_input()`） |
+| **A-3 / G-4-(a)** | 同じ画像への同時 `POST` | **`INSERT … ON CONFLICT DO NOTHING` → 再 `SELECT` → 200**（錠を外部の往復まで広げない）。**1 本が新規・他は 200**で行は 1 | §0.10・§3.2 |
+| **A-4** | 消えたグラフのファイル | **`GET` は `null`**（`graph_path` は**実体があるときだけ**返す）、**`POST` が PNG から作り直す** | §0.4・§0.10 |
+| **B-1 / G-3-(a)** | グラフのファイル名 | **画像の内容ハッシュ**（`<data>/workflows/<画像の sha256>.json`）。`recipe_hash` を名前にすると、**同じ鍵で印だけ違う 2 枚目が 1 枚目を書き換える** | §2.3（`_asset_digest()`） |
+| **B-2** | `text_not_captured` の条件 | **「文字列が分からない」ときだけ**（リテラル・結線先で解決できるなら**分かっている**） | §0.6（`text_unknown()`） |
+| **B-3** | `inspected` と `notes` | **`record_json` に残す**（応答だけにすると `GET` で「確かめた `exact`」と区別できない）。**グラフ無しのときに「繋がらなかった」と出さない** | §3.2・§4.1 |
+| **C-2** | `pin_text` の再送 | **`pin_text` でも貼られた英文を `final_prompt` に残す**（出所は `manual`）。同じ `client_token` の再送は **200** | §3.2（`record_doc()`） |
+| **C-3** | `graph_kind` | **`record_json.graph_format` を書く**（`prompt` と `workflow` の両方がある PNG は **`api+ui`**。前の版は常に `api`） | §2.1（`CHECK` が生きる） |
+| **G-5-(b)** | グラフ無しの `recipe_hash` | **空の SHA-256 のまま**（表は触らない）。**等価判定は `graph_path IS NOT NULL` を条件**にする。`check` / `export` は `status='impossible'` で止まるので実害は小さい | §0.5・§5.1 |
+| **G-6-(a)** | `GET /api/recipes` | **要約だけ**（`record` / `env` は 1 枚の口）。一覧が重くならない | §3.6 |
+| **C-1（持ち越し）** | 1 枚あたりの ComfyUI の `GET` | **目標（p95 300 ms）内**（実測: 口から 中央 128.7 ms・p95 196.4 ms・`/object_info/{ct}` 1,534 本）。`class_type` ごとの**短いキャッシュ（60 秒）**は**P7-2 以降**に回す | §7・§10 |

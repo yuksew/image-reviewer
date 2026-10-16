@@ -60,6 +60,11 @@ def recipes_of(request: Request):
     return request.app.state.recipes
 
 
+def recipe_exports_of(request: Request):
+    """書き出し（P7-2）。`app.state` から取る（閉包で掴まない）。"""
+    return request.app.state.recipe_exports
+
+
 def actor_of(request: Request) -> str:
     """点検 A2: actor は**ヘッダだけ**から取る。無ければ `agent`（＝判断は 403）。
 

@@ -61,7 +61,7 @@
 | **E-5** | §3.3 の「`PATCH /api/settings`（既存の口に足す）」は口が無かったので新設 | **そのまま**（実装が正。§3.3 の表は「既存の口に `backup_dir` を足す」のまま。**口は P8-4 で作った**と記録にある） | — |
 | **E-6** | §3.4 の表に `503 read_only` は 1 行（実装は `mode` / `reason` を足した） | **採用**: §3.4 に**壊れたページの読み（503 `read_only`・`reason: malformed`）**と **409 `bad_snapshot`**・**409 `bad_backup`（sha256）**・**409 `restore_failed`** の行を足した | `p8-design.md` §3.4 |
 | **E-7** | 線 10 の「`<YYYYMMDD>/` を一時に作って `os.replace`」は「いま取る」の説明として古い | **採用**: 線 10 を `<YYYYMMDD>-<HHMMSS>/` に直した（線 10 の「4 つ」も 5 つに） | `p8-design.md` §1.2 の線 10 |
-| **F** | 守れていない 5 つ（日次の検査・`db_sha256`・`unlink` の錠・読み取り専用の読み・`GET` が書かないの見方）＋壊し試験の穴 | **採用**: **14 件の試験を足した**（§8.1 の 72〜87）。`test_get_endpoints_write_nothing` は**全表と全ファイルの中身の `sha256`** でも比べる形にした。**壊し試験は 18 通り中 18 通りで落ちる** | `tests/test_backup.py`・`.tmp-audit-redo/p84-fix/mutants.py`・`p8-design.md` §8.1・§8.4 |
+| **F** | 守れていない 5 つ（日次の検査・`db_sha256`・`unlink` の錠・読み取り専用の読み・`GET` が書かないの見方）＋壊し試験の穴 | **採用**: **新規 15 件＋書き換え 1 件の試験を足した**（§8.1 の 72〜87）。`test_get_endpoints_write_nothing` は**全表と全ファイルの中身の `sha256`** でも比べる形にした。**壊し試験は 18 通り中 18 通りで落ちる** | `tests/test_backup.py`・`.tmp-audit-redo/p84-fix/mutants.py`・`p8-design.md` §8.1・§8.4 |
 | **G-1** | 日次の健全性（推奨: 写しに `check_db_file(full=True)`・落ちたら捨てて `last_error`・`prune` を呼ばない・元の接続も見る） | **採用**（B-1 のとおり。**物差しは復元の後と同じ `check_snapshot_db`**） | 上と同じ |
 | **G-2** | `db_sha256` の照合（推奨: 手順 2 の前に比べる・違えば 409・`--force` で進む） | **採用**（C-1 のとおり） | 上と同じ |
 | **G-3** | 読み取り専用の読み（推奨: `locked()`・`DatabaseError` を 503 に写す handler） | **採用**（C-3 のとおり） | 上と同じ |

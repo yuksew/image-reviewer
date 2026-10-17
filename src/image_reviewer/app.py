@@ -16,6 +16,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import db
 from . import thumbs
 from . import compare
 from .annotations import AnnotationService
@@ -23,6 +24,7 @@ from .annotations import AnnotationService
 # `from .api import annotations as ...` は**標準ライブラリの `__future__.annotations`**
 # （`_Feature` オブジェクト）を拾ってしまう。**モジュールを名指しで**取る
 from .api.annotations import router as annotations_router
+from .api import backup as backup_api
 from .api import compare as compare_api
 from .api import deletions as deletions_api
 from .api import duplicates as duplicates_api
@@ -30,8 +32,10 @@ from .api import export as export_api
 from .api import groups as groups_api
 from .api import requests as requests_api
 from .api import reviews as reviews_api
+from .api import roots as roots_api
 from .api import tags as tags_api
 from .api import review_error_handler
+from .backup import BackupService, backup_before_migrate, inspect_db
 from .deletions import DeletionService
 from .duplicates import DuplicatesService
 from .export import ExportService
@@ -58,32 +62,63 @@ def data_dir() -> Path:
 
 
 def create_app() -> FastAPI:
+    # P8-4（設計 §0.12-5・§10-12・§10-13）: **開く前に健全性を見る**。
+    # 壊れている（2 ページ目を潰した形・開けない形）か、DB の版がバイナリより新しければ
+    # **読み取り専用で開く**（壊れた DB に書き込んで傷を広げない）。判定は
+    # `quick_check`（**例外も「壊れている」に数える**。点検 B3）。
+    db_state = inspect_db(data_dir())
+    read_only = bool(db_state["read_only"])
+    if read_only:
+        log.warning("DB を読み取り専用で開きます（%s）: %s", db_state["reason"],
+                    db_state["guidance"])
+    # P8-4（設計 §0.12-6・専門 §5.4）: **版を上げる前に控えを取る**。
+    # 取れなければ**版を上げない**（読み取り専用で起動して案内する。黙って上げない）。
+    # 置き場は `backup_before_migrate` が決める（**環境変数 → 設定 `backup_dir` → 既定**）
+    if db_state["mode"] == "ok" and (db_state["schema_version"] or 0) \
+            and db_state["schema_version"] < db.SCHEMA_VERSION:
+        try:
+            pre = backup_before_migrate(data_dir())
+            log.warning("版を上げる前に控えを取りました（v%s → v%s）: %s",
+                        db_state["schema_version"], db.SCHEMA_VERSION, (pre or {}).get("dir"))
+        except Exception as exc:  # noqa: BLE001  控えが取れないなら上げない（安全側）
+            log.exception("版を上げる前の控えを取れませんでした")
+            db_state = {**db_state, "mode": "read_only",
+                        "reason": "pre_migrate_backup_failed", "read_only": True,
+                        "error": str(exc),
+                        "guidance": "版を上げる前の控えを取れないので、版を上げません"
+                                    "（読み取り専用で起動しています）: " + str(exc)}
+            read_only = True
     # 判断と書き出し（P5-1）が同じ 1 本を使うための置き場（点検 C13）
-    store = Store(data_dir())
+    store = Store(data_dir(), read_only=read_only)
     # 監査 A1: 起動時に拾うのは**DB の印**（`exported_at IS NULL OR changed_at > exported_at`）
     # だけにする。メモリの `_pending` は落ちると消えるので当てにしない。
     # 順序は「写しの組み直し（`ReviewService`）→ 書き出し」にする（点検 C3。
     # 壊れた写しを書き出してから直すと、直した内容が次の判断までファイルに出ない）
     exporter = ExportService(store, flush_on_start=False)
-    review = ReviewService(store, exporter=exporter)
+    review = ReviewService(store, exporter=exporter, reconcile_on_start=not read_only)
     # P6-1a: 要求の口（受付・一覧・取得・断る）。`decide` で閉じるのは `ReviewService` の側
     requests_svc = ReviewRequestService(store, review)
     # P6-2: 注記の口。切り出しは**キャッシュ**なので、過去に失敗して残った一時ファイルを
-    # 起動時に片づける（§0.8。P5 の書き出しと同じ形）
+    # 起動時に片づける（§0.8。P5 の書き出しと同じ形）。
+    # **（P8-4）読み取り専用のときは `<data>` に触らない**（一時ファイルの掃除もしない）
     annotations_svc = AnnotationService(store)
-    annotations_svc.clean_stale_tmp()
+    if not read_only:
+        annotations_svc.clean_stale_tmp()
     # P4-1: タグ付けの背景ジョブ（**ワーカーは 1 本**）。起動時に、前のプロセスが落ちて
     # `running` のまま残った job を `failed` にする（残すと次の POST が 409 で塞がる。§4.1）
-    jobs_svc = JobService(store)
+    jobs_svc = JobService(store, recover=not read_only)
     # P4-2: 語釈（日本語）。**模型は呼んだときだけ**回す（既定は「語釈の無い語だけ」）
     gloss_svc = GlossService(store)
     # P8-1: 重複の検出と整理。**pHash は `GET` では計算しない**（背景ジョブだけが計算する）。
     # 起動時に、前のプロセスが落ちて `running` のまま残ったハッシュの job を `failed` にする
-    duplicates_svc = DuplicatesService(store)
+    duplicates_svc = DuplicatesService(store, recover=not read_only)
     # P8-2: 削除の 3 段階と 5 分の窓。**起動時には消さない**（タイマーは `lifespan` で張る。
     # 起動の直後に消すと、再起動で取り消せなくなる。設計 §0.6-3）
     deletions_svc = DeletionService(store)
-    exporter.flush_dirty()
+    # P8-4: 日次バックアップ（**30 秒の周期**で「今日まだなら取る」。点検 B2）
+    backup_svc = BackupService(store)
+    if not read_only:
+        exporter.flush_dirty()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -95,15 +130,26 @@ def create_app() -> FastAPI:
 
         P8-2: ここで**削除のタイマー（30 秒周期）を張る**。**張った時点では何も消さない**
         （期限切れの片づけは 2 回目の周期から。設計 §0.6-3・§1.2 の線 7）。
+
+        P8-4: **バックアップのタイマー（同じ 30 秒）も張る**。こちらは**起動した直後に
+        1 回見る**（「今日まだなら取る」。設計 §0.12-1・点検 B2）。**壊れた DB のときは
+        どちらのタイマーも張らない**（読み取り専用で起動しているので、書く仕事を回さない）。
         """
-        deletions_svc.start()
+        if db_state["mode"] == "ok":
+            deletions_svc.start()
+            backup_svc.start()
+        else:
+            log.warning("読み取り専用で起動しています（%s）。タイマーは張りません",
+                        db_state["reason"])
         try:
             yield
         finally:
             # **タイマーを先に止める**（止めないと、閉じた接続に触って例外を出す）
             deletions_svc.stop()
+            backup_svc.stop()
             try:
-                exporter.flush()
+                if not read_only:
+                    exporter.flush()
             except Exception:  # noqa: BLE001  終了を失敗で止めない（DB の印は次回が拾う）
                 log.exception("終了時の書き出しに失敗しました（次の起動で拾います）")
             finally:
@@ -123,7 +169,36 @@ def create_app() -> FastAPI:
     app.state.gloss = gloss_svc
     app.state.duplicates = duplicates_svc
     app.state.deletions = deletions_svc
+    app.state.backup = backup_svc
+    #: P8-4: 起動の前に見た DB の状態（`GET /api/health/db` と middleware が見る）
+    app.state.db_state = db_state
     app.add_exception_handler(ReviewError, review_error_handler)
+
+    def _db_gate(request: Request) -> JSONResponse | None:
+        """**壊れた DB で書き込ませない**（設計 §1.2 の線 12・§3.4）。
+
+        - `unusable`（先頭 4 KB を潰した形＝読み取りも通らない）: `/api/health` と
+          `/api/health/db` 以外の口を **503 `read_only`**
+        - `read_only`（壊れているが読める・版が新しい）: **書き込みの口**（`GET` 以外）を
+          503 `read_only`。読み取りの口は生かす（何が残っているかを見せて、復元へ導く）
+
+        守り（Host / Origin / Content-Type）の**後ろ**で見る（`Host: evil` は 403 のまま。
+        順序が逆だと、壊れた DB のときだけ 403 が 503 に化ける）。
+        """
+        mode = app.state.db_state.get("mode")
+        if mode == "ok":
+            return None
+        path = request.url.path
+        if path in ("/api/health", "/api/health/db"):
+            return None
+        if mode == "unusable" or request.method not in ("GET", "HEAD", "OPTIONS"):
+            return JSONResponse({
+                "detail": "DB が壊れているので書き込めません（読み取り専用で起動しています）",
+                "code": "read_only",
+                "details": {"mode": mode, "reason": app.state.db_state.get("reason")},
+                "guidance": app.state.db_state.get("guidance"),
+            }, status_code=503)
+        return None
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
@@ -140,6 +215,9 @@ def create_app() -> FastAPI:
                 return JSONResponse({"detail": "origin not allowed"}, status_code=403)
             if request.headers.get("content-type", "").split(";")[0] not in ("application/json", ""):
                 return JSONResponse({"detail": "content-type must be application/json"}, status_code=403)
+        blocked = _db_gate(request)                  # P8-4（守りを通した後に見る）
+        if blocked is not None:
+            return blocked
         return await call_next(request)
 
     app.include_router(reviews_api.router)
@@ -155,6 +233,10 @@ def create_app() -> FastAPI:
     app.include_router(duplicates_api.router)
     # P8-2: 削除（`/api/locations/...` と `/api/pending-deletes`・`/api/deletions`・`/api/trash`）
     app.include_router(deletions_api.router)
+    # P8-4: バックアップと健全性（`/api/backup`・`/api/health/db`・`/api/settings`）と
+    # 置き場の印（`/api/roots`）
+    app.include_router(backup_api.router)
+    app.include_router(roots_api.router)
 
     def _asset_or_404(asset_id: str) -> dict:
         asset = store.asset(asset_id)
@@ -288,6 +370,11 @@ def create_app() -> FastAPI:
         path = _primary_path(asset)
         if not path or not os.path.exists(path):
             raise HTTPException(404, "実体が見つかりません")
+        # P8-4: **読み取り専用のときは作らない**（`<data>` に書き足さない）。
+        # 既にあるサムネイルは返す（見るだけなら使える）
+        if store.read_only and not thumbs.thumb_path(data_dir(), asset["sha256"], size).exists():
+            raise ReviewError(503, "DB が壊れているのでサムネイルを作りません"
+                                   "（バックアップから戻してください）", code="read_only")
         try:
             # P5-3（**実測 F5**）: pHash / dHash は**この復号と同じ 1 枚**から計算する
             # （11.88 ms/枚 のうち 11.35 ms が復号。設計 §6.2 の「走査の背景ジョブ」は

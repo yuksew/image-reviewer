@@ -81,8 +81,13 @@ class ReviewService:
         self.store = store
         # 書き出しの遅延（点検 D10）。渡されていなければ何もしない
         self.exporter = exporter
-        reasons.seed(store.con)          # builtin は起動のたびに埋める（消えていても戻る）
-        if reconcile_on_start:
+        # **（P8-4）読み取り専用で開いているときは書かない。** 壊れた DB を
+        # 「読み取り専用で起動」する道（設計 §0.12-5）では、起動の手当てそのものが
+        # `attempt to write a readonly database` で落ちて、アプリが立ち上がらなくなる。
+        # builtin は DB を作ったときに既に入っている（`_seed_settings` と同じ前提）。
+        if not getattr(store, "read_only", False):
+            reasons.seed(store.con)      # builtin は起動のたびに埋める（消えていても戻る）
+        if reconcile_on_start and not getattr(store, "read_only", False):
             self.reconcile()
 
     # ---- 1 枚の判断（§3.1）----

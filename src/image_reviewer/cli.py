@@ -5,6 +5,9 @@
   uv run image-reviewer capture --base-url http://127.0.0.1:8188
   uv run image-reviewer serve --port 8790
   uv run image-reviewer migrate-from-json        # .data/store.json を SQLite へ取り込む
+  uv run image-reviewer backup --out D:\\backups  # いま 1 回取る（P8-4）
+  uv run image-reviewer restore D:\\backups\\20261018
+  uv run image-reviewer rebuild-metadata         # PNG と sidecar から来歴を組み直す
 
 どのコマンドでも、`_store()` が `app.data_dir` を読み、そのあと**起動時の書き出し**
 （DB の印で拾う。監査 A1）を明示的に走らせる。以前は `app` モジュールの読み込み
@@ -19,6 +22,7 @@ import sys
 from pathlib import Path
 
 from . import db, reasons
+from .review import ReviewError
 from .scan import scan
 from .store import Store, normalize_path
 
@@ -31,10 +35,22 @@ def _store(*, flush: bool = True):
 
     以前は `app` モジュールの読み込み（`create_app()`）がその役を兼ねていたが、
     同じプロセスで 2 回目以降は読み込みが走らないので、**読み込みの順序に依存していた**
-    （P5-2 の API テストが先に `create_app()` を読み込むと、CLI 側の書き出しが漏れる）。
+    （P5-2 の API
+    テストが先に `create_app()` を読み込むと、CLI 側の書き出しが漏れる）。
     ここで明示的に呼べば順序に依らない。印の無い DB では `flush_dirty()` は何もしない。
+
+    **P8-4**: 版が古ければ、`Store` を開く（＝マイグレーションが走る）**前に控えを取る**
+    （設計 §0.12-6）。取れなければ `ReviewError` を投げる（`main()` が 2 で返す）。
     """
     from .app import data_dir
+    from .backup import backup_before_migrate, inspect_db
+    from .review import ReviewError
+
+    state = inspect_db(data_dir())
+    if state["mode"] != "ok":
+        raise ReviewError(503, state["guidance"] or "DB が壊れています", code="read_only")
+    if state["schema_version"] and state["schema_version"] < db.SCHEMA_VERSION:
+        backup_before_migrate(data_dir())
 
     store = Store(data_dir())
     if flush:
@@ -99,6 +115,125 @@ def cmd_serve(args) -> int:
     import uvicorn
 
     uvicorn.run("image_reviewer.app:app", host=args.host, port=args.port, log_level="info")
+    return 0
+
+
+# ---- バックアップと復元（P8-4。設計 §0.12・§3.3）----
+
+
+def _guard_db(data_dir_path) -> dict | None:
+    """壊れた DB では**書く仕事をしない**（設計 §0.12-5）。
+
+    壊れているのに `Store(data_dir())` を開くと、`migrate()` の手当て（`_top_up_*`）が
+    書こうとして落ちる。**先に健全性を見て、案内を出して止める**（CLI の流儀）。
+    """
+    from .backup import inspect_db
+
+    state = inspect_db(data_dir_path)
+    if state["mode"] == "ok":
+        return None
+    print(state["guidance"] or "DB が壊れています", file=sys.stderr)
+    return state
+
+
+def cmd_backup(args) -> int:
+    """**いま 1 回取る**（`--out` で置き場を指定。既定は `backup_dir`）。"""
+    from .app import data_dir
+    from .backup import BackupService
+    from .review import ReviewError
+
+    broken = _guard_db(data_dir())
+    if broken is not None:
+        return 2
+    store = _store()
+    try:
+        svc = BackupService(store)
+        try:
+            got = svc.snapshot(manual=True, out=args.out, include_library=args.include_library)
+        except ReviewError as exc:
+            print(exc.detail, file=sys.stderr)
+            return 2
+    finally:
+        store.close()
+    manifest = got["manifest"]
+    print(f"バックアップを取りました: {got['dir']}")
+    print(f"  作った時刻 {manifest['created_at']} / 版 {manifest['app_version']} / "
+          f"abi {manifest['abi']}")
+    counts = manifest["counts"]
+    print(f"  画像 {counts['assets']} 枚 / 判断 {counts['decisions']} 件 / "
+          f"まとまり {counts['groups']} / 注記 {counts['annotations']} / 語 {counts['tags']}")
+    print(f"  DB {manifest['db_bytes'] / 1024:.1f} KB（{manifest['db_sha256'][:19]}…）")
+    files = got["files"]
+    print(f"  sidecar / export: 写した {files['copied']} / 前と同じで共有した {files['linked']} "
+          f"/ 設定 {got['settings']} 件")
+    if got["library"]["files"]:
+        print(f"  画像の実体 {got['library']['files']} 枚（"
+              f"{got['library']['bytes'] / 1048576:.1f} MB）")
+    if got["pruned"]:
+        print(f"  古いスナップショットを消しました: {', '.join(got['pruned'])}")
+    print(f"  置き場: {got['backup_dir']}")
+    return 0
+
+
+def cmd_restore(args) -> int:
+    """**バックアップから戻す**（`<data>` を消していても戻せる。設計 §0.12-4）。
+
+    **`Store` を開かない**（壊れた DB を置き換えるのがこの道具の仕事なので、
+    開いてからでは遅い）。`manifest.json` を読んで**版と件数を先に出す**。
+    """
+    from .app import data_dir
+    from .backup import restore
+    from .review import ReviewError
+
+    try:
+        got = restore(data_dir(), args.dir, force=args.force)
+    except ReviewError as exc:
+        print(exc.detail, file=sys.stderr)
+        return 2
+    manifest = got["manifest"]
+    print(f"バックアップ: {got['dir']}")
+    if manifest is None:
+        print(f"  注意: manifest.json が読めません（--force で進みました）: "
+              f"{got['manifest_error']}")
+    else:
+        counts = manifest["counts"]
+        print(f"  作った時刻 {manifest['created_at']} / 版 {manifest['app_version']}")
+        print(f"  画像 {counts['assets']} 枚 / 判断 {counts['decisions']} 件 / "
+              f"まとまり {counts['groups']} / 注記 {counts['annotations']} / 語 {counts['tags']}")
+    print(f"  戻す前の quick_check: {got['before']['detail']}")
+    if got["setaside"]:
+        print(f"  元の DB を退避しました: {got['setaside']}")
+    print(f"  戻しました: {got['data_dir']}\\db.sqlite3"
+          f"（integrity_check: {got['after']['detail']}）")
+    for name, stat in got["copied"].items():
+        print(f"  {name}: {stat['files']} ファイルを戻しました")
+    if got["library"]["restored"] or got["library"]["missing"]:
+        print(f"  画像の実体: 戻した {got['library']['restored']} / 既にあった "
+              f"{got['library']['kept']} / 見つからない {got['library']['missing']}")
+    print("  走査を 1 回勧めます（参照切れを拾うため）: image-reviewer scan --root <置き場>")
+    return 0
+
+
+def cmd_rebuild_metadata(args) -> int:
+    """**PNG と sidecar から来歴を組み直す**（設計 §0.12-4。専門 §5.2 の 4）。"""
+    from .app import data_dir
+    from .backup import rebuild_metadata
+
+    broken = _guard_db(data_dir())
+    if broken is not None:
+        return 2
+    store = _store()
+    try:
+        got = rebuild_metadata(store)
+    finally:
+        store.close()
+    print("来歴を組み直しました（**DB にある値は上書きしません**）。")
+    print(f"  見た {got['assets']} 枚 / 埋めた {got['updated']} / そのまま {got['unchanged']}")
+    print(f"  sidecar から {got['from_sidecar']} / PNG から {got['from_png']} / "
+          f"sidecar {got['sidecars']} ファイル")
+    print(f"  実体が無い {got['missing_files']} / 元になる物が無い {got['no_source']}")
+    for note in got["notes"][:10]:
+        print(f"  注記: {note}", file=sys.stderr)
     return 0
 
 
@@ -345,8 +480,33 @@ def main(argv: list[str] | None = None) -> int:
                        help="取り込み元の JSON（既定: <data>/store.json）")
     p_mig.set_defaults(func=cmd_migrate_from_json)
 
+    # ---- P8-4（バックアップと復元。設計 §0.12-4）----
+    p_backup = sub.add_parser("backup", help="いま 1 回バックアップを取る（**必ず新しく取る**）")
+    p_backup.add_argument("--out", default=None,
+                          help="置き場（既定: 設定 backup_dir。**<data> の中は断る**）")
+    p_backup.add_argument("--include-library", action="store_true",
+                          help="画像の実体も控える（既定は取らない。参照モードでは画像は利用者の資産）")
+    p_backup.set_defaults(func=cmd_backup)
+
+    p_restore = sub.add_parser("restore", help="バックアップから戻す（元の DB は退避してから）")
+    p_restore.add_argument("dir", help="バックアップのフォルダ（manifest.json のある所）")
+    p_restore.add_argument("--force", action="store_true",
+                           help="manifest が読めない・写しの DB が quick_check に通らなくても戻す")
+    p_restore.set_defaults(func=cmd_restore)
+
+    p_rebuild = sub.add_parser(
+        "rebuild-metadata",
+        help="PNG と sidecar から来歴を組み直す（DB にある値は上書きしない）")
+    p_rebuild.set_defaults(func=cmd_rebuild_metadata)
+
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except ReviewError as exc:
+        # **P8-4**: 壊れた DB・控えが取れない、は**番号ではなく終了コードで**返す
+        # （人が読む 1 行を stderr に出す。スタックトレースを出さない）
+        print(exc.detail, file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

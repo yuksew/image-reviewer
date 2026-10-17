@@ -6,7 +6,9 @@
 
     uv run --no-sync python tools/probe_p8.py              # P8-1（線 1〜3。重複）
     uv run --no-sync python tools/probe_p8.py --delete     # P8-2（線 5〜8。削除と取り消し）
-    uv run --no-sync python tools/probe_p8.py --all        # 両方
+    uv run --no-sync python tools/probe_p8.py --backup     # P8-4（線 10・12。バックアップと健全性）
+    uv run --no-sync python tools/probe_p8.py --restore    # P8-4（線 11。復元と組み直し）
+    uv run --no-sync python tools/probe_p8.py --all        # 全部
     uv run --no-sync python tools/probe_p8.py --keep       # 複製を残す
     uv run --no-sync python tools/probe_p8.py --distances 0,3,6,10   # 距離を絞る
 
@@ -263,7 +265,9 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--duplicates", action="store_true", help="P8-1（線 1〜3）")
     ap.add_argument("--delete", action="store_true", help="P8-2（線 5〜8）")
-    ap.add_argument("--all", action="store_true", help="両方")
+    ap.add_argument("--backup", action="store_true", help="P8-4（線 10・12。バックアップと健全性）")
+    ap.add_argument("--restore", action="store_true", help="P8-4（線 11。復元と組み直し）")
+    ap.add_argument("--all", action="store_true", help="全部")
     ap.add_argument("--distances", default=None,
                     help=f"帯と総当たりを比べる距離（既定は 0〜{MAX_DISTANCE_LIMIT} の全部。"
                          "例: 0,3,6,10）")
@@ -274,12 +278,17 @@ def main() -> int:
             if not (0 <= dist <= MAX_DISTANCE_LIMIT):
                 print(f"NG: --distances は 0〜{MAX_DISTANCE_LIMIT}（{dist} が外）")
                 return 1
-    both = args.all or not (args.duplicates or args.delete)
+    chosen = (args.duplicates, args.delete, args.backup, args.restore)
+    both = args.all or not any(chosen)
     ok = True
     if both or args.duplicates:
         ok = probe_duplicates() and ok
     if both or args.delete:
         ok = probe_delete() and ok
+    if both or args.backup:
+        ok = probe_backup() and ok
+    if both or args.restore:
+        ok = probe_restore() and ok
     if not args.keep:
         shutil.rmtree(WORK, ignore_errors=True)
         if WORK.exists():
@@ -725,6 +734,324 @@ def probe_delete() -> bool:
          f" / 画像の署名 {'同じ' if same else '違う'}")
     print(f"   作業場: {WORK}（--keep で残す）")
     return ok
+
+
+# ---- P8-4（バックアップと復元。線 10〜12）----
+
+
+def copy_data_dir(into: Path) -> Path:
+    """実データの**置き場ごと**複製する（DB は `backup()`・ファイルは `copy2`）。
+
+    `db.sqlite3` を `cp` すると WAL の分（実データは 4 MB あった）が抜けるので、
+    **必ず `sqlite3` の `backup()`**。`sidecar/` と `export/` も写す（実データは 1 件ずつ）。
+    """
+    if into.exists():
+        shutil.rmtree(into)
+    into.mkdir(parents=True)
+    copy_real(into)
+    for sub in ("sidecar", "export"):
+        src = REAL_DIR / sub
+        if src.is_dir():
+            shutil.copytree(src, into / sub)
+    return into
+
+
+def zero_bytes(path: Path, start: int, end: int) -> None:
+    """**複製の**ページを 0 で潰す（実データでは絶対にやらない）。"""
+    with open(path, "r+b") as fh:
+        fh.seek(start)
+        fh.write(b"\x00" * (end - start))
+
+
+def probe_broken_forms() -> bool:
+    """**壊れた DB の 3 つの形**を実データの複製で測る（設計 §0.16 B3・§10-12）。
+
+    先頭 4 KB / 2 ページ目 / 300 ページ目。`inspect_db` の判定と、
+    生の `PRAGMA quick_check` がどうなるか（例外か行か）を出す。
+    """
+    from image_reviewer.backup import inspect_db                 # noqa: PLC0415
+
+    ok = True
+    forms = [("先頭 4KB", 0, 4096), ("2 ページ目", 4096, 8192), ("300 ページ目", 300 * 4096, 301 * 4096)]
+    for label, start, end in forms:
+        data = copy_real(WORK / f"broken-{start}")
+        db_file = data / "db.sqlite3"
+        if end > db_file.stat().st_size:
+            print(f"   [--] {label}: ファイルが小さい（{db_file.stat().st_size} バイト）")
+            continue
+        zero_bytes(db_file, start, end)
+        got = inspect_db(data)
+        detail = (got["quick_check"] or got["error"] or "").replace("\n", " ")[:70]
+        good = got["mode"] in ("read_only", "unusable") and got["read_only"] is True
+        ok = ok and good
+        print(f"   [{'OK' if good else 'NG'}] {label}: mode={got['mode']} reason={got['reason']}"
+              f" / 行 {len(got['quick_check_rows'])} / 例外 "
+              f"{'あり' if got['error'] else 'なし'} / {detail!r}")
+        print(f"        schema_version={got['schema_version']} / 案内: "
+              f"{(got['guidance'] or '')[:60]}")
+    return ok
+
+
+def probe_backup() -> bool:
+    """P8-4 の線 10・12 を**実データの複製**で通す（実データには触らない）。"""
+    ok = True
+    before = real_data_signature()
+    data = copy_data_dir(WORK / "backup-data")
+    out = WORK / "backup-out"
+    if out.exists():
+        shutil.rmtree(out)
+    print(f"P8-4. 実データの複製: {data}（実データ: {before['assets']} 枚 / 判断 "
+          f"{before['decisions']} 件 / sidecar "
+          f"{len(list((REAL_DIR / 'sidecar').glob('*.json')))} ファイル）")
+
+    def line(label: str, good: bool, detail: str) -> None:
+        nonlocal ok
+        ok = ok and good
+        print(f"   [{'OK' if good else 'NG'}] {label}: {detail}")
+
+    from image_reviewer.backup import (BackupService, list_snapshots,   # noqa: PLC0415
+                                       restore, rebuild_metadata, validate_manifest)
+    from fastapi.testclient import TestClient                           # noqa: PLC0415
+
+    clock = FakeClock()
+    store = Store(data)
+    try:
+        svc = BackupService(store, clock=clock, backup_dir=out)
+        first = svc.tick()
+        snap = Path(first["taken"]["dir"]) if first["taken"] else None
+        names = sorted(p.name for p in snap.iterdir()) if snap else []
+        line("線 10a 日次（4 つできる・WAL を畳む）",
+             snap is not None and {"db.sqlite3", "manifest.json", "sidecar", "export"}
+             <= set(names),
+             f"{snap.name if snap else '-'} / 中身 {names}")
+        counts = first["taken"]["counts"] if first["taken"] else {}
+        line("線 10b 判断が抜けない（WAL 4 MB を畳む）",
+             counts.get("assets") == before["assets"] and counts.get("decisions") == before["decisions"],
+             f"画像 {counts.get('assets')} 枚 / 判断 {counts.get('decisions')} 件"
+             f"（実データは {before['assets']} / {before['decisions']}）")
+
+        again = svc.tick()
+        line("線 10c 自動は同じ日なら増えない", again["skipped"] == "already",
+             f"skipped={again['skipped']} / 数 {len(list_snapshots(out))}")
+
+        manual = svc.snapshot(manual=True)
+        line("線 10d 「いま取る」は必ず新しく取る",
+             manual["name"] != (snap.name if snap else "") and len(list_snapshots(out)) == 2,
+             f"{snap.name if snap else '-'} → {manual['name']}")
+
+        manifest = manual["manifest"]
+        validate_manifest(manifest)
+        db_file = Path(manual["dir"]) / "db.sqlite3"
+        import hashlib                                            # noqa: PLC0415
+        digest = hashlib.sha256(db_file.read_bytes()).hexdigest()
+        line("線 10e manifest が契約を通る（sha256 も一致）",
+             manifest["db_sha256"] == f"sha256:{digest}"
+             and manifest["db_bytes"] == db_file.stat().st_size,
+             f"abi={manifest['abi']} / counts={manifest['counts']}")
+
+        linked = manual["files"]["linked"]
+        line("線 10f 増分（前と同じ物はコピーしない）", linked >= 1,
+             f"共有 {linked} / 写した {manual['files']['copied']}")
+
+        bad = BackupService(store, clock=clock, backup_dir=data / "inside")
+        failed = bad.tick()
+        line("線 10g 失敗は last_error に残る（黙って失敗しない）",
+             failed["skipped"] == "failed" and bad.state()["last_error"],
+             f"{(bad.state()['last_error'] or '')[:50]}")
+
+        # --- 線 12: 壊れた DB の 3 つの形 ---
+        print("   壊れた DB の 3 つの形（実データの複製で）:")
+        ok = probe_broken_forms() and ok
+    finally:
+        store.close()
+
+    # --- 口（HTTP）---
+    app = fresh_app(data, out)
+    human = {"X-Image-Reviewer-Actor": "human"}
+    agent = {"X-Image-Reviewer-Actor": "agent"}
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        health = client.get("/api/health/db", headers=human)
+        line("線 12a 健康な DB の health/db は 200",
+             health.status_code == 200 and health.json()["quick_check"] == "ok",
+             f"{health.status_code} / {health.json().get('quick_check')}")
+        taken = client.post("/api/backup", headers=human, json={})
+        line("線 10h POST /api/backup（人だけ）",
+             taken.status_code == 200 and client.post(
+                 "/api/backup", headers=agent, json={}).status_code == 403,
+             f"人 {taken.status_code} / エージェント "
+             f"{client.post('/api/backup', headers=agent, json={}).status_code}")
+        state = client.get("/api/backup", headers=human).json()
+        line("線 10i GET /api/backup（一覧と最後の時刻）",
+             state["count"] >= 1 and state["last_at"] and state["last_error"] is None,
+             f"数 {state['count']} / 最後 {state['last_at']} / 次 {state['next_run_at']}")
+
+        roots = client.get("/api/roots", headers=human).json()["roots"]
+        marked = [r for r in roots if r["allow_stage3"]]
+        line("線 12b 実データの置き場に段 3 の印がある（Q8・P8-0）",
+             bool(marked), f"{len(marked)} / {len(roots)} 本に印: "
+                           f"{[r['path'] for r in marked][:2]}")
+        if roots:
+            target = roots[0]
+            flipped = client.post(f"/api/roots/{target['id']}/allow-stage3", headers=human,
+                                  json={"allow": not target["allow_stage3"]})
+            back = client.post(f"/api/roots/{target['id']}/allow-stage3", headers=human,
+                               json={"allow": target["allow_stage3"]})
+            line("線 12c allow-stage3 の口（立てて外せる・人だけ）",
+                 flipped.status_code == 200 and back.status_code == 200
+                 and client.post(f"/api/roots/{target['id']}/allow-stage3", headers=agent,
+                                 json={"allow": True}).status_code == 403,
+                 f"{flipped.json().get('allow_stage3')} → "
+                 f"{back.json().get('allow_stage3')} / エージェント 403")
+
+        tables = [r["name"] for r in app.state.store.con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
+        rows_before = tuple(app.state.store.con.execute(
+            f"SELECT count(*) AS n FROM {t}").fetchone()["n"] for t in tables)
+        files_before = tuple(sorted((str(p.relative_to(data)), p.stat().st_size,
+                                     p.stat().st_mtime_ns)
+                                    for p in data.rglob("*") if p.is_file()))
+        for path in ("/api/backup", "/api/health/db", "/api/settings", "/api/roots",
+                     "/api/assets", "/api/stats"):
+            client.get(path, headers=human)
+        rows_after = tuple(app.state.store.con.execute(
+            f"SELECT count(*) AS n FROM {t}").fetchone()["n"] for t in tables)
+        files_after = tuple(sorted((str(p.relative_to(data)), p.stat().st_size,
+                                    p.stat().st_mtime_ns)
+                                   for p in data.rglob("*") if p.is_file()))
+        line("家風 GET は 1 バイトも書かない（全表・全ファイル）",
+             rows_before == rows_after and files_before == files_after,
+             "同じ" if rows_before == rows_after and files_before == files_after else "変わった")
+
+        guards = [
+            client.post("/api/backup", headers={"Host": "evil", **human}, json={}),
+            client.post("/api/backup", headers={**human, "Content-Type": "text/plain"},
+                        content=b"{}"),
+            client.post("/api/backup", headers={"X-Image-Reviewer-Actor": "robot"}, json={}),
+            client.patch("/api/settings", headers=human, json={"backup_dir": str(data / "b")}),
+            client.post("/api/backup", headers=human, json={"out": str(data / "b")}),
+        ]
+        line("家風 403 / 422（Host・Content-Type・語彙・<data> の中）",
+             [g.status_code for g in guards] == [403, 403, 422, 422, 422],
+             f"{[g.status_code for g in guards]}")
+
+    # --- 壊れた DB（2 ページ目）で起動するか ---
+    broken = copy_data_dir(WORK / "backup-broken")
+    zero_bytes(broken / "db.sqlite3", 4096, 8192)
+    broken_app = fresh_app(broken, out)
+    with TestClient(broken_app, base_url="http://127.0.0.1") as client:
+        health = client.get("/api/health/db", headers=human)
+        write = client.post("/api/backup", headers=human, json={})
+        read = client.get("/api/assets", headers=human)
+        line("線 12d 壊れた DB でも起動し、書き込みは 503・読みは生かす",
+             health.status_code == 503 and write.status_code == 503
+             and write.json()["code"] == "read_only" and read.status_code == 200,
+             f"health {health.status_code} / 書き {write.status_code} / 読み {read.status_code}"
+             f" / 案内 {(health.json().get('guidance') or '')[:40]}")
+
+    after = real_data_signature()
+    line("実データが無傷（複製だけで試した）", before == after,
+         f"{after['assets']} 枚 / 判断 {after['decisions']} 件 / 台帳 {after['logs']} 行")
+    print(f"   作業場: {WORK}（--keep で残す）")
+    return ok
+
+
+def probe_restore() -> bool:
+    """P8-4 の線 11 を**実データの複製**で通す（`<data>` を消して戻す・組み直し）。"""
+    ok = True
+    before = real_data_signature()
+    data = copy_data_dir(WORK / "restore-data")
+    out = WORK / "restore-out"
+    if out.exists():
+        shutil.rmtree(out)
+    print(f"P8-4（復元）. 実データの複製: {data}")
+
+    def line(label: str, good: bool, detail: str) -> None:
+        nonlocal ok
+        ok = ok and good
+        print(f"   [{'OK' if good else 'NG'}] {label}: {detail}")
+
+    from image_reviewer.backup import BackupService, rebuild_metadata, restore  # noqa: PLC0415
+    from fastapi.testclient import TestClient                                   # noqa: PLC0415
+
+    clock = FakeClock()
+    store = Store(data)
+    try:
+        svc = BackupService(store, clock=clock, backup_dir=out)
+        snap = svc.snapshot(manual=False)
+        # 英訳を持つ枚（実データは sidecar が 1 件）を覚えておく
+        with store.locked() as con:
+            row = con.execute("SELECT asset_id FROM asset_meta WHERE meta_json LIKE"
+                              " '%en_text%' LIMIT 1").fetchone()
+            with_en = row["asset_id"] if row else None
+    finally:
+        store.close()
+    line("線 11a スナップショットを取った", snap["counts"]["assets"] == before["assets"],
+         f"{snap['name']} / 画像 {snap['counts']['assets']} 枚 / "
+         f"判断 {snap['counts']['decisions']} 件 / 英訳つき {'あり' if with_en else 'なし'}")
+
+    shutil.rmtree(data)                                  # **複製の `<data>` を丸ごと消す**
+    line("線 11b `<data>` を丸ごと消した", not data.exists(), f"{data} は {'無い' if not data.exists() else '在る'}")
+
+    got = restore(data, Path(snap["dir"]), clock=clock, backup_dir=out)
+    line("線 11c 263 枚・判断 3 件が戻る",
+         got["counts"]["assets"] == before["assets"]
+         and got["counts"]["decisions"] == before["decisions"] and got["after"]["ok"],
+         f"画像 {got['counts']['assets']} / 判断 {got['counts']['decisions']} / "
+         f"integrity {got['after']['detail']}")
+    line("線 11d sidecar も戻る（PNG から取り直せない物）",
+         bool(list((data / "sidecar").glob("*.json"))),
+         f"{len(list((data / 'sidecar').glob('*.json')))} ファイル / "
+         f"export {len(list((data / 'export').rglob('*')))} 件")
+
+    store = Store(data)
+    try:
+        if with_en:
+            with store.transaction() as con:             # 英訳を消してから組み直す
+                con.execute("UPDATE asset_meta SET meta_json = '{}' WHERE asset_id = ?",
+                            (with_en,))
+            stats = rebuild_metadata(store)
+            meta = store.asset(with_en)["meta"]
+            line("線 11e rebuild-metadata で sidecar から英訳が戻る",
+                 meta.get("en_text") is not None,
+                 f"埋めた {stats['updated']} / sidecar から {stats['from_sidecar']} / "
+                 f"英訳 {str(meta.get('en_text'))[:24]!r}")
+        else:
+            print("   [--] 英訳つきの枚が無いので rebuild-metadata は試せない")
+        # **DB にある値は上書きしない**
+        asset_id = store.assets()[0]["id"]
+        with store.transaction() as con:
+            con.execute("UPDATE asset_meta SET meta_json = ? WHERE asset_id = ?",
+                        (json.dumps({"model": "db-value"}), asset_id))
+        rebuild_metadata(store)
+        line("線 11f 組み直しは DB の値を上書きしない",
+             store.asset(asset_id)["meta"].get("model") == "db-value",
+             f"model={store.asset(asset_id)['meta'].get('model')}")
+    finally:
+        store.close()
+
+    after = real_data_signature()
+    line("実データが無傷（複製だけで試した）", before == after,
+         f"{after['assets']} 枚 / 判断 {after['decisions']} 件 / 台帳 {after['logs']} 行")
+    print(f"   作業場: {WORK}（--keep で残す）")
+    return ok
+
+
+def fresh_app(data: Path, backup_dir: Path):
+    """**複製に向けた**アプリを作る（`IMAGE_REVIEWER_DATA` を必ず付ける）。
+
+    import 時に作られた `app`（前の probe のデータを掴んでいる）の接続は先に閉じる
+    （開いたままだと、Windows では作業場を消せない）。
+    """
+    os.environ["IMAGE_REVIEWER_DATA"] = str(data)
+    os.environ["IMAGE_REVIEWER_BACKUP_DIR"] = str(backup_dir)
+    from image_reviewer import app as app_module                # noqa: PLC0415
+
+    try:
+        app_module.app.state.store.close()
+    except Exception:                                            # noqa: BLE001
+        pass
+    return app_module.create_app()
+
 
 
 if __name__ == "__main__":

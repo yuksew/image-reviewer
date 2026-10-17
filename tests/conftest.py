@@ -98,3 +98,24 @@ def _no_leftover_temp_dirs():
     yield
     leftovers = [str(p) for p in _CREATED if p.exists()]
     assert not leftovers, f"一時フォルダが残っています（{len(leftovers)} 件）: {leftovers[:5]}"
+
+
+@pytest.fixture(autouse=True)
+def _backup_dir_inside_the_tests(monkeypatch):
+    """**バックアップの置き場をテストの中に向ける**（P8-4）。
+
+    `create_app()` は lifespan で日次バックアップのタイマーを張り、**起動した直後に
+    1 回見る**（設計 §0.12-1・点検 B2）。向けないと、`TestClient` を使うテストのたびに
+    **利用者のホーム**（`%USERPROFILE%\\image-reviewer-backups`）へスナップショットを作り、
+    「直近 7 個を残す」規則（§0.12-3）で**利用者の本物の控えを消してしまう**。
+    置き場は実行の終わりに消す（`_no_leftover_backup_dir`）。
+    """
+    monkeypatch.setenv("IMAGE_REVIEWER_BACKUP_DIR", str(BASE / "_backups"))
+    yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_leftover_backup_dir():
+    """テストが作ったバックアップの置き場を消す（**利用者のホームには作らない**）。"""
+    yield
+    shutil.rmtree(BASE / "_backups", ignore_errors=True)

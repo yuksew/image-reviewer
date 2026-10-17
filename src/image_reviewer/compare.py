@@ -999,7 +999,13 @@ def capture_hashes(store: Store, asset_id: str, im: Image.Image) -> tuple[str, s
 
     既に入っていれば何もしない（サムネイルの要求のたびに書かない）。
     呼ぶ側は `thumbs.ensure_thumb(..., on_image=...)`（`app.py` のサムネイルの口）。
+
+    **（P8-4）読み取り専用で開いているときは計算しない。** 壊れた DB を
+    「読み取り専用で起動」する道では、書けないのに計算しても捨てるだけになる
+    （`attempt to write a readonly database` を 500 にしない）。
     """
+    if getattr(store, "read_only", False):
+        return None
     with store.locked() as con:                       # 監査 B3: 未コミットの行を読まない
         row = con.execute("SELECT phash, dhash FROM asset WHERE id = ?", (asset_id,)).fetchone()
     if row is None:
@@ -1016,7 +1022,11 @@ def ensure_hashes(store: Store, asset_id: str, src: str | Path) -> tuple[str, st
 
     このときだけは復号を共有できないので、もう 1 回だけ復号する。1 枚につき 1 回で、
     次からは `asset.phash` があるので何もしない（復号の回数が増え続けない）。
+
+    **（P8-4）読み取り専用のときは計算しない**（`capture_hashes` と同じ理由）。
     """
+    if getattr(store, "read_only", False):
+        return None
     with store.locked() as con:
         row = con.execute("SELECT phash, dhash FROM asset WHERE id = ?", (asset_id,)).fetchone()
     if row is None or (row["phash"] and row["dhash"]):

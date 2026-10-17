@@ -52,14 +52,23 @@ def is_under(path: str, root: str) -> bool:
 
 
 class Store:
-    """SQLite のストア。`Store(data_dir)` で開き、`close()` か `with` で閉じる。"""
+    """SQLite のストア。`Store(data_dir)` で開き、`close()` か `with` で閉じる。
 
-    def __init__(self, data_dir: str | Path):
+    **（P8-4）`read_only=True` の道**（設計 §0.12-5・§10-12）。DB が壊れているか、
+    DB の版がバイナリより新しいときに、**書き込まずに起動する**ために使う。
+    このとき `migrate()` は走らせない（読み取り専用の接続では書けずに落ちる）。
+    書き込みの口は `app.py` の middleware が 503 で止める（家風「検査は 1 か所」）。
+    """
+
+    def __init__(self, data_dir: str | Path, *, read_only: bool = False):
         self.data_dir = Path(data_dir)
+        #: **読み取り専用で開いているか**（`GET /api/health/db` と middleware が見る）
+        self.read_only = bool(read_only)
         # スレッドプールから同じ接続を使うための錠（点検 F6）。入れ子で取るので RLock
         self._lock = threading.RLock()
         self._closed = False
-        self._con = db.open_db(self.data_dir, check_same_thread=False)
+        self._con = db.open_db(self.data_dir, read_only=self.read_only,
+                               check_same_thread=False)
 
     # ---- 寿命 ----
 
@@ -89,7 +98,16 @@ class Store:
 
         入れ子では外側に乗る（`register()` の中から `set_meta()` を呼んでも壊れない）。
         トランザクションの間は錠を握るので、別スレッドの文が混ざらない。
+
+        **（P8-4）読み取り専用で開いているときは 503 `read_only`。** 素の
+        `attempt to write a readonly database`（OperationalError）は口ごとに 500 になって
+        しまうので、**書き込みを止めていることを番号で返す**（設計 §3.4）。
         """
+        if self.read_only:
+            from .review import ReviewError          # 循環 import を避けて局所で
+
+            raise ReviewError(503, "DB が壊れているので書き込めません（バックアップから戻してください）",
+                              code="read_only")
         with self._lock:
             if self._con.in_transaction:
                 yield self._con

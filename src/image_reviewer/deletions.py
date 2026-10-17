@@ -1444,6 +1444,55 @@ class DeletionService:
         return [{"root": r["display_path"], "allow_stage3": int(r["allow_stage3"])}
                 for r in con.execute("SELECT display_path, allow_stage3 FROM root")]
 
+    # ---- 置き場と「段 3 を許す印」（P8-4。設計 §3.3・Q8・点検 B7・G-3）----
+
+    def roots(self, *, actor: str = "human") -> list[dict]:
+        """登録した置き場の一覧（`id` は `root.path`＝正規化した鍵）。**読むだけ**。
+
+        `POST /api/roots/{id}/allow-stage3` の `{id}` を引くために要る（口の表に
+        一覧が無かったので P8-4 で足した。記録の「設計の穴」2）。
+        """
+        _actor_of(actor)
+        with self.store.locked() as con:
+            rows = con.execute(
+                "SELECT path, display_path, allow_stage3, added_at FROM root"
+                " ORDER BY display_path").fetchall()
+        return [{"id": r["path"], "path": r["display_path"], "display_path": r["display_path"],
+                 "allow_stage3": bool(r["allow_stage3"]), "added_at": r["added_at"]}
+                for r in rows]
+
+    def set_allow_stage3(self, root_id: str, *, allow: bool, actor: str = "human") -> dict:
+        """その置き場で**段 3（実ファイルの削除）を許す印**を立てる（Q8。**人だけ**）。
+
+        `{id}` は `root.path`（正規化した鍵）か、登録した表示のパス。**印は利用者の
+        明示の意思表示**なので、画面は印のある置き場でだけ段 3 のボタンを出す（§5）。
+        既定は印なし（安全側）。**印を外すのもこの口**（`allow: false`）。
+        """
+        _require_human(actor, "段 3 を許す印")
+        if not isinstance(root_id, str) or not root_id.strip():
+            raise ReviewError(422, "置き場の id が空です", code="bad_root",
+                              details={"id": root_id})
+        wanted = root_id.strip()
+        with self.store.transaction() as con:
+            row = con.execute("SELECT path, display_path FROM root WHERE path = ?",
+                              (wanted,)).fetchone()
+            if row is None:
+                # 表示のパスでも引けるようにする（正規化してから鍵で引く）
+                row = con.execute("SELECT path, display_path FROM root WHERE path = ?",
+                                  (normalize_path(wanted),)).fetchone()
+            if row is None:
+                for got in con.execute("SELECT path, display_path FROM root"):
+                    if got["display_path"].casefold() == wanted.casefold():
+                        row = got
+                        break
+            if row is None:
+                raise ReviewError(404, "その置き場は登録されていません", code="no_root",
+                                  details={"id": wanted})
+            con.execute("UPDATE root SET allow_stage3 = ? WHERE path = ?",
+                        (1 if allow else 0, row["path"]))
+            return {"id": row["path"], "path": row["display_path"],
+                    "display_path": row["display_path"], "allow_stage3": bool(allow)}
+
     @staticmethod
     def _stage3_ok(con, display_path: str) -> bool:
         """**その場所が段 3 を許されているか**（`root.allow_stage3`。Q8・点検 B7）。

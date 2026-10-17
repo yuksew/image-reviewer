@@ -76,9 +76,15 @@ def connect(data_dir: str | Path, *, read_only: bool = False,
     `check_same_thread=False` は `Store` だけが使う。FastAPI の同期エンドポイントは
     スレッドプールで走るので、既定の True だと別スレッドの要求で落ちる（点検 F6）。
     使う側が `RLock` で直列化することを前提にする。
+
+    **（P8-4）`read_only=True` ではフォルダを作らない。** 壊れた DB を「読み取り専用で
+    開く」道（設計 §0.12-5・§10-12）では、`<data>` に 1 バイトも書かないのが約束
+    （`mkdir` も書く側なので、無いフォルダを作らない。無ければ接続そのものが失敗し、
+    それが「開けない」の正しい判定になる）。
     """
     data_dir = Path(data_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
+    if not read_only:
+        data_dir.mkdir(parents=True, exist_ok=True)
     db_path = data_dir / "db.sqlite3"
     if read_only:
         con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=15.0,
@@ -725,19 +731,65 @@ def _seed_settings(con: sqlite3.Connection) -> None:
     con.executemany("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", rows)
 
 
+def quick_check(con: sqlite3.Connection) -> dict:
+    """`PRAGMA quick_check` を**例外ごと受ける**（P8-4。設計 §0.12-5・点検 B3）。
+
+    **例外も「壊れている」に数える。** `fetchall()` の中身だけで判定すると、
+    壊れた DB ほど 500 になる（実測: 2 ページ目を 0 で潰すと
+    `sqlite3.DatabaseError: database disk image is malformed`、
+    先頭 4 KB を潰すと `file is not a database`。どちらも `quick_check` が投げる）。
+
+    **行が `ok` 1 行でない場合も「壊れている」**にする。300 ページ目を潰した複製は
+    例外を投げずに**エラーの行**を返す（実測: `*** in database main ***` と
+    `wrong # of entries in index …`）。`fetchone()[0]` だけを見ると
+    「壊れているのに `ok` 以外の文字列」になり、判定が 2 通りに散る。
+
+    戻り値: `ok`（真偽）/ `detail`（人に見せる 1 行）/ `rows` / `error`（例外の文言）。
+    """
+    try:
+        rows = [str(row[0]) for row in con.execute("PRAGMA quick_check").fetchall()]
+    except sqlite3.DatabaseError as exc:
+        return {"ok": False, "detail": str(exc), "rows": [], "error": str(exc)}
+    if rows == ["ok"]:
+        return {"ok": True, "detail": "ok", "rows": rows, "error": None}
+    return {"ok": False, "detail": rows[0] if rows else "(行が返らない)",
+            "rows": rows, "error": None}
+
+
 def integrity(con: sqlite3.Connection) -> dict:
-    """健全性。起動時と `doctor` で使う。"""
-    quick = con.execute("PRAGMA quick_check").fetchone()[0]
-    fk = con.execute("PRAGMA foreign_key_check").fetchall()
-    return {"quick_check": quick, "foreign_key_violations": len(fk),
-            "schema_version": con.execute("PRAGMA user_version").fetchone()[0],
-            "journal_mode": con.execute("PRAGMA journal_mode").fetchone()[0]}
+    """健全性。起動時と `doctor` で使う。
+
+    **（P8-4）壊れた DB でも落ちない。** 前の版は `PRAGMA quick_check` の
+    `fetchone()[0]` を直に呼んでいたので、壊れた DB ではこの関数そのものが例外になった
+    （設計 §1.2 の線 12 が「結果が出る」ことを要求している）。
+    `quick_check` は**文字列のまま**残す（既存の呼び出しが `== "ok"` で見ている）。
+    """
+    got = quick_check(con)
+    try:
+        fk = con.execute("PRAGMA foreign_key_check").fetchall()
+        version = con.execute("PRAGMA user_version").fetchone()[0]
+        journal = con.execute("PRAGMA journal_mode").fetchone()[0]
+    except sqlite3.DatabaseError as exc:          # 先頭 4 KB を潰した DB（開けない）
+        got = {"ok": False, "detail": got["detail"] if got["error"] else str(exc),
+               "rows": got["rows"], "error": got["error"] or str(exc)}
+        fk, version, journal = [], None, None
+    return {"quick_check": got["detail"], "quick_check_ok": got["ok"],
+            "quick_check_error": got["error"], "quick_check_rows": got["rows"],
+            "foreign_key_violations": len(fk), "schema_version": version,
+            "journal_mode": journal}
 
 
 def open_db(data_dir: str | Path, *, read_only: bool = False,
             check_same_thread: bool = True) -> sqlite3.Connection:
-    """接続してマイグレーションまで済ませる（通常はこれを使う）。"""
+    """接続してマイグレーションまで済ませる（通常はこれを使う）。
+
+    **（P8-4）`read_only=True` ではマイグレーションを走らせない。** 読み取り専用の接続で
+    `PRAGMA user_version = 6` や `CREATE TABLE` を流すと `attempt to write a readonly
+    database` で落ちる（壊れた DB を「読み取り専用で起動」する道そのものが開かなくなる）。
+    """
     con = connect(data_dir, read_only=read_only, check_same_thread=check_same_thread)
+    if read_only:
+        return con
     try:
         migrate(con)
     except Exception:

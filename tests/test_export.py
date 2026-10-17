@@ -978,3 +978,45 @@ def test_tags_are_absent_by_default_and_deterministic(env):
     one.pop("generated_at"), two.pop("generated_at")
     assert one == two, "2 回出して違う（決定性。§6.1）"
     assert one["assets"][0]["tags"][0]["gloss"] == "1人娘"
+
+
+# ---- P8-0: `review.json` は**削除の欄を足さない**（設計 §6.1）----
+
+
+def test_review_json_does_not_carry_deletion_fields(env):
+    """P8-0: 段 1（論理削除）で `deleted_at` を立てても、**`review.json` の形は変えない**。
+
+    理由（設計 §6.1）: 台帳は画像より長く生きる。**消した物も判断つきで出し続ける**
+    （実体が無いことは既存の `missing` で表せるので欄を足す必要が無い）。
+    ここを壊すと（`deleted_at` や `deletions` を載せると）、**下流の読み手が壊れる**。
+    """
+    a = add_asset(env.store, "a" * 64, "a.png")
+    b = add_asset(env.store, "b" * 64, "b.png")
+    env.review.apply_asset(a, "keep", reason_code_id="rc.keep.favorite", actor="human")
+
+    before = env.exporter.build("all")
+    check_contract(before)
+    assert sorted(x["id"] for x in before["assets"]) == sorted([a, b])
+
+    with env.store.transaction() as con:                     # 段 1（論理削除）
+        con.execute("UPDATE asset SET deleted_at = ? WHERE id = ?", (db.now(), b))
+
+    after = env.exporter.build("all")
+    check_contract(after)
+    assert sorted(x["id"] for x in after["assets"]) == sorted([a, b]), "消した資産が書き出しから外れた"
+    text = json.dumps(after, ensure_ascii=False)
+    for word in ("deleted_at", "deletion", "deleted"):
+        assert word not in text, f"削除の欄が review.json に入った: {word}"
+    # 判断は変わらない（**台帳を消さない**）
+    # **判断は生きている**（台帳を消さない）。`deleted_at` は書き出しに載らないので、
+    # 論理削除の前後で**同じ資産の辞書が完全に一致**するはず（形が変わっていないことの強い証拠）
+    keep_before = [x for x in before["assets"] if x["id"] == a][0]
+    keep_after = [x for x in after["assets"] if x["id"] == a][0]
+    assert keep_after == keep_before, "生きている資産の書き出しが変わった"
+    gone_before = [x for x in before["assets"] if x["id"] == b][0]
+    gone_after = [x for x in after["assets"] if x["id"] == b][0]
+    assert gone_after == gone_before, "論理削除で書き出しの形が変わった（欄を足した疑い）"
+    # 契約そのものにも削除の欄が無い（**足していない**ことを固定）
+    schema = SCHEMA_PATH.read_text(encoding="utf-8")
+    for word in ("deleted_at", "deletion", "deleted"):
+        assert word not in schema, f"review-export の契約に削除の欄が入った: {word}"

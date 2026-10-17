@@ -560,3 +560,187 @@ def test_migrate_v5_tops_up_the_columns_an_older_v5_lacks(tmp_path: Path):
         assert db.integrity(con)["foreign_key_violations"] == 0
     finally:
         con.close()
+
+
+# ---- v6（P8-0: 重複・削除・バックアップの表と列。**機能は足さない**）----
+
+
+V6_TABLES = ("delete_request", "deletion_log", "duplicate_exclusion",
+             "phash_band", "pending_delete_preview")
+
+
+def _dump(con) -> list:
+    """`sqlite_master` の中身（**索引と表の `sql` まで**比べる。P7-0 の監査 F-1 の教訓）。"""
+    return [(r["type"], r["name"], (r["sql"] or "").replace("\n", " "))
+            for r in con.execute("SELECT type, name, sql FROM sqlite_master"
+                                 " ORDER BY type, name")]
+
+
+def test_v6_adds_the_delete_tables_and_columns(tmp_path: Path):
+    """P8-0: v6 で 5 表と 2 列が入る（設計 §2.1）。**v5 から 1 回で**。"""
+    con = db.open_db(tmp_path)
+    try:
+        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 6
+        names = {r["name"] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        for t in V6_TABLES:
+            assert t in names, f"{t} が無い"
+        assert "deleted_at" in {r["name"] for r in con.execute("PRAGMA table_info(asset)")}
+        assert "allow_stage3" in {r["name"] for r in con.execute("PRAGMA table_info(root)")}
+        assert con.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'ix_asset_del'").fetchone()
+        # **既定は 0**（安全側。段 3 は置き場ごとに許す）
+        con.execute("INSERT INTO root(path, display_path, added_at) VALUES ('p', 'P', 't')")
+        assert con.execute("SELECT allow_stage3 FROM root").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+def test_v6_migration_is_idempotent_and_the_version_does_not_move(tmp_path: Path):
+    """3 回呼んでも `sqlite_master` が変わらない（**索引だけ消える壊し方を捕まえる**）。"""
+    con = db.connect(tmp_path)
+    try:
+        con.executescript(db.DDL)
+        con.execute("PRAGMA user_version = 4")
+        db.migrate(con)
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 6
+        before = _dump(con)
+        for _ in range(3):
+            assert db.migrate(con) == 6
+        assert _dump(con) == before, "3 回呼びで形が変わった"
+    finally:
+        con.close()
+
+
+def test_a_v5_database_becomes_the_same_v6_as_a_fresh_one(tmp_path: Path):
+    """**v5 の道と新規の道が同じ `sqlite_master`** になる（列の順序まで同じ）。"""
+    v5 = db.connect(tmp_path / "v5")
+    try:
+        # **v5 を正しい手順で作る**（`DDL` の後に v2〜v5 の手当てを当てる。手で `V5_TAG_DDL` だけ
+        # 足すと v2〜v4 の列が抜けて、形が違って当たり前になる）
+        v5.executescript(db.DDL)
+        db._migrate_v2(v5)
+        db._migrate_v3(v5)
+        db._migrate_v4(v5)
+        db._migrate_v5(v5)
+        v5.execute("PRAGMA user_version = 5")
+        db.migrate(v5)
+        old = _dump(v5)
+    finally:
+        v5.close()
+    new = db.open_db(tmp_path / "new")
+    try:
+        assert _dump(new) == old, "v5 から上げた形と新規の形が違う"
+    finally:
+        new.close()
+
+
+def test_v6_topps_up_a_database_that_was_made_before_the_columns(tmp_path: Path):
+    """**（P4-1 の監査 A-1 と同じ流儀）** 版を上げずに列を足した v6 を補う。
+
+    `migrate()` は `current >= SCHEMA_VERSION` で早期に戻るので、**戻る側でも列を見て補う**。
+    ここを外すと「古い v6 の複製」だけ列が無く、段 1 の削除が `no such column: deleted_at` で落ちる。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        # **索引を先に落としてから列を落とす**（逆だと `error in index ... after drop column`）。
+        # `allow_stage3` は `CHECK` が付いているので `DROP COLUMN` できない（SQLite の制限）——
+        # 列が無い古い v6 は**手で作れない**ので、`deleted_at` の道で代表させる
+        con.execute("DROP INDEX IF EXISTS ix_asset_del")
+        con.execute("ALTER TABLE asset DROP COLUMN deleted_at")
+        assert "deleted_at" not in {r["name"] for r in con.execute("PRAGMA table_info(asset)")}
+
+        assert db.migrate(con) == 6                       # 版は上がらない（早期 return の道）
+        assert "deleted_at" in {r["name"] for r in con.execute("PRAGMA table_info(asset)")}
+        assert "allow_stage3" in {r["name"] for r in con.execute("PRAGMA table_info(root)")}
+        assert con.execute("SELECT 1 FROM sqlite_master WHERE name = 'ix_asset_del'").fetchone()
+        assert db.migrate(con) == 6                       # 二度足さない
+    finally:
+        con.close()
+
+
+def test_v6_check_constraints_reject_the_wrong_vocabulary(tmp_path: Path):
+    """**語彙は表でも守る**（家風）。`stage=4`・`(B,A)`・`allow_stage3=2` が入れられない。"""
+    con = db.open_db(tmp_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO deletion_log(id, stage, actor, at)"
+                        " VALUES ('x', 4, 'human', 't')")
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO deletion_log(id, stage, actor, at)"
+                        " VALUES ('x', 1, 'robot', 't')")
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO duplicate_exclusion(a_id, b_id, actor, at)"
+                        " VALUES ('B', 'A', 'human', 't')")
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a', 8, 'ff')")
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO pending_delete_preview"
+                        "(id, stage, scope_json, items_json, count, bytes, actor,"
+                        " created_at, expires_at) VALUES ('p', 0, '{}', '[]', 0, 0, 'human', 't', 't')")
+        con.execute("INSERT INTO root(path, display_path, added_at) VALUES ('p', 'P', 't')")
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("UPDATE root SET allow_stage3 = 2")
+        # 正しい値は通る
+        con.execute("INSERT INTO duplicate_exclusion(a_id, b_id, actor, at)"
+                    " VALUES ('A', 'B', 'human', 't')")
+        con.execute("INSERT INTO deletion_log(id, stage, actor, at) VALUES ('ok', 3, 'agent', 't')")
+    finally:
+        con.close()
+
+
+def test_v6_partial_indexes_are_used(tmp_path: Path):
+    """**部分索引が本当に引かれる**（`EXPLAIN QUERY PLAN`。P7 の申し送りの流儀）。
+
+    空の表だと SQLite は全走査を選ぶ（索引を使う理由が無い）ので、**行を入れてから**計画を見る。
+    一意な部分索引（`ux_request_token`）は `INDEXED BY` でも確かめる
+    （**索引が無ければ SQLite がエラーにする**＝存在と使えることの両方が分かる）。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        con.execute("INSERT INTO asset(id, sha256, kind, first_seen_at, last_seen_at, deleted_at)"
+                    " VALUES ('a1', ?, 'generated', 't', 't', 't')", ("a" * 64,))
+        for i in range(20):
+            con.execute("INSERT INTO delete_request(id, client_token, actor, stage, count, at)"
+                        " VALUES (?, ?, 'human', 1, 1, 't')", (f"r{i}", f"tok{i}"))
+            con.execute("INSERT INTO deletion_log(id, stage, actor, at, restored_at)"
+                        " VALUES (?, 3, 'human', 't', NULL)", (f"d{i}",))
+        plans = {}
+        for label, sql in (
+            ("ix_asset_del", "SELECT * FROM asset WHERE deleted_at IS NOT NULL"),
+            ("ix_deletion_pending",
+             "SELECT * FROM deletion_log WHERE stage = 3 AND restored_at IS NULL"),
+        ):
+            plans[label] = " ".join(str(r[3]) for r in con.execute("EXPLAIN QUERY PLAN " + sql))
+        assert "ix_asset_del" in plans["ix_asset_del"], plans
+        assert "ix_deletion_pending" in plans["ix_deletion_pending"], plans
+        # 一意な部分索引（**INDEXED BY は索引が無いとエラーになる**）。
+        # **部分索引は `WHERE` が索引の条件を含意しないと使えない**ので、`IS NOT NULL` も書く。
+        # **名前は `ux_delete_token`**（設計の `ux_request_token` は P6 が `review_request` で
+        # 使っていて衝突し、`IF NOT EXISTS` が黙って何もしない＝再送の一意性が守られなかった）
+        got = con.execute("SELECT count(*) FROM delete_request INDEXED BY ux_delete_token"
+                          " WHERE client_token = 'tok7' AND client_token IS NOT NULL").fetchone()[0]
+        assert got == 1
+        # **同じ token は 2 行入らない**（部分索引が本当に効いている）
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO delete_request(id, client_token, actor, stage, count, at)"
+                        " VALUES ('dup', 'tok7', 'human', 1, 1, 't')")
+        # **NULL は何行でも入る**（部分索引なので）
+        for i in range(3):
+            con.execute("INSERT INTO delete_request(id, client_token, actor, stage, count, at)"
+                        " VALUES (?, NULL, 'human', 1, 1, 't')", (f"null{i}",))
+    finally:
+        con.close()
+
+
+def test_v6_deleting_an_asset_takes_its_bands(tmp_path: Path):
+    """`phash_band` は `asset` に `ON DELETE CASCADE`（**帯だけ残らない**）。"""
+    con = db.open_db(tmp_path)
+    try:
+        con.execute("INSERT INTO asset(id, sha256, kind, first_seen_at, last_seen_at)"
+                    " VALUES ('a1', ?, 'generated', 't', 't')", ("a" * 64,))
+        con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 0, 'ff')")
+        con.execute("DELETE FROM asset WHERE id = 'a1'")
+        assert con.execute("SELECT count(*) FROM phash_band").fetchone()[0] == 0
+    finally:
+        con.close()

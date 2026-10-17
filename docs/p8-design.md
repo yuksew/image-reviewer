@@ -422,7 +422,7 @@ CREATE TABLE IF NOT EXISTS delete_request (
   result_json  TEXT,                      -- 実行の結果（同じ token の再送はこれを返す）
   at           TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS ux_request_token
+CREATE UNIQUE INDEX IF NOT EXISTS ux_delete_token   -- **索引名は DB 全体で一意**（P6 の `review_request` の `ux_request_token` と衝突するので別名にする。`IF NOT EXISTS` は**黙って何もしない**＝穴が開く)
   ON delete_request(client_token) WHERE client_token IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_deletion_pending
   ON deletion_log(restored_at, purge_at) WHERE stage = 3;      -- 「最近の削除」を引く
@@ -478,7 +478,7 @@ CREATE INDEX IF NOT EXISTS ix_preview_expiry ON pending_delete_preview(expires_a
   `review_group.kind` に `duplicate` を許すか）は**サービス層で検査**し、**表の作り直しはしない**
   （実データに 263 枚と判断 3 件が入っている。**空の表なら作り直すが、この段では空ではない**）。
 - **`seed` NULL と UNIQUE の型の罠**（P7-A-2c）: **NULL を含む一意性**が要る所は
-  **`COALESCE(…)` の式の索引**か**部分索引**にする。この段では **`ux_request_token`（要求の単位。部分索引）**と
+  **`COALESCE(…)` の式の索引**か**部分索引**にする。この段では **`ux_delete_token   -- **索引名は DB 全体で一意**（P6 の `review_request` の `ux_request_token` と衝突するので別名にする。`IF NOT EXISTS` は**黙って何もしない**＝穴が開く)`（要求の単位。部分索引）**と
   **`ux_recipe_source` 相当の物**（**（点検 A2）行ごとの `ux_deletion_token` は一括で 2 行目に当たるのでやめた**）。
 - **移行は足すだけ・何度呼んでも同じ**（`migrate()` は `current < 6` を 1 回だけ当てる）。
 
@@ -677,7 +677,7 @@ CREATE INDEX IF NOT EXISTS ix_preview_expiry ON pending_delete_preview(expires_a
 | --- | --- | --- | --- |
 | 1 | `CHECK (stage IN (1,2,3))` を外す | `stage=4` が入ってしまう | 語彙は表でも守る（家風） |
 | 2 | `CHECK (a_id < b_id)` を外す | `(B,A)` が別行で入る | 除外が効かなくなる（専門 C10） |
-| 3 | **`ux_request_token`（部分索引）を外す**（**（点検 A2）行ごとの `ux_deletion_token` は一括で 2 行目に当たるので廃止**） | 同じ token の再送で**もう一度消してしまう**（`delete_request` の `result_json` を返せない） | 二重削除（`client_token` の規則）。**§8-3 は「一括で同じ token を 2 回」に直す（点検 F1）** |
+| 3 | **`ux_delete_token   -- **索引名は DB 全体で一意**（P6 の `review_request` の `ux_request_token` と衝突するので別名にする。`IF NOT EXISTS` は**黙って何もしない**＝穴が開く)`（部分索引）を外す**（**（点検 A2）行ごとの `ux_deletion_token` は一括で 2 行目に当たるので廃止**） | 同じ token の再送で**もう一度消してしまう**（`delete_request` の `result_json` を返せない） | 二重削除（`client_token` の規則）。**§8-3 は「一括で同じ token を 2 回」に直す（点検 F1）** |
 | 4 | `normalize_path` を `str(path)` に替える | 大小文字違いのパスが**一致しなくなる**（＝消せない）/ 逆に**別の物を消す** | 安全規則 1（専門 §3.2） |
 | 5 | 削除の可否判定を**前方一致**に替える | `C:\img` が `C:\img2\x.png` を消せる | 専門 §3.2 の 1 が明示的に禁じている |
 | 6 | `(size, mtime_ns)` の再照合を外す | 差し替えたファイルを消してしまう | 安全規則 2 |

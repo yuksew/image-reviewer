@@ -31,7 +31,8 @@ import time
 import uuid
 from pathlib import Path
 
-SCHEMA_VERSION = 5       # **v6 はもう無い**（P7 を 2026-10-17 に廃止したので、版は 5 が最新）
+SCHEMA_VERSION = 6       # v6 = P8（重複・削除・バックアップ）。**P7 の v6（条件の記録）は
+                         # 2026-10-17 に廃止したので、番号が空いていた**（`docs/p7-decision.md`）
 
 # Cronford の base32（ULID）
 _B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -239,6 +240,8 @@ def migrate(con: sqlite3.Connection) -> int:
         # `tag.known` / `asset_tag.actor` / `job.note` を足したので、**先に v5 になった DB** が
         # 列の無いまま残りうる（`current < 5` の道を通らないので、ここで補う）。
         _top_up_v5(con)
+        # v6 も同じ流儀（**版を上げずに列を足したら、ここで補う**。P4-1 の監査 A-1）
+        _top_up_v6(con)
         return current
     if current < 1:
         con.executescript(DDL)
@@ -251,6 +254,8 @@ def migrate(con: sqlite3.Connection) -> int:
         _migrate_v4(con)
     if current < 5:
         _migrate_v5(con)
+    if current < 6:
+        _migrate_v6(con)
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -472,6 +477,97 @@ CREATE INDEX IF NOT EXISTS ix_job_item_state ON job_item(job_id, state);
 """
 
 
+# ---- v6（P8: 重複・削除・バックアップ。**P8-0 は機能を足さない＝表と契約だけ**）----
+#
+# 出所: `docs/p8-design.md` §2.1（正）・`docs/duplicates-deletion-backup.md` §2.2 / §3.1 / §3.5。
+#
+# - **段 1（論理削除）**: `asset.deleted_at`。**行は消さない**（判断と来歴を残す）。
+#   列なので `CHECK` は付けられない（`ALTER` で足せないため）。**値の検査はサービス層**（設計 §0.13）。
+# - **`root.allow_stage3`**: その置き場で**実ファイルの削除（段 3）を許すか**。
+#   **既定は 0**（安全側）。別のツールの管理下のフォルダを守るための印（利用者の回答 Q8）。
+# - **`deletion_log`**: 削除の台帳。**削除後も消さない**（専門 §3.2 の 4）。
+#   `asset_id` に `REFERENCES` を**張らない**（`asset` を消す道を作らないため）。
+# - **`delete_request`**（点検 A2）: **再送の鍵は要求の単位**。一括は 1 要求で最大 200 行を書くので、
+#   `client_token` を行に持たせると**2 行目で UNIQUE に当たる**。同じ token の再送は `result_json` を返す。
+#   **索引名は `ux_delete_token`**（設計は `ux_request_token` と書いていたが、**P6 が `review_request` に
+#   同じ名前を使っている**。SQLite の索引名は DB 全体で一意なので、`IF NOT EXISTS` が黙って何もしなくなり、
+#   **再送の一意性が守られない**。P8-0 で気づいて改名した）。
+# - **`duplicate_exclusion`**: 「別物として確定」した組。**`CHECK (a_id < b_id)` で順序を機械的に守る**
+#   （`(A,B)` と `(B,A)` を別行にしない。専門 C10）。
+# - **`phash_band`**: 準重複の候補を絞る帯索引（8bit × 8 本。専門 §2.2）。`asset` に `ON DELETE CASCADE`。
+# - **`pending_delete_preview`**: 一括削除の凍結。**DB に持つ**（再起動をまたいでも「確認した一覧」が失われない）。
+#   **実行時に `scope` を評価し直さない**（見せていないファイルを消さないため。専門 §3.5）。
+#   `items_json` は **`path`（正規化した鍵）と `display_path`（人に見せる表記）の両方**を持つ（点検 D6）。
+#
+# **`CHECK` は `ALTER` で足せない**（P7 の教訓）ので、**新表には最初から**付けてある。
+V6_DELETE_DDL = """
+CREATE TABLE IF NOT EXISTS delete_request (
+  id           TEXT PRIMARY KEY,
+  client_token TEXT,
+  actor        TEXT NOT NULL CHECK (actor IN ('human', 'agent')),
+  stage        INTEGER NOT NULL CHECK (stage IN (1, 2, 3)),
+  count        INTEGER NOT NULL,
+  result_json  TEXT,
+  at           TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_delete_token
+  ON delete_request(client_token) WHERE client_token IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS deletion_log (
+  id           TEXT PRIMARY KEY,
+  asset_id     TEXT,
+  path         TEXT,
+  stage        INTEGER NOT NULL CHECK (stage IN (1, 2, 3)),
+  from_path    TEXT,
+  to_path      TEXT,
+  hold_path    TEXT,
+  remaining_sec INTEGER,
+  purge_at     TEXT,
+  restored_at  TEXT,
+  size         INTEGER,
+  request_id   TEXT REFERENCES delete_request(id),
+  reason       TEXT,
+  actor        TEXT NOT NULL CHECK (actor IN ('human', 'agent')),
+  at           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_deletion_pending
+  ON deletion_log(restored_at, purge_at) WHERE stage = 3;
+CREATE INDEX IF NOT EXISTS ix_deletion_asset ON deletion_log(asset_id, at DESC);
+CREATE INDEX IF NOT EXISTS ix_deletion_request ON deletion_log(request_id);
+
+CREATE TABLE IF NOT EXISTS duplicate_exclusion (
+  a_id   TEXT NOT NULL,
+  b_id   TEXT NOT NULL,
+  reason TEXT,
+  actor  TEXT NOT NULL CHECK (actor IN ('human', 'agent')),
+  at     TEXT NOT NULL,
+  PRIMARY KEY (a_id, b_id),
+  CHECK (a_id < b_id)
+);
+
+CREATE TABLE IF NOT EXISTS phash_band (
+  asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+  band     INTEGER NOT NULL CHECK (band BETWEEN 0 AND 7),
+  value    TEXT NOT NULL,
+  PRIMARY KEY (asset_id, band)
+);
+CREATE INDEX IF NOT EXISTS ix_phash_band ON phash_band(band, value);
+
+CREATE TABLE IF NOT EXISTS pending_delete_preview (
+  id         TEXT PRIMARY KEY,
+  stage      INTEGER NOT NULL CHECK (stage IN (1, 2, 3)),
+  scope_json TEXT NOT NULL,
+  items_json TEXT NOT NULL,
+  count      INTEGER NOT NULL,
+  bytes      INTEGER NOT NULL,
+  actor      TEXT NOT NULL CHECK (actor IN ('human', 'agent')),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_preview_expiry ON pending_delete_preview(expires_at);
+"""
+
+
 def _migrate_v5(con: sqlite3.Connection) -> None:
     """v5: タグ（`tag` / `asset_tag` / `tag_gloss`）とジョブ（`job` / `job_item`）を足す（P4-0）。
 
@@ -514,6 +610,41 @@ def _top_up_v5(con: sqlite3.Connection) -> None:
     if {row["name"] for row in con.execute("PRAGMA table_info(job_item)")}:
         con.execute("UPDATE job_item SET state = 'failed' WHERE state NOT IN"
                     " ('tagged', 'skipped', 'failed')")
+
+
+def _migrate_v6(con: sqlite3.Connection) -> None:
+    """v6: 重複・削除・バックアップの表と列を足す（P8-0）。**機能は足さない**。
+
+    - **`asset.deleted_at`**（段 1 の論理削除。列なので `CHECK` は付けられない＝値はサービス層）
+    - **`root.allow_stage3`**（その置き場で実ファイルの削除を許すか。**既定 0**）
+    - **`V6_DELETE_DDL` の 5 表**（`delete_request` / `deletion_log` / `duplicate_exclusion` /
+      `phash_band` / `pending_delete_preview`）と索引
+
+    実データ（v5）は 1 回で正しい形の v6 になる。**既にある版の手当ては書き換えない**。
+    """
+    con.executescript(V6_DELETE_DDL)
+    _top_up_v6(con)
+
+
+def _top_up_v6(con: sqlite3.Connection) -> None:
+    """v6 で**版を上げずに足した列**を補う（P4-1 の監査 A-1 と同じ流儀）。
+
+    `ALTER TABLE ADD COLUMN` は `IF NOT EXISTS` を持たないので、**列を見てから足す**。
+    **何度呼んでも安全**（`migrate()` の early return 側からも呼ぶ）。
+    新しい列には `CHECK` を付けられる（P7 の `fetched` で実績）ので、`allow_stage3` には付ける。
+    """
+    have_asset = {row["name"] for row in con.execute("PRAGMA table_info(asset)")}
+    if have_asset and "deleted_at" not in have_asset:
+        # 段 1（論理削除）。**NULL = 生きている**。列なので `CHECK` は付けられない
+        con.execute("ALTER TABLE asset ADD COLUMN deleted_at TEXT")
+    if have_asset:
+        # 「消えた物だけ」を引く（生きている 263 枚の索引を太らせない）
+        con.execute("CREATE INDEX IF NOT EXISTS ix_asset_del"
+                    " ON asset(deleted_at) WHERE deleted_at IS NOT NULL")
+    have_root = {row["name"] for row in con.execute("PRAGMA table_info(root)")}
+    if have_root and "allow_stage3" not in have_root:
+        con.execute("ALTER TABLE root ADD COLUMN allow_stage3 INTEGER NOT NULL DEFAULT 0"
+                    " CHECK (allow_stage3 IN (0, 1))")
 
 
 def _seed_settings(con: sqlite3.Connection) -> None:

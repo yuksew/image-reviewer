@@ -6,12 +6,18 @@
 // - **`GET` は書かない**（残り時間も減らさない。減らすのはサーバのタイマー）
 // - 残り時間の**見た目**だけを毎秒書き換える（`あと 3:12`）
 // - **人は誰の削除でも戻せる**（§0.14 の e-2）。エージェントは自分の分だけ（押せない）
+// - **（P8-3 の監査 C-2）段 1〜3 の全部を出す**（`frontend-design.md` §4.6 の
+//   「1 行 = `deletion_log` の 1 行」）。段 1・2 のボタンは「戻す」、段 3 の窓は「取り消す」
+// - **（P8-3 の監査 C-3）失敗の道でも `load()` する**（409 の直後に「別名で戻す」を出す）
+// - **（P8-3 の監査 G-3）戻せなかった理由は `stuck_reason` で 4 通り**に分ける
+// - **（P8-3 の監査 G-4）固定の名前・数を文言に埋め込まない**（置き場は `/api/roots` から組む）
 // - 「いま消す」「別名で戻す」「ゴミ箱から戻す」は**人だけ**の口（押す前に確認を 1 回挟む）
 // - 拾い物（`found`）は**消さない**（人が決める）
 // - `esc()` を必ず通す
 
 const PENDING = '/api/pending-deletes';
 const TRASH = '/api/trash';
+const ROOTS = '/api/roots';
 const PREVIEW = '/api/locations/bulk-delete/preview';
 const BULK = '/api/locations/bulk-delete';
 
@@ -88,6 +94,87 @@ export function actorText(actor) {
   return actor === 'agent' ? 'エージェント' : '人';
 }
 
+/** **戻せなかった理由**（`stuck_reason`。監査 G-3）。**理由ごとに 1 行**を出す。
+ *
+ * 以前は 1 通りしか無く、**元の場所が埋まっているだけ**（`target_exists`）でも
+ * 「保留していたファイルが見つかりません」と出ていた（利用者が次の手を選べない）。
+ * 理由を残していない古い行（`null`）は `missing` と同じ文言にする（画面を空にしない）。
+ */
+export const STUCK_TEXT = {
+  target_exists: '元の場所に既にファイルがあります。',
+  move_failed: '元の場所へ移せませんでした。',
+  different: '元の場所には別のファイルがあります。',
+  missing: '保留していたファイルが見つかりません。',
+};
+
+export function stuckText(reason) {
+  return STUCK_TEXT[reason] || STUCK_TEXT.missing;
+}
+
+/** `#/pending-deletes?ids=a,b`（**削除へ回す**行き先）。**消さない**（渡すだけ。§11）。
+ *
+ * 重複の画面・拡大・下部バー・まとまりレビューの**4 つの入口が同じ 1 か所**を使う
+ * （監査 C-1。行き先の組み立てが散ると、片方だけ直して食い違う）。
+ */
+export function deleteHref(ids) {
+  const list = (ids || []).map((s) => String(s || '').trim()).filter(Boolean);
+  return list.length ? `#/pending-deletes?ids=${list.map(encodeURIComponent).join(',')}` : '';
+}
+
+/** 削除へ回す（押されたとき）。行き先を返す（検査しやすい形にする）。 */
+export function toDelete(ids) {
+  const href = deleteHref(ids);
+  if (href) location.hash = href;
+  return href;
+}
+
+/** 下部バーの入口の文言（**選んだ枚を出す**。`frontend-design.md` §6）。 */
+export function deleteEntryLabel(count) {
+  return `選んだ ${Number(count) || 0} 枚を削除へ回す`;
+}
+
+/** 下部バーの入口を描き直す（押せるのは 1 枚以上のときだけ）。`app.js` の `renderPickBar()` から。 */
+export function renderDeleteEntry(button, count) {
+  if (!button) return;
+  const n = Number(count) || 0;
+  button.textContent = deleteEntryLabel(n);
+  button.disabled = n < 1;
+}
+
+/** 下部バーの入口を配線する（**押すと `#/pending-deletes?ids=` へ**。`app.js` から呼ぶ）。 */
+export function wireDeleteEntry(button, idsFn) {
+  if (!button) return;
+  button.addEventListener('click', () => {
+    const ids = (typeof idsFn === 'function' ? idsFn() : idsFn) || [];
+    toDelete(ids);
+  });
+}
+
+/** `p` が `root` の下か（`store.is_under` と同じ見方。**大小と区切りを揃えてから比べる**）。 */
+export function underPath(p, root) {
+  if (!p || !root) return false;
+  const norm = (v) => String(v).replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+  const a = norm(p);
+  const b = norm(root);
+  return a === b || a.startsWith(`${b}\\`);
+}
+
+/** 段 3 の前置き（Q8）。**実際の置き場から組む**（監査 G-4。固定のツール名を埋め込まない）。
+ *
+ * `root.allow_stage3` の**印が無い置き場**のときだけ出す（印があるなら何も言わない）。
+ * `GET /api/roots` が無いサーバでも画面を止めない（`state.roots` が空なら出さない）。
+ */
+export function stage3NoticeHtml(preview, roots) {
+  if (!preview || Number(preview.stage) !== 3) return '';
+  const paths = (preview.items || []).map((it) => it.display_path || it.path).filter(Boolean);
+  const noMark = (roots || []).filter((r) => !r.allow_stage3
+    && paths.some((p) => underPath(p, r.display_path)));
+  if (!noMark.length) return '';
+  const names = [...new Set(noMark.map((r) => r.display_path))];
+  return `<div class="pd-warn">この置き場は段 3 の印が付いていません（${esc(names.join(' / '))}）。`
+    + '段 3 は実体を消します。印は設定で付けられます。</div>';
+}
+
 /** 3 段階の進行（**印 → ゴミ箱 → 実削除**）。いまの段に印を付ける。 */
 export function stageStrip(stage) {
   const steps = ['1 印', '2 ゴミ箱', '3 実削除'];
@@ -101,6 +188,7 @@ export function stageStrip(stage) {
 const state = {
   items: [], windowSec: 300, found: [], foundCount: 0,
   trash: { days: [], count: 0, bytes: 0 },
+  roots: [],                                 // 段 3 の前置きを**実際の置き場から組む**（G-4）
   ids: [], stage: 1, preview: null, exec: null, msg: '', bad: false,
   confirmLast: false, timer: null, busy: false,
 };
@@ -109,15 +197,20 @@ const state = {
 
 export function rowHtml(item) {
   const stage = Number(item.stage);
+  // 残り時間は**段 3 の窓の間だけ**（段 1・2 は窓が無い。§4.6・§11）
   const remain = stage === 3 && item.state === 'pending'
     ? `<span class="pd-remain num" data-remain="${esc(item.id)}">あと ${esc(fmtRemain(item.remaining_sec))}</span>`
     : '<span class="pd-remain num">—</span>';
   const stuck = item.state === 'stuck'
-    ? '<div class="pd-reason">戻せませんでした。保留していたファイルが見つかりません。'
+    ? `<div class="pd-reason">戻せませんでした。${esc(stuckText(item.stuck_reason))}`
       + '「別名で戻す」か「いま消す」を選べます。</div>'
     : '';
   const buttons = [];
-  if (item.undoable) buttons.push(`<button class="pd-undo" data-id="${esc(item.id)}">取り消す</button>`);
+  if (item.undoable) {
+    // **語を段で分ける**（§4.6）: 窓の無い段 1・2 は「戻す」、段 3 の 5 分の窓は「取り消す」
+    buttons.push(`<button class="pd-undo" data-id="${esc(item.id)}">`
+      + `${stage === 3 ? '取り消す' : '戻す'}</button>`);
+  }
   if (stuck && item.needs_as_copy) {
     buttons.push(`<button class="pd-ascopy" data-id="${esc(item.id)}">別名で戻す</button>`);
   }
@@ -136,10 +229,16 @@ export function rowHtml(item) {
 }
 
 export function runningHtml() {
-  if (!state.items.length) {
-    return '<div class="note">取り消せる削除はありません。</div>';
+  // **（監査 C-2）段 1〜3 を出す**（`frontend-design.md` §4.6 の「1 行 = `deletion_log` の 1 行」）。
+  // **段 2 だけは出さない**——すぐ下の「ゴミ箱」の欄に日付ごとに出るので、二重に出すと同じ
+  // 1 行に「戻す」が 2 つ並ぶ（画面全体では 1 行 = 1 回）
+  const rows = state.items.filter((i) => i.state !== 'trashed');
+  if (!rows.length) {
+    return state.trash.count
+      ? `<div class="note">取り消せる削除はありません。ゴミ箱の ${state.trash.count} 件は下から戻せます。</div>`
+      : '<div class="note">取り消せる削除はありません。</div>';
   }
-  return state.items.map(rowHtml).join('');
+  return rows.map(rowHtml).join('');
 }
 
 /** 拾い物（台帳に無い保留領域の中身。**消さない**。G-4）。 */
@@ -204,7 +303,7 @@ export function confirmHtml() {
       <div class="pd-frees">${esc(preview.frees?.note || '')}</div>
       ${preview.not_allowed_count
         ? `<div class="pd-warn">印の無い置き場の ${preview.not_allowed_count} 枚は段 3 にできません（段 1・2 はできます）。</div>` : ''}
-      ${preview.stage === 3 ? '<div class="pd-warn">この置き場は別のツール illust-authoring の管理下です。段 3 は実体を消します。</div>' : ''}
+      ${stage3NoticeHtml(preview, state.roots)}
       ${preview.last_copies
         ? `<div class="pd-warn">最後の 1 つが ${preview.last_copies} 枚あります。ほかに実体がありません。`
           + `<label class="pd-last"><input type="checkbox" class="pd-last-box"`
@@ -233,22 +332,27 @@ export function legendHtml() {
   // **凡例は段に印を付けない**（`stageStrip(null)`。行と見分けが付かなくなる）
   return `<div class="pd-legend">${stageStrip(null)}<span class="stat">`
     + '段 1 はカタログから外すだけ（容量は空きません）・段 2 はゴミ箱・段 3 は実体を消す用意。'
-    + '取り消せるのは段 3 の 5 分の窓の間だけです。</span></div>';
+    + '段 1・2 はいつでも戻せます。取り消せるのは段 3 の 5 分の窓の間だけです。</span></div>';
 }
 
 // ---- 読み込み（`GET` は書かない）----
 
 async function load() {
   state.busy = true;
-  const [pending, trash] = await Promise.all([
+  const [pending, trash, roots] = await Promise.all([
     fetch(PENDING, { headers: asHuman() }).then((r) => r.json()),
     fetch(TRASH, { headers: asHuman() }).then((r) => r.json()),
+    // **（監査 G-4）置き場の一覧**（段 3 の前置きを実際の値から組む）。**無くても止めない**
+    // （古いサーバが静的ファイルだけ新しい形。D-7）
+    fetch(ROOTS, { headers: asHuman() })
+      .then((r) => (r.ok ? r.json() : { roots: [] })).catch(() => ({ roots: [] })),
   ]);
   state.items = pending.items || [];
   state.windowSec = pending.window_sec || 300;
   state.found = pending.found || [];
   state.foundCount = pending.found_count || 0;
   state.trash = trash;
+  state.roots = roots.roots || [];
   state.busy = false;
   render();
 }
@@ -268,8 +372,11 @@ function render() {
   if (msg) msg.innerHTML = messageHtml();
   const brief = $('pd-brief');
   if (brief) {
-    const pending = state.items.filter((i) => i.state === 'pending').length;
-    brief.textContent = `${pending} 件 ・ ${fmtBytes(state.items.reduce((n, i) => n + (i.size || 0), 0))}`;
+    // **見出しの件数と合計は、この一覧に出ている行と同じ物**（§4.6）。段 2 はゴミ箱の欄に
+    // 出るのでここには数えない（二重に数えると「3 件」と言いながら 2 行しか無い）
+    const rows = state.items.filter((i) => i.state !== 'trashed');
+    const pending = rows.filter((i) => i.state === 'pending').length;
+    brief.textContent = `${pending} 件 ・ ${fmtBytes(rows.reduce((n, i) => n + (i.size || 0), 0))}`;
   }
 }
 
@@ -377,7 +484,11 @@ export async function undo(id, asCopy = false) {
       ? '元の場所に既にファイルがあります。「別名で戻す」で戻せます。'
       : (body.detail || `戻せません（${res.status}）`);
     state.bad = true;
-    render();
+    // **（監査 C-3）失敗したら読み直す。** サーバはこの行を `stuck` にして
+    // `stuck_reason` を立てている（`target_exists` なら「別名で戻す」を出す）。
+    // 読み直さないと、文は「『別名で戻す』で戻せます」と言うのに**ボタンが 1 つも無い**
+    // （利用者は再読込を探すことになる）。成功の道と同じく `load()` を通す
+    await load();
     return null;
   }
   state.msg = body.recovered
@@ -399,7 +510,7 @@ export async function purge(id, confirmed = false) {
       ? '保留に実体がありません。「取り消す」を試してください。'
       : (body.detail || `消せません（${res.status}）`);
     state.bad = true;
-    render();
+    await load();                                  // 失敗の道でも読み直す（C-3 と同じ考え方）
     return null;
   }
   state.msg = '実体を消しました。元に戻せません。';
@@ -418,7 +529,7 @@ export async function trashRestore(id) {
       ? '元の場所に既にファイルがあります（ゴミ箱からの復帰は上書きしません）。'
       : (body.detail || `戻せません（${res.status}）`);
     state.bad = true;
-    render();
+    await load();                                  // 失敗の道でも読み直す（C-3 と同じ考え方）
     return null;
   }
   state.msg = '1 枚をゴミ箱から戻しました。';

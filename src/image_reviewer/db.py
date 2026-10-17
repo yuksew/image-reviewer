@@ -544,6 +544,11 @@ CREATE TABLE IF NOT EXISTS deletion_log (
   size         INTEGER,
   request_id   TEXT REFERENCES delete_request(id),
   reason       TEXT,
+  -- **（P8-3 の監査 G-3）戻せなかった理由**（`target_exists` / `move_failed` / `different` /
+  -- `missing`）。段 3 の取り消しに失敗したときだけ入り、画面の「戻せませんでした」の
+  -- 1 行を 4 通りに分けるのに使う（`reason` は「消した理由」で別の物）。版は上げずに足したので
+  -- **古い v6 は `_top_up_v6` が `ALTER` で足す**（家風。「同じ版番号で形が違う DB」を塞ぐ）
+  stuck_reason TEXT CHECK (stuck_reason IN ('target_exists', 'move_failed', 'different', 'missing')),
   actor        TEXT NOT NULL CHECK (actor IN ('human', 'agent')),
   at           TEXT NOT NULL
 );
@@ -710,6 +715,15 @@ def _top_up_v6(con: sqlite3.Connection) -> None:
     have_req = {row["name"] for row in con.execute("PRAGMA table_info(delete_request)")}
     if have_req and "payload_json" not in have_req:
         con.execute("ALTER TABLE delete_request ADD COLUMN payload_json TEXT")
+    # **（P8-3 の監査 G-3）「戻せなかった理由」を台帳に残す。** これが無いと `stuck` の行の
+    # 文言が 1 通りになり、`target_exists`（元の場所が埋まっている）でも
+    # 「保留していたファイルが見つかりません」と出る（実データの v6 はこの列が無い形で
+    # 先に作ってあるので、`PRAGMA table_info` を見てから足す。`CHECK` は DDL と同じ物を付ける
+    # ＝新規の DB と ALTER で足した DB の形が揃う）
+    have_log = {row["name"] for row in con.execute("PRAGMA table_info(deletion_log)")}
+    if have_log and "stuck_reason" not in have_log:
+        con.execute("ALTER TABLE deletion_log ADD COLUMN stuck_reason TEXT"
+                    " CHECK (stuck_reason IN ('target_exists', 'move_failed', 'different', 'missing'))")
     # **（P8-1 の監査 B-1）帯の中身も新しい形に揃える。** 版は 6 のままなので、表の形だけ直しても
     # 古い 8bit の帯が残る（`phash_band` を落とした DB もここで埋まる）。何度呼んでも同じ。
     # **落とした直後は 0 行**なので、**「本数が違う物」だけでなく「1 本も無い物」も埋める**

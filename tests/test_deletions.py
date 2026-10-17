@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import threading
 import time
@@ -413,6 +414,136 @@ def test_the_pending_list_marks_who_deleted_it(svc, store, library):
     assert mine["actor"] == "agent" and mine["mine"] is True and mine["undoable"] is True
     assert theirs["mine"] is False
     assert theirs["undoable"] is True, "人が他人（エージェント）の削除を戻せない（C-1）"
+
+
+def test_the_pending_list_shows_the_stage1_and_stage2_rows_too(svc, store, library, clock):
+    """壊すと落ちる: `GET /api/pending-deletes` を**段 3 だけ**にする（**P8-3 の監査 C-2**）。
+
+    `frontend-design.md` §4.6 は「**1 行 = `deletion_log` の 1 行**」と決めている。段 1 で
+    カタログから外しただけの行がここに出ないと、**画面で実行できるのに戻す押し先が無い**
+    （`undo` は元から段 1〜3 に効く）。段 1・2 の行は `state` が `hidden` / `trashed` のまま
+    `undoable: true` で出る（人が押せば戻る）。
+
+    並びは**窓のある段 3 が先・窓の無い段 1・2 は新しい順**（§11）。
+    """
+    first = make_png(library / "p1.png", seed=31)
+    a1 = add_asset(store, first)
+    one = svc.delete(asset_id=a1, path=str(first), stage=1, actor="human")
+    clock.advance(sec=1)                                   # `at` を分ける（並びを決定的にする）
+    second = make_png(library / "p2.png", seed=32)
+    a2 = add_asset(store, second)
+    two = svc.delete(asset_id=a2, path=str(second), stage=2, actor="human")
+    pend = svc.pending(actor="human")
+    assert [i["state"] for i in pend["items"]] == ["trashed", "hidden"], \
+        [i["state"] for i in pend["items"]]
+    assert [i["stage"] for i in pend["items"]] == [2, 1]
+    assert all(i["undoable"] for i in pend["items"]), "段 1・2 の行に戻す押し先が無い（C-2）"
+    assert pend["count"] == 2 and pend["pending"] == 0
+    # 段 1 は**ファイルを動かさない**。戻すと `deleted_at` が消えて一覧に戻る
+    svc.undo(one["deletion_id"], actor="human")
+    assert first.exists() and not second.exists()
+    assert store.con.execute("SELECT deleted_at FROM asset WHERE id = ?",
+                             (a1,)).fetchone()["deleted_at"] is None
+    # 段 2 も**同じ口**で戻せる（`trash_restore` は人だけだが、窓の無い段 2 にも `undo` が効く）
+    svc.undo(two["deletion_id"], actor="human")
+    assert second.exists()
+    assert svc.pending(actor="human")["count"] == 0, "戻したのに一覧から消えていない"
+
+
+def test_the_pending_list_puts_the_window_rows_first_by_remaining_time(svc, store, library,
+                                                                      clock):
+    """壊すと落ちる: 並びを**新しい順**だけにする（§11「残り時間の短い順」）。
+
+    段 1 の行（窓が無い）を先に作り、そのあとに段 3 の行を作る。**新しい順だと段 1 が先頭**に
+    来てしまうので、窓のある段 3 が先に来ることを見る。段 3 が 2 つあるときは**残り時間の
+    短い順**。
+    """
+    old = make_png(library / "q1.png", seed=41)
+    a1 = add_asset(store, old)
+    svc.delete(asset_id=a1, path=str(old), stage=1, actor="human")
+    clock.advance(sec=1)
+    live = make_png(library / "q2.png", seed=42)
+    a2 = add_asset(store, live)
+    got = svc.delete(asset_id=a2, path=str(live), stage=3, actor="human",
+                     confirm_last_copy=True)
+    clock.advance(sec=1)
+    late = make_png(library / "q3.png", seed=43)
+    a3 = add_asset(store, late)
+    other = svc.delete(asset_id=a3, path=str(late), stage=3, actor="human",
+                       confirm_last_copy=True)
+    with store.transaction() as con:                       # 片方だけ残り時間を短くする
+        con.execute("UPDATE deletion_log SET remaining_sec = 10 WHERE id = ?",
+                    (got["deletion_id"],))
+    items = svc.pending(actor="human")["items"]
+    assert [i["state"] for i in items] == ["pending", "pending", "hidden"], \
+        [i["state"] for i in items]
+    assert items[0]["id"] == got["deletion_id"], "残り時間の短い順になっていない"
+    assert items[0]["remaining_sec"] == 10 and items[1]["id"] == other["deletion_id"]
+    assert items[2]["remaining_sec"] is None, "窓の無い行に残り時間を出している"
+
+
+def test_the_stuck_reason_says_why_it_could_not_go_back(svc, store, library, clock, tmp_path):
+    """壊すと落ちる: 戻せなかった**理由を残さない**（**P8-3 の監査 G-3**）。
+
+    理由を残さないと、`target_exists`（元の場所が埋まっているだけ）にも
+    「保留していたファイルが見つかりません」と出て、**利用者が次に何をすればよいか分からない**。
+    4 通り（`target_exists` / `move_failed` / `different` / `missing`）を台帳に残す。
+    語彙はサービス層でも守る（`CHECK` に当てて 500 にしない。家風）。
+    """
+    # (1) 元の場所が埋まっている（`target_exists`）
+    blocked = make_png(library / "r1.png", seed=51)
+    a1 = add_asset(store, blocked)
+    one = svc.delete(asset_id=a1, path=str(blocked), stage=3, actor="human",
+                     confirm_last_copy=True)
+    blocked.write_bytes(b"someone else")
+    with pytest.raises(ReviewError) as err:
+        svc.undo(one["deletion_id"], actor="human")
+    assert err.value.code == "target_exists"
+    row = svc.pending(actor="human")["items"][0]
+    assert row["state"] == "stuck" and row["stuck_reason"] == "target_exists", row
+    assert row["needs_as_copy"] is True, "「別名で戻す」を出せない"
+    # (2) 元のフォルダが無い（`move_failed`）
+    clock.advance(sec=1)                                   # 台帳の `at` を分ける（並びを決定的に）
+    nested = library / "sub"
+    gone = make_png(nested / "r2.png", seed=52)
+    a2 = add_asset(store, gone)
+    two = svc.delete(asset_id=a2, path=str(gone), stage=3, actor="human",
+                     confirm_last_copy=True)
+    nested.rmdir()
+    with pytest.raises(ReviewError) as err2:
+        svc.undo(two["deletion_id"], actor="human")
+    assert err2.value.code == "move_failed"
+    assert svc.ledger(actor="human")["items"][0]["stuck_reason"] == "move_failed"
+    # (3) 保留の実体が無く、元の場所には**別のファイル**（`different`。窓切れの後始末の道）
+    clock.advance(sec=1)
+    swapped = make_png(library / "r3.png", seed=53)
+    a3 = add_asset(store, swapped)
+    three = svc.delete(asset_id=a3, path=str(swapped), stage=3, actor="human",
+                       confirm_last_copy=True)
+    Path(three["hold_path"]).unlink()
+    make_png(swapped, seed=54)                             # 登録した物とは違う中身
+    with store.transaction() as con:
+        con.execute("UPDATE deletion_log SET remaining_sec = 0 WHERE id = ?",
+                    (three["deletion_id"],))
+    clock.advance(mono=60)
+    svc.tick()
+    svc.tick()
+    assert svc.ledger(actor="human")["items"][0]["stuck_reason"] == "different"
+    # (4) 保留の実体が無く、元の場所にも無い（`missing`）
+    clock.advance(sec=1)
+    lost = make_png(library / "r4.png", seed=55)
+    a4 = add_asset(store, lost)
+    four = svc.delete(asset_id=a4, path=str(lost), stage=3, actor="human",
+                      confirm_last_copy=True)
+    Path(four["hold_path"]).unlink()                       # 保留の実体が消えた（元の場所にも無い）
+    with pytest.raises(ReviewError) as err3:
+        svc.undo(four["deletion_id"], actor="human")
+    assert err3.value.code == "restore_failed"
+    assert svc.ledger(actor="human")["items"][0]["stuck_reason"] == "missing"
+    # 語彙は 1 か所で守る（知らない語は通さない。古い行の `NULL` は通す）
+    assert deletions.stuck_reason_of(None) is None
+    with pytest.raises(ValueError):
+        deletions.stuck_reason_of("nope")
 
 
 # ---- 安全規則（最後の 1 つ・置き場の印・別ボリューム・中身の変化）----
@@ -922,6 +1053,8 @@ def test_the_delete_endpoints_work_end_to_end(client, tmp_path):
     pend = client.get("/api/pending-deletes", headers=HUMAN).json()
     assert pend["count"] == 1 and pend["items"][0]["remaining_sec"] == 300
     assert pend["items"][0]["actor"] == "human" and pend["items"][0]["mine"] is True
+    # **（監査 G-3）口にも `stuck_reason` が出る**（足した欄を 1 回も出さないままにしない。家風）
+    assert "stuck_reason" in pend["items"][0] and pend["items"][0]["stuck_reason"] is None
     # 別名の口（実装の指示書の名前）でも同じ物が返る
     alias = client.get("/api/deletions/trash", headers=HUMAN).json()
     assert alias["count"] == 1
@@ -1083,6 +1216,57 @@ def test_the_v6_columns_are_topped_up_on_an_old_database(tmp_path):
         assert db.migrate(con) == 6                      # 早期 return の道で補う
         cols = {r["name"] for r in con.execute("PRAGMA table_info(pending_delete_preview)")}
         assert {"executed_at", "result_json", "request_id"} <= cols
+        assert db.migrate(con) == 6                      # 二度足さない（何度でも同じ）
+        db.integrity(con)
+    finally:
+        con.close()
+
+
+#: **（P8-3 の監査 G-3）列を足す前の `deletion_log`**（`DROP COLUMN` は `CHECK` 付きの列に
+#: 使えないので、古い形の表を手で作って「列を見てから足す」道を通す）
+OLD_LOG_DDL = """
+CREATE TABLE deletion_log (
+  id           TEXT PRIMARY KEY,
+  asset_id     TEXT,
+  path         TEXT,
+  stage        INTEGER NOT NULL CHECK (stage IN (1, 2, 3)),
+  from_path    TEXT,
+  to_path      TEXT,
+  hold_path    TEXT,
+  remaining_sec INTEGER,
+  purge_at     TEXT,
+  restored_at  TEXT,
+  size         INTEGER,
+  request_id   TEXT REFERENCES delete_request(id),
+  reason       TEXT,
+  actor        TEXT NOT NULL CHECK (actor IN ('human', 'agent')),
+  at           TEXT NOT NULL
+);
+"""
+
+
+def test_the_stuck_reason_column_is_topped_up_on_an_old_database(tmp_path):
+    """壊すと落ちる: `deletion_log.stuck_reason` を `_top_up_v6` で足さない（**監査 G-3**）。
+
+    実データの v6 はこの列が無い形で先に作ってある。足さないと `_mark_unrestorable` が
+    `no such column: stuck_reason` で落ち、**取り消しの失敗が 409 ではなく 500 になる**
+    （`migrate()` は `current >= 6` で早期に戻るので `_migrate_v6` は通らない）。
+    **`CHECK` も DDL と同じ物を付ける**（新規の DB と形が揃う＝語彙は表でも守る）。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        con.execute("DROP TABLE deletion_log")
+        con.executescript(OLD_LOG_DDL)
+        assert "stuck_reason" not in {r["name"] for r in con.execute(
+            "PRAGMA table_info(deletion_log)")}
+        assert db.migrate(con) == 6                      # 早期 return の道で補う
+        assert "stuck_reason" in {r["name"] for r in con.execute(
+            "PRAGMA table_info(deletion_log)")}
+        con.execute("INSERT INTO deletion_log(id, stage, actor, at)"
+                    " VALUES ('x', 3, 'human', 't')")
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("UPDATE deletion_log SET stuck_reason = 'nope' WHERE id = 'x'")
+        con.execute("UPDATE deletion_log SET stuck_reason = 'target_exists' WHERE id = 'x'")
         assert db.migrate(con) == 6                      # 二度足さない（何度でも同じ）
         db.integrity(con)
     finally:

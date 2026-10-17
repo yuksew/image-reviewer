@@ -14,7 +14,8 @@ import { hideTags, showTags, wireTags } from './taglist.js';
 import { hideJobs, showJobs, wireJobs } from './jobs.js';
 // P8-3: 重複の整理（`#/duplicates`）と最近の削除（`#/pending-deletes`）
 import { hideDuplicates, showDuplicates, wireDuplicates } from './duplicates.js';
-import { hidePending, showPending, wirePending } from './pending.js';
+import { hidePending, renderDeleteEntry, showPending, toDelete, wireDeleteEntry,
+         wirePending } from './pending.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -233,6 +234,14 @@ async function select(id) {
     <div class="stat" style="margin-top:6px">${esc(shortPath(asset.locations?.[0]?.path))}</div>
     ${asset.meta_note ? `<div class="note" style="margin-top:6px">${esc(asset.meta_note)}</div>` : ''}
 
+    <!-- P8-3: **削除の入口**（設計 p8-design.md §5 の「入口」行・frontend-design.md §11）。
+         **画像のすぐ下**＝スクロール無しで見える位置（P4-3 のタグ欄・P7-4 の条件と同じ教訓）。
+         **ここでは消さない**: 段 1〜3 を選ぶのは「最近の削除」（#/pending-deletes?ids=）で行う -->
+    <div class="del-entry" id="del-entry">
+      <button class="del-go" id="del-one" data-id="${esc(id)}">この 1 枚を削除へ回す</button>
+      <span class="stat">段 1〜3 を選ぶのは「最近の削除」で行います。</span>
+    </div>
+
     <h3>タグ<span class="src">（PNG の語 / タガー / 手）</span></h3>
     <div id="tg-panel" class="tg-panel"></div>
 
@@ -289,6 +298,9 @@ async function select(id) {
     a.click();
   });
 
+  // P8-3: 削除の入口（**渡すだけ**。消すのは `#/pending-deletes` の削除の確認）
+  d.querySelector('#del-one')?.addEventListener('click', () => toDelete([id]));
+
   renderSheet();
   // P6-2: 注記の取り付け（この画面が**注記の入口**。点検 C5 / C13）。
   // `await` しない（取り付けの失敗で詳細の表示を止めない）
@@ -316,6 +328,8 @@ function togglePick(id) {
 function renderPickBar() {
   $('bar-pick').textContent = `選択 ${state.picked.length} 枚`;
   $('btn-compare').disabled = state.picked.length < 2;
+  // P8-3: **削除の入口**（下部バー。監査 C-1）。1 枚も選んでいなければ押せない
+  renderDeleteEntry($('btn-delete'), state.picked.length);
 }
 
 function openCompare() {
@@ -466,6 +480,8 @@ $('btn-theme').addEventListener('click', cycleTheme);
 $('btn-scan').addEventListener('click', rescan);
 $('btn-capture').addEventListener('click', capture);
 $('btn-compare').addEventListener('click', openCompare);
+// P8-3: 下部バーの「選んだ N 枚を削除へ回す」（**渡すだけ**。監査 C-1）
+wireDeleteEntry($('btn-delete'), () => state.picked);
 window.addEventListener('hashchange', route);
 
 wireCompare();

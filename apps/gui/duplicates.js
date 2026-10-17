@@ -5,6 +5,8 @@
 // 約束:
 // - **`GET` は計算しない**（pHash は `POST /api/duplicates/compute` の背景ジョブだけが計算する。§0.5）
 // - **おすすめは推薦するだけ**（自動で外さない・自動でまとめない。Q4）
+// - **（監査の注意）開いた直後は 1 枚も選ばない。** 全部を選ぶのは人が押したときだけ
+//   （この画面の「削除へ回す」は壊す操作への入口なので、既定で選ばれた状態にしない）
 // - **ここでは消さない**。選んだ枚を `#/pending-deletes` へ**渡すだけ**（段の選択と確認はあちら）
 // - 除外（別物として確定）は**人だけ**の口（`403 human_only` が返る）
 // - `esc()` を必ず通す
@@ -16,6 +18,9 @@ const EXCLUDE = '/api/duplicates/exclude';
 const REMOVE = '/api/duplicates/exclude/remove';
 const EXCLUSIONS = '/api/duplicates/exclusions';
 const GROUPS = '/api/groups';
+
+// **削除へ回す行き先は 1 か所で組む**（`pending.js`。監査 C-1。入口が 4 つあるので散らさない）
+import { toDelete as toDeleteHash } from './pending.js';
 
 /** しきい値の切り替え（Q3。**既定は 6**）。 */
 export const THRESHOLDS = [3, 6, 10];
@@ -67,21 +72,26 @@ const state = {
   job: null, timer: null, msg: '', bad: false, made: null, busy: false,
 };
 
-/** 群から既定の選択を作る（**おすすめを残す 1 枚に、全部をまとまりの候補に**）。 */
+/** 群から既定の選択を作る（**既定は 1 枚も選ばない**。おすすめは印だけ）。
+ *
+ * **（P8-3 の監査の注意）既定で全群を選ばない。** この画面の「削除へ回す」は**壊す操作**への
+ * 入口なので、開いた直後に全部へ印が付いていると、押し間違いが**全群の削除**に化ける
+ * （監査の複製で実際に 56 枚が掛かった）。選ぶのは人が押したときだけにする。
+ * 「残す 1 枚」のおすすめ（`keep`）は**印**であって選択ではない（従来どおり助言のまま）。
+ */
 export function makeView(groups) {
   const view = new Map();
   (groups || []).forEach((group, i) => {
-    view.set(i, { keep: group.suggested_id, on: new Set((group.items || []).map((it) => it.id)) });
+    view.set(i, { keep: group.suggested_id, on: new Set() });
   });
   return view;
 }
 
-/** 人が見ている選択（群の番号 → {keep, on}）。無ければ既定。 */
+/** 人が見ている選択（群の番号 → {keep, on}）。無ければ既定（**何も選ばない**）。 */
 export function viewOf(i) {
   if (!state.view.has(i)) {
     const group = state.groups[i];
-    state.view.set(i, { keep: group ? group.suggested_id : null,
-                        on: new Set((group?.items || []).map((it) => it.id)) });
+    state.view.set(i, { keep: group ? group.suggested_id : null, on: new Set() });
   }
   return state.view.get(i);
 }
@@ -91,6 +101,19 @@ export function pickedIds() {
   const out = [];
   state.groups.forEach((_g, i) => { for (const id of viewOf(i).on) out.push(id); });
   return out;
+}
+
+/** 全部の群の枚（「全部選ぶ」で入れる物）。 */
+export function allIds() {
+  const out = [];
+  state.groups.forEach((group) => { for (const item of group.items || []) out.push(item.id); });
+  return out;
+}
+
+/** 全部に印が付いているか（「全部選ぶ」と「全部外す」を 1 つのボタンで切り替える）。 */
+export function allPicked() {
+  const all = allIds();
+  return all.length > 0 && pickedIds().length === all.length;
 }
 
 // ---- 描く（文字列）----
@@ -136,10 +159,12 @@ export function computeHtml() {
       + `<a class="back" href="#/jobs">ジョブへ</a></div>`;
   }
   if (!state.unhashed) return '';
+  // **（監査 G-4）枚数は実際の値（`unhashed`）から組む。秒数は埋め込まない**——
+  // 前の版は「263 枚で 2.6 秒」と書いてあり、**別の置き場では嘘**になった
   return '<div class="dup-compute">'
     + `<span class="dup-cmsg">まだ計算していない枚が ${state.unhashed} 枚あります。</span>`
     + '<button class="dup-do-compute">計算する</button>'
-    + '<span class="stat">絵を読んで指紋を作ります（263 枚で 2.6 秒。画面は止まりません）。</span></div>';
+    + '<span class="stat">絵を読んで指紋を作ります。画面は止まりません。</span></div>';
 }
 
 export function groupHtml(group, i) {
@@ -212,8 +237,12 @@ export function listHtml() {
 
 export function barHtml() {
   const picked = pickedIds();
+  const all = allPicked();
   return `<span class="dup-picked">選択 ${picked.length} 枚</span>`
     + '<span class="spacer"></span>'
+    // **（監査の注意）既定では 1 枚も選ばない。** 全部を選ぶのは**人が押したときだけ**
+    // （「全部選ぶ」は残す。危ないのは「既定で選ばれている」こと）
+    + `<button class="dup-all">${all ? '全部外す' : '全部選ぶ'}</button>`
     + `<button class="dup-delete"${picked.length ? '' : ' disabled'}>`
     + `選んだ ${picked.length} 枚を削除へ回す</button>`
     + `<button class="dup-show-ex">別物として確定した組</button>`;
@@ -278,8 +307,9 @@ async function makeGroup(i) {
   const res = await fetch(GROUPS, {
     method: 'POST',
     headers: human(),
+    // **（監査 D-4）題名に括弧を使わない**（まとまりレビューの見出しに出る。§6 の語）
     body: JSON.stringify({
-      title: `重複の候補（距離 ${state.groups[i]?.max_distance_within}・${ids.length} 枚）`,
+      title: `重複の候補: 距離 ${state.groups[i]?.max_distance_within} の ${ids.length} 枚`,
       kind: 'duplicates', policy: 'pick_one', asset_ids: ids,
     }),
   });
@@ -373,7 +403,18 @@ async function cancelJob(id) {
 function toDelete() {
   const ids = pickedIds();
   if (!ids.length) return;
-  location.hash = `#/pending-deletes?ids=${ids.join(',')}`;
+  toDeleteHash(ids);
+}
+
+/** 全部を選ぶ／外す（人が押したときだけ。**既定では選ばない**）。 */
+function toggleAll() {
+  const on = !allPicked();
+  state.groups.forEach((group, i) => {
+    const view = viewOf(i);
+    view.on = new Set(on ? (group.items || []).map((it) => it.id) : []);
+  });
+  state.made = null;
+  render();
 }
 
 export async function onClick(event) {
@@ -396,6 +437,7 @@ export async function onClick(event) {
     render();
     return;
   }
+  if (hit('.dup-all')) { toggleAll(); return; }
   if (hit('.dup-delete')) toDelete();
 }
 

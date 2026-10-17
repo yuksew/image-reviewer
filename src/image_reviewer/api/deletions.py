@@ -3,7 +3,7 @@
 - `POST /api/locations/delete` — 1 件を段 1〜3 で消す（**`DELETE` に本文を持たせない**。§0.15 の 1）
 - `POST /api/locations/bulk-delete/preview` — 対象を**凍結**する（§0.7）
 - `POST /api/locations/bulk-delete` — **凍結した一覧だけ**を実行する
-- `GET  /api/pending-deletes`（別名 `GET /api/deletions/trash`）— 取り消せる削除（**残り時間つき**）
+- `GET  /api/pending-deletes`（別名 `GET /api/deletions/trash`）— **最近の削除**（段 1〜3。残り時間つき）
 - `POST /api/pending-deletes/{id}/undo`（別名 `POST /api/deletions/{id}/undo`）— 取り消す
 - `GET  /api/deletions` — **最近の削除**（段 1〜3 の台帳）
 - `GET  /api/trash` — ゴミ箱（段 2。日付ごと）／`POST /api/trash/restore` — ゴミ箱から戻す（**人だけ**）
@@ -92,13 +92,17 @@ def locations_bulk_delete(request: Request, body: dict = Body(...)):
 
 @router.get("/pending-deletes")
 def pending_deletes(request: Request):
-    """**取り消せる削除**（残り時間つき。**誰が消したか**も返す。§3.2）。**減らさない**。"""
+    """**最近の削除**（段 1〜3。残り時間つき。**誰が消したか**も返す。§3.2）。**減らさない**。
+
+    **（P8-3 の監査 C-2）段 1〜3 を返す**（`frontend-design.md` §4.6 の「1 行 = `deletion_log`
+    の 1 行」）。段 1 で外しただけの行もここに出て、ここから戻せる。
+    """
     return deletions_of(request).pending(actor=actor_of(request))
 
 
 @router.get("/deletions/trash")
 def deletions_trash(request: Request):
-    """`GET /api/pending-deletes` と同じ物（**保留と `remaining_sec`**）。
+    """`GET /api/pending-deletes` と同じ物（**段 1〜3 と `remaining_sec`**）。
 
     設計 §3.2 は `/api/pending-deletes`、実装の指示書は `/api/deletions/trash` と書いている。
     **どちらでも同じ物が返る**ようにして、画面と監査の両方から使えるようにした。

@@ -80,6 +80,11 @@ STALE_REQUEST_SEC = 600
 JST_OFFSET_SEC = 9 * 3600
 #: 拾い物（台帳に無い保留領域の中身）を `GET` に出す上限（**数は全部数える**）
 FOUND_LIMIT = 200
+#: **戻せなかった理由の語彙**（`deletion_log.stuck_reason` の `CHECK` と同じ。**口ではなく
+#: サービス層で守る**＝`CHECK` に当てて 500 にしない。家風）。
+#: **（P8-3 の監査 G-3）** 画面の「戻せませんでした」の 1 行をこの 4 通りに分ける。
+#: `None` は「理由を残していない古い行」（文言は `missing` と同じにする）。
+STUCK_REASONS = ("target_exists", "move_failed", "different", "missing")
 
 
 # ---- 純関数に近い道具（テストが差し替えられる形にする）----
@@ -102,6 +107,17 @@ def identity_of(path) -> tuple[int, int]:
     """`(size, mtime_ns)`。**実行の直前の再照合**に使う（専門 §3.2 の 2）。"""
     got = os.stat(path)
     return int(got.st_size), int(got.st_mtime_ns)
+
+
+def stuck_reason_of(value: str | None) -> str | None:
+    """戻せなかった理由の語彙を守る（**`CHECK` に当てて 500 にしない**。家風）。
+
+    `None` は「理由を残していない古い行」なのでそのまま通す（画面は `missing` と同じ文言にする）。
+    知らない語は**ここで落とす**（`deletion_log` の `CHECK` と同じ 4 語だけ）。
+    """
+    if value is None or value in STUCK_REASONS:
+        return value
+    raise ValueError(f"知らない戻せない理由です: {value!r}")
 
 
 def free_name(directory: Path, name: str) -> Path:
@@ -489,7 +505,7 @@ class DeletionService:
         state = self._original_state(row)
         if state == "different":
             log.warning("保留に無く、元の場所は別のファイルです（戻せませんでした）: %s", row["id"])
-            self._mark_unrestorable(row["id"])
+            self._mark_unrestorable(row["id"], "different")
             return False                                          # 実削除ではない（人が決める）
         if state == "same":
             log.warning("保留に移す前に落ちた行を戻しました（削除は起きていません）: %s", row["id"])
@@ -563,11 +579,20 @@ class DeletionService:
     # ---- 読み（**`GET` は 1 バイトも書かない**。`remaining_sec` も減らさない）----
 
     def pending(self, *, actor: str = "human") -> dict:
-        """**取り消せる削除**（段 3 の保留）の一覧（§3.2 の `GET /api/pending-deletes`）。
+        """**最近の削除**（取り消せる削除と、まだ戻せる段 1・2 の行。§3.2 の `GET /api/pending-deletes`）。
 
         **残り時間を減らさない**（減らすのはタイマー。§0.13）。`mine` は「自分が消した物か」で、
         画面はこれで「戻す」を押せるかどうかを決める（§5・点検 G2）。**人は誰の分でも戻せる**
         ので `undoable` は人なら常に真（C-1）。
+
+        **（P8-3 の監査 C-2）段 1〜3 の全部を返す。** `frontend-design.md` §4.6 は
+        「**1 行 = `deletion_log` の 1 行**」と決めているのに、ここは段 3 だけを返していたので、
+        **画面で段 1 を実行するとその行がどこにも出ず、戻す押し先が無かった**
+        （`undo` は元から段 1〜3 に効くのに、である）。実体を消した行（`purged`）と
+        戻した行（`restored`）は**返さない**（戻せない物を「最近の削除」に混ぜない）。
+
+        **並びは残り時間の短い順**（§11）。**窓のある段 3 を先に**（短い順）、
+        **窓の無い行**（段 1・2・戻せなかった行）は**新しい順**に後ろへ置く。
 
         **（G-4）台帳に無い `pending-delete/` の中身を `found`（拾い物）として出す**（読むだけ）。
         """
@@ -576,9 +601,11 @@ class DeletionService:
             rows = con.execute(
                 "SELECT d.*, l.display_path AS loc_display FROM deletion_log d"
                 "   LEFT JOIN asset_location l ON l.path = d.path"
-                " WHERE d.stage = 3 AND d.restored_at IS NULL"
-                "   AND d.hold_path IS NOT NULL AND d.hold_path <> ?"
-                " ORDER BY d.at DESC, d.id DESC", (HOLD_PURGED,)).fetchall()
+                " WHERE d.restored_at IS NULL"
+                "   AND NOT (d.stage = 3 AND (d.hold_path IS NULL OR d.hold_path = ?))"
+                " ORDER BY (CASE WHEN d.stage = 3 AND d.purge_at IS NOT NULL THEN 0 ELSE 1 END),"
+                "          d.remaining_sec IS NULL, d.remaining_sec ASC,"
+                "          d.at DESC, d.id DESC", (HOLD_PURGED,)).fetchall()
             window = self._setting(con, "undo_window_sec", DEFAULT_UNDO_WINDOW_SEC)
         items = [self._log_doc(row, actor=actor) for row in rows]
         found = self.found_in_hold()
@@ -1127,7 +1154,8 @@ class DeletionService:
                     # **（B-1）台帳を先に書く順で増えた道**: 移動の前に落ちた（削除は起きていない）。
                     # **ファイルは元の場所に在る**ので、戻したことにする（1 バイトも触らない）
                     return self._mark_recovered(row, at=self.clock.now(), actor=actor)
-                self._mark_unrestorable(deletion_id)
+                self._mark_unrestorable(deletion_id,
+                                        "different" if state == "different" else "missing")
                 if state == "different":
                     # **（P8-3 の D-2）** 元の場所に在るのは**登録した物ではない**。
                     # 「戻した」ことにすると `missing_at` と `restored_at` が両方立つ
@@ -1149,8 +1177,9 @@ class DeletionService:
                 if exc.code in ("target_exists", "move_failed"):
                     # **止めて尋ねる**（`as_copy` で送り直す）／**動かせなかった**。
                     # **どちらも `purge_at` を NULL にする**（§0.6-4 の失敗の規則。専門 §3.4
-                    # 「取り消し自体が失敗したときは…自動削除の対象から完全に外す」＝ B-2）
-                    self._mark_unrestorable(deletion_id)
+                    # 「取り消し自体が失敗したときは…自動削除の対象から完全に外す」＝ B-2）。
+                    # **（G-3）理由も残す**（画面の 1 行が 2 通りに分かれる）
+                    self._mark_unrestorable(deletion_id, exc.code)
                 raise
         with self.store.transaction() as con:
             if stage != 1 and loc is not None:
@@ -1214,7 +1243,7 @@ class DeletionService:
         raise ReviewError(409, "空いている名前が見つかりません", code="target_exists",
                           details={"name": candidate.name})
 
-    def _mark_unrestorable(self, deletion_id: str) -> None:
+    def _mark_unrestorable(self, deletion_id: str, reason: str | None = None) -> None:
         """**戻せなかった**印（`purge_at` を NULL にして自動削除から外す。専門 §3.4）。
 
         この行は「最近の削除」に**戻せませんでした**（`state: "stuck"`）として残り、
@@ -1225,9 +1254,16 @@ class DeletionService:
         利用者の画面が「あと N 分」のまま進み、**窓が尽きたときに黙って消える**（専門 §3.4 は
         「取り消し自体が失敗したとき（`os.replace` の失敗、別名での復帰の失敗のどちらも）…
         `purge_at` を NULL にして自動削除の対象から完全に外す」）。
+
+        **（P8-3 の監査 G-3）`reason` を台帳に残す**（`target_exists` / `move_failed` /
+        `different` / `missing`）。以前は理由を残していなかったので、**元の場所が埋まっている
+        だけの行にも「保留していたファイルが見つかりません」と出ていた**（利用者が次に何を
+        すればよいか分からない）。語彙は `stuck_reason_of()` が守る（`CHECK` に当てて 500 にしない）。
         """
+        stuck_reason_of(reason)
         with self.store.transaction() as con:
-            con.execute("UPDATE deletion_log SET purge_at = NULL WHERE id = ?", (deletion_id,))
+            con.execute("UPDATE deletion_log SET purge_at = NULL, stuck_reason = ? WHERE id = ?",
+                        (reason, deletion_id))
 
     # ---- 中: 台帳と要求 ----
 
@@ -1600,6 +1636,9 @@ class DeletionService:
         **（D-4）`display_path` は登録の表記**（`asset_location.display_path`）を引く。
         台帳の `path` は**正規化した鍵**（小文字）なので、そのまま出すと画面が登録と違う表記を
         見せる（行が消えていれば鍵しか無いので、そのときだけ鍵を出す）。
+
+        **（P8-3 の監査 G-3）`stuck_reason` も返す**（画面の「戻せませんでした」の 1 行を
+        4 通りに分ける）。古い行は `NULL`（画面は `missing` と同じ文言にする）。
         """
         state = self._state_of(row)
         mine = row["actor"] == actor
@@ -1613,9 +1652,13 @@ class DeletionService:
             "restored_at": row["restored_at"], "size": row["size"], "reason": row["reason"],
             "actor": row["actor"], "at": row["at"], "request_id": row["request_id"],
             "state": state, "mine": mine,
+            "stuck_reason": (row["stuck_reason"] if "stuck_reason" in keys else None),
             # **（C-1）人は誰の削除でも戻せる**（人の安全網）。エージェントは自分の分だけ。
             # 画面はこれで「戻す」を押せるかどうかを決める（§5・点検 G2）
-            "undoable": state in ("pending", "stuck") and (mine or actor == "human"),
+            # **（P8-3 の監査 C-2）段 1・2 の行も「戻せる」に数える**（`undo` は元から
+            # 段 1〜3 に効く。段 3 だけにすると、段 1 の行に押し先が無いまま出る）
+            "undoable": (state in ("hidden", "trashed", "pending", "stuck")
+                         and (mine or actor == "human")),
             "needs_as_copy": state == "stuck",
         }
 

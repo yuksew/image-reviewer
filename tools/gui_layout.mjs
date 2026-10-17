@@ -11,6 +11,7 @@
 //   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen duplicates       # 重複の整理（P8-3）
 //   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen pending          # 最近の削除（P8-3）
 //   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen pending --ids a,b  # 削除の確認つき
+//   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen library          # 下部バーの削除の入口（P8-3）
 //   オプション: --viewport 1200x800 / --dump / --rows 2 / --min-used 0.6 / --chrome <path> / --help
 //
 // なぜ要るか（監査 B1・実行込みのやり直し）:
@@ -23,12 +24,19 @@
 //   - 要求の一覧（`--screen requests`）: 横に溢れない／**入れ子のカードが 0**／**枚数が API と一致**
 //   - まとまりレビュー（`--screen group`）: フィルムストリップが溢れない／**決めるボタンで POST が 1 回**
 //   - 注記の画面（`--screen asset`。P6-2）: **印が画像の中**／**印の番号が一覧の番号と同じ**／
-//     一覧が横に溢れない／**入口がスクロール無しで見える**（監査 §F-1）
+//     一覧が横に溢れない／**入口がスクロール無しで見える**（監査 §F-1）／
+//     **（P8-3 の監査 C-1）削除の入口が画像のすぐ下に見え、押すと `#/pending-deletes?ids=` へ行く**
 //     （POST は押す直前に差し替えた `fetch` が飲むので、**サーバのデータは書かない**）
+//   - ライブラリ（`--screen library`。P8-3 の監査 C-1）: 下部バーの「選んだ N 枚を削除へ回す」が
+//     **スクロール無しで見える**／1 枚も選んでいなければ押せない／2 枚選ぶと押せて
+//     `#/pending-deletes?ids=` へ行く
 //   - 重複の整理（`--screen duplicates`。P8-3）: 横に溢れない／**群と枚が出る**／
-//     **入口（まとまりにする）がスクロール無しで見える**／**押すと POST が 1 回だけ**
+//     **入口（まとまりにする）がスクロール無しで見える**／**既定で 1 枚も選ばない**／
+//     **押すと POST が 1 回だけ**。**前提の行（理由が `<script>` の除外）が無くても NG にしない**
+//     （監査 D-6。空の 1 行を見る）
 //   - 最近の削除（`--screen pending`。P8-3）: 横に溢れない／**残り時間と段の印が出る**／
-//     **上部バーの入口が見える**（保留があるとき）／**押すと POST が 1 回だけ**
+//     **上部バーの入口が見える**（保留があるとき。**0 件なら出ないのが正**＝監査 D-6）／
+//     **押すと POST が 1 回だけ**
 //     （`--ids a,b` を渡すと削除の確認も押す。POST は差し替えた `fetch` が飲む）
 //
 // 前提: サーバが動いていること（GUI と API を同じオリジンで配る）。
@@ -51,7 +59,7 @@ const MIN_USED = Number(argOf('min-used', '0'));    // 舞台の使われ方の�
 const VIEWPORTS = [[1400, 900], [1200, 800], [1920, 1080]];
 const ONLY = argOf('viewport', null);       // 例: --viewport 1200x800
 const SCREEN = argOf('screen', 'compare');  // compare | requests | tags | jobs
-                                            // | duplicates / pending（P8-3）| group（P6-1b）
+                                            // | duplicates / pending / library（P8-3）| group（P6-1b）
 const GROUP = argOf('group', null);         // --screen group のまとまり id
 
 // **まとまりの id が空だと Chrome を開く前に落ちる**（実際に踏んだ: Node が
@@ -78,6 +86,7 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   node tools/gui_layout.mjs --base <url> --screen duplicates           重複の整理（P8-3）
   node tools/gui_layout.mjs --base <url> --screen pending              最近の削除（P8-3）
   node tools/gui_layout.mjs --base <url> --screen pending --ids a,b    最近の削除（削除の確認つき）
+  node tools/gui_layout.mjs --base <url> --screen library              下部バーの削除の入口（P8-3）
 オプション:
   --viewport 1200x800   1 つの窓だけ見る
   --rows 2              行数を合否に使う（既定は窓次第で見ない）
@@ -247,6 +256,17 @@ const MEASURE_ASSET = `(() => {
       const r = panel.getBoundingClientRect();
       return r.top >= 0 && r.top < innerHeight;
     })(),
+    // **P8-3 の監査 C-1**: **削除の入口**（#del-entry）が**画像のすぐ下**に在り、
+    // **スクロール無しで見える**か（tgTop と同じ形。P7 の rcTop と同じ考え方）。
+    // 設計: p8-design.md §5 の「入口」行・frontend-design.md §11
+    delTop: toDetail(document.getElementById('del-entry')),
+    delVisible: (() => {
+      const box = document.getElementById('del-entry');
+      if (!box) return false;
+      const r = box.getBoundingClientRect();
+      return r.top >= 0 && r.top < innerHeight && r.height > 0;
+    })(),
+    delText: ((document.getElementById('del-one') || {}).textContent || '').trim(),
     // **P4-3 の監査（§8.3-3 の作り直し）**: 長い語釈は**折り返すのが正しい**ので、
     // 折り返した行（2 行以上）を除いて「1 行目の語と 2 行目の語釈の組が崩れていない」を見る
     tagHeightSpread: (() => {
@@ -317,6 +337,9 @@ const MEASURE_DUP = `(() => {
     scripts: document.querySelectorAll('#dup-list script').length,
     exclusions: document.querySelectorAll('#dup-list .dup-ex-row').length,
     exReason: (document.querySelector('#dup-list .dup-ex-reason') || {}).textContent || '',
+    exEmpty: (document.querySelector('#dup-list .dup-exclusions .note') || {}).textContent || '',
+    checked: document.querySelectorAll('#dup-list .dup-on-box:checked').length,
+    allText: ((document.querySelector('#dup-bar .dup-all') || {}).textContent || '').trim(),
     bodyClass: document.body.className,
     thumbs: [...document.querySelectorAll('#dup-list .dup-item img')]
       .filter((im) => im.naturalWidth > 0).length,
@@ -354,13 +377,32 @@ const PRESS_DUP = `(async () => {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const out = { pressedMake: false, pressedExclude: false, error: null };
   try {
+    // **（P8-3 の監査の注意）既定では 1 枚も選ばれていない。** 押すには**人が選ぶ**必要が
+    // あるので、ここでも選んでから押す（選ばずに押せるなら、それ自体が危ない）。
+    // **1 枚選ぶたびに一覧が描き直される**ので、**毎回クエリし直す**（掴んだままだと
+    // 文書から外れ、change が委譲の聞き手まで上がらない）
+    const boxesAt = () => [...document.querySelectorAll('#dup-list .dup-item .dup-on-box')];
+    for (let i = 0; i < 2; i++) {
+      const box = boxesAt()[i];
+      if (box && !box.checked) {
+        box.checked = true;
+        box.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(150);
+      }
+    }
+    for (const box of boxesAt().slice(2)) {
+      if (box.checked) {
+        box.checked = false;
+        box.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(80);
+      }
+    }
+    await wait(200);
+    // **押す直前に取り直す**: 描き直し（render）が一覧を作り直すので、先に掴んだ要素は
+    // **文書から外れて**委譲の聞き手（#dup-list）まで上がらない（押しても何も起きない）。
+    // **（実測: ここで「まとまりにする」の POST が 0 回になった）**
     const make = document.querySelector('#dup-list .dup-group .dup-make');
     if (make && !make.disabled) { make.click(); out.pressedMake = true; await wait(400); }
-    const boxes = [...document.querySelectorAll('#dup-list .dup-item .dup-on-box')];
-    boxes.forEach((b, i) => {
-      if (i >= 2 && b.checked) { b.checked = false; b.dispatchEvent(new Event('change', { bubbles: true })); }
-    });
-    await wait(250);
     const ex = document.querySelector('#dup-list .dup-group .dup-exclude');
     if (ex && !ex.disabled) { ex.click(); out.pressedExclude = true; await wait(500); }
   } catch (error) { out.error = String(error); }
@@ -383,7 +425,68 @@ const OPEN_EXCLUSIONS = `(async () => {
     rows: document.querySelectorAll('#dup-list .dup-ex-row').length,
     scripts: document.querySelectorAll('#dup-list script').length,
     reason: (document.querySelector('#dup-list .dup-ex-reason') || {}).textContent || '',
+    empty: (document.querySelector('#dup-list .dup-exclusions .note') || {}).textContent || '',
   };
+})()`;
+
+// **（P8-3 の監査 C-1）拡大の削除の入口を押す**。`#/pending-deletes?ids=<この 1 枚>` へ行き、
+// 削除の確認（段の選択）が出ることを見る。**押さないテストは穴を隠す**（P7-4 の教訓）。
+// POST はしない（画面が移るだけ。渡す先は GET だけを読む）
+const PRESS_ASSET_DELETE = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = { pressed: false, hash: '', confirmShown: false };
+  const btn = document.getElementById('del-one');
+  if (btn) { btn.click(); out.pressed = true; await wait(600); }
+  out.hash = location.hash;
+  const confirm = document.getElementById('pd-confirm');
+  out.confirmShown = !!confirm && /削除の確認/.test(confirm.textContent || '')
+    && document.querySelectorAll('#pd-confirm .pd-stage').length === 3;
+  return out;
+})()`;
+
+// ライブラリ（`#/`）の下部バー。**削除の入口**（監査 C-1）が**スクロール無しで見える**か
+const MEASURE_LIBRARY = `(() => {
+  const btn = document.getElementById('btn-delete');
+  const bar = document.querySelector('.bottombar');
+  const frames = document.querySelectorAll('#rows .frame');
+  const de = document.documentElement;
+  return {
+    frames: frames.length,
+    barVisible: (() => {
+      if (!bar) return false;
+      const r = bar.getBoundingClientRect();
+      return r.height > 0 && r.top >= 0 && r.top < innerHeight;
+    })(),
+    text: btn ? (btn.textContent || '').trim() : '',
+    disabled: btn ? btn.disabled === true : null,
+    buttonVisible: (() => {
+      if (!btn) return false;
+      const r = btn.getBoundingClientRect();
+      return !btn.hidden && r.width > 0 && r.height > 0 && r.top >= 0 && r.top < innerHeight;
+    })(),
+    picked: document.querySelectorAll('#rows .frame.picked').length,
+    pageOverflow: Math.max(0, de.scrollWidth - de.clientWidth),
+  };
+})()`;
+
+// 2 枚を Ctrl + クリックで選んでから下部バーの入口を押す（**1 枚も選んでいなければ押せない**）
+const PRESS_LIBRARY = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = { picked: 0, text: '', disabled: null, pressed: false, hash: '' };
+  const btn = document.getElementById('btn-delete');
+  out.beforeText = btn ? (btn.textContent || '').trim() : '';
+  out.beforeDisabled = btn ? btn.disabled === true : null;
+  for (const frame of [...document.querySelectorAll('#rows .frame')].slice(0, 2)) {
+    frame.dispatchEvent(new MouseEvent('click', { ctrlKey: true, bubbles: true }));
+    await wait(200);
+  }
+  out.picked = document.querySelectorAll('#rows .frame.picked').length;
+  const now = document.getElementById('btn-delete');
+  out.text = now ? (now.textContent || '').trim() : '';
+  out.disabled = now ? now.disabled === true : null;
+  if (now && !now.disabled) { now.click(); out.pressed = true; await wait(500); }
+  out.hash = location.hash;
+  return out;
 })()`;
 
 // 最近の削除（`#/pending-deletes`。P8-3）。行・残り時間・段の印・拾い物・ゴミ箱・横のはみ出し
@@ -667,6 +770,15 @@ try {
       if (!got.boxVisible) bad.push('入口が見える');
       // **P4-3 の監査 C-1**: タグ欄もスクロール無しで見えること（注記の箱と同じ見方）
       if (!got.tgVisible) bad.push(`タグ欄が見える（tgTop=${got.tgTop}px）`);
+      // **P8-3 の監査 C-1**: **削除の入口が画像のすぐ下に見える**こと（`tgTop` と同じ形）。
+      // 押すと `#/pending-deletes?ids=` へ行くこと（**押さないテストは穴を隠す**）
+      if (!got.delVisible) bad.push(`削除の入口が見える（delTop=${got.delTop}px）`);
+      if (got.delText !== 'この 1 枚を削除へ回す') bad.push(`入口の文言（${got.delText}）`);
+      const pressed = await evaluate(PRESS_ASSET_DELETE);
+      if (!pressed || !pressed.pressed) bad.push('削除の入口を押せない');
+      else if (!String(pressed.hash).startsWith('#/pending-deletes?ids=')) {
+        bad.push(`削除の確認へ渡す（${pressed.hash}）`);
+      } else if (!pressed.confirmShown) bad.push('削除の確認が出る');
       // P4-3: タグの欄（設計 §8.3 の 1〜3）
       if (got.tagOverflow !== 0) bad.push('タグ欄が横に溢れない');
       // **折り返した語釈は正しい**ので、折り返しを含む行を除いて比べる（監査 §8.3-3 の作り直し）
@@ -679,6 +791,8 @@ try {
         + `marks=${got.marks} rows=${got.rowsCount} outside=${got.outside} `
         + `listOverflow=${got.listOverflow} boxTop=${got.boxTop}px visible=${got.boxVisible}`
         + ` tgTop=${got.tgTop}px tgVisible=${got.tgVisible}`
+        + ` delTop=${got.delTop}px delVisible=${got.delVisible}`
+        + ` 削除の入口=${JSON.stringify((pressed || {}).hash)}`
         + ` markNos=[${got.markNos.join(',')}] rowNos=[${got.rowNos.join(',')}]`
         + ` タグ: rows=${got.tagRows} overflow=${got.tagOverflow} 高さの差=${got.tagHeightSpread}px`
         + ` 折り返し=${got.tagWrapped}/語名=${got.tagWrappedEn} 印=${got.tagMarks} 語釈=${got.tagWithGloss} script=${got.tagScripts}`
@@ -705,6 +819,10 @@ try {
     for (const [width, height] of VIEWPORTS) {
       if (ONLY && ONLY !== `${width}x${height}`) continue;
       await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      // **同じ URL への `Page.navigate` は再読み込みしない**（ハッシュだけ違うと同一文書の移動に
+      // なる）。前の窓で押した結果（選んだ枚）が残るので、**間に `about:blank` を挟む**
+      await send('Page.navigate', { url: 'about:blank' });
+      await sleep(200);
       await send('Page.navigate', { url });
       let got = null;
       for (let i = 0; i < 60; i++) {
@@ -728,19 +846,30 @@ try {
         bad.push(`群=${expectedGroups}`);
       }
       if (got.items < got.groups * 2) bad.push('群に 2 枚以上');
-      if (ex && ex.rows < 1) bad.push('除外の一覧が出る');
-      else if (ex && ex.scripts !== 0) bad.push('除外の理由の script タグを実行しない');
+      // **（監査 D-6）前提の行（理由が `<script>` の除外）が無くても NG にしない。**
+      // 素の複製では 0 件が普通なので、そのときは**空の 1 行**を見る（前提を作らないと
+      // 通らない検査は、複製を作り直すたびに落ちる。`gui_smoke` は自分の作り物で文字を見る）
+      if (ex && ex.rows < 1) {
+        if (!String(ex.empty).includes('別物として確定した組はありません')) {
+          bad.push('除外の一覧の空の 1 行');
+        }
+        console.log(`注意: 除外の組が 0 です（理由の文字の検査はしません。D-6）`);
+      } else if (ex && ex.scripts !== 0) bad.push('除外の理由の script タグを実行しない');
       else if (ex && !String(ex.reason).includes('<script>alert(1)</script>')) {
-        bad.push('除外の理由を文字として出す');
+        console.log(`注意: 除外の理由が <script>… ではありません（文字の検査はしません。D-6）: `
+          + `${JSON.stringify(String(ex.reason).slice(0, 24))}`);
       }
       if (!String(got.bodyClass).includes('duplicating')) bad.push('道が重複の画面になっている');
       if (got.thresholds !== 3) bad.push('しきい値が 3 つ');
       if (!got.chosen.includes('≤ 6')) bad.push('既定は ≤ 6');
       if (!got.exact) bad.push('完全重複の 1 行');
+      // **（監査の注意）既定で 1 枚も選ばない**（この画面の「削除へ回す」は壊す操作への入口）
+      if (got.groups > 0 && got.checked !== 0) bad.push(`既定の選択は 0 枚（${got.checked} 枚）`);
+      if (got.groups > 0 && got.allText !== '全部選ぶ') bad.push(`全選択のボタン（${got.allText}）`);
       if (got.listOverflow !== 0) bad.push('一覧が横に溢れない');
       if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
       if (got.wide !== 0) bad.push(`行が右へ出ない（${got.wide}）`);
-      if (!got.entryVisible) bad.push('入口が見える（まとまりにする）');
+      if (got.groups > 0 && !got.entryVisible) bad.push('入口が見える（まとまりにする）');
       if (got.groups > 0) {
         if (!pressed || !pressed.pressedMake) bad.push('「まとまりにする」を押せない');
         else if (makePosts.length !== 1) bad.push(`まとまりの POST=${makePosts.length}`);
@@ -754,6 +883,7 @@ try {
       console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} 重複: `
         + `groups=${got.groups}${expectedGroups === null ? '' : `/${expectedGroups}`} items=${got.items} `
         + `おすすめの印=${got.marks} 絵=${got.thumbs} しきい値=${got.thresholds}(${got.chosen}) `
+        + `既定の選択=${got.checked}(${got.allText}) `
         + `overflow=${got.listOverflow}/${got.pageOverflow} wide=${got.wide} 入口=${got.entryVisible} `
         + `除外の一覧=${(ex || {}).rows} 理由=${JSON.stringify(String((ex || {}).reason).slice(0, 24))} `
         + `script=${(ex || {}).scripts} body=${JSON.stringify(got.bodyClass)} `
@@ -781,6 +911,8 @@ try {
       if (ONLY && ONLY !== `${width}x${height}`) continue;
       await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
       // **入口（上部バーの「最近の削除」）を先に見る**（ライブラリの画面）
+      await send('Page.navigate', { url: 'about:blank' });
+      await sleep(200);
       await send('Page.navigate', { url: `${BASE}/#/` });
       await sleep(1200);
       const entry = await evaluate(ENTRY_DELETES);
@@ -809,7 +941,7 @@ try {
       if (got.rows > 0 && !/3 実削除/.test(got.strip)) bad.push('段の印（3 実削除）');
       if (got.bodyOverflow !== 0) bad.push('本体が横に溢れない');
       if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
-      if (!got.entryVisible) bad.push('入口が見える（先頭の行）');
+      if (got.rows > 0 && !got.entryVisible) bad.push('入口が見える（先頭の行）');
       if (pendingExpected) {
         if (!entry || entry.hidden || !entry.visible) bad.push('上部バーの入口が見える');
         else if (!/最近の削除/.test(entry.text)) bad.push('入口に「最近の削除」と出る');
@@ -817,6 +949,13 @@ try {
         if (!got.remains.some((t) => /あと \d+:\d\d/.test(t))) {
           bad.push(`行に残り時間（${got.remains.join('/')}）`);
         }
+      } else if (pendingExpected === 0) {
+        // **（監査 D-6）前提の行（段 3 の保留）が無くても NG にしない。** 0 件のときは
+        // **入口を出さない**のが正（`frontend-design.md` §4.6）ので、そちらを見る
+        if (entry && entry.exists && entry.hidden !== true) {
+          bad.push('段 3 の窓が 0 なのに上部バーの入口が出ている');
+        }
+        console.log('注意: 段 3 の保留が 0 です（入口は出ないのが正。前提の行は要りません。D-6）');
       }
       if (pressed && pressed.pressedUndo && undoPosts.length !== 1) bad.push(`取り消しの POST=${undoPosts.length}`);
       if (IDS.length) {
@@ -843,6 +982,56 @@ try {
         + `POST 取り消し=${undoPosts.length} 凍結=${pvPosts.length} 用意=${bulkPosts.length} `
         + `一覧=${(pressed || {}).items} script=${got.scripts} body=${JSON.stringify(got.bodyClass)} `
         + `brief=${JSON.stringify(got.brief)}`
+        + (bad.length ? `  ← ${bad.join(', ')}` : ''));
+    }
+    ws.close();
+    console.log(failures ? `${failures} 件 NG` : 'すべて ok');
+    process.exit(failures ? 1 : 0);
+  }
+
+  // ライブラリ（`#/`）の下部バー。**削除の入口**（P8-3 の監査 C-1）が**スクロール無しで
+  // 見える**か、2 枚選ぶと押せて、押すと `#/pending-deletes?ids=` へ行くか（**押す検査**）
+  if (SCREEN === 'library') {
+    for (const [width, height] of VIEWPORTS) {
+      if (ONLY && ONLY !== `${width}x${height}`) continue;
+      await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      // **同じ URL への `Page.navigate` は再読み込みしない**（ハッシュだけ違うと同一文書の移動に
+      // なる）。前の窓で押した結果（選んだ枚・行き先）が残るので、**間に `about:blank` を挟む**
+      await send('Page.navigate', { url: 'about:blank' });
+      await sleep(200);
+      await send('Page.navigate', { url: `${BASE}/#/` });
+      let got = null;
+      for (let i = 0; i < 60; i++) {
+        got = await evaluate(MEASURE_LIBRARY);
+        if (got && got.frames > 0) break;
+        await sleep(250);
+      }
+      if (got) { await sleep(400); got = await evaluate(MEASURE_LIBRARY); }
+      if (!got) {
+        failures++;
+        console.log(`NG   ${width}x${height} ライブラリ: 計測できません`);
+        continue;
+      }
+      const pressed = await evaluate(PRESS_LIBRARY);
+      const bad = [];
+      if (got.frames <= 0) bad.push('画像が出る');
+      if (!got.barVisible) bad.push('下部バーが見える');
+      if (!got.buttonVisible) bad.push('削除の入口が見える（下部バー）');
+      if (got.text !== '選んだ 0 枚を削除へ回す') bad.push(`入口の文言（${got.text}）`);
+      if (got.disabled !== true) bad.push('1 枚も選んでいなければ押せない');
+      if (pressed.picked !== 2) bad.push(`Ctrl + クリックで 2 枚選ぶ（${pressed.picked}）`);
+      else if (pressed.text !== '選んだ 2 枚を削除へ回す') bad.push(`選んだ枚を文言に出す（${pressed.text}）`);
+      if (!pressed.pressed) bad.push('削除へ回すを押せない');
+      else if (!/^#\/pending-deletes\?ids=/.test(String(pressed.hash))) {
+        bad.push(`削除の確認へ渡す（${pressed.hash}）`);
+      }
+      if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
+      if (bad.length) failures++;
+      console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} ライブラリ: `
+        + `frames=${got.frames} 下部バー=${got.barVisible} 入口=${got.buttonVisible} `
+        + `文言=${JSON.stringify(got.text)} 押せる=${got.disabled === false} `
+        + `選んだ枚=${pressed.picked}(${JSON.stringify(pressed.text)}) `
+        + `行き先=${JSON.stringify(pressed.hash)} overflow=${got.pageOverflow}`
         + (bad.length ? `  ← ${bad.join(', ')}` : ''));
     }
     ws.close();

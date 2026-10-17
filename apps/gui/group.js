@@ -11,8 +11,12 @@
 // - 判断は**人だけ**（`X-Image-Reviewer-Actor: human`。エージェントは 403。`design.md` §9.5）
 // - 語は「**あとで**」（「保留」は使わない）。判断の取り消しは「**判断を消す**」（点検 C6）
 // - 要求から来ていないまとまり（`kind='manual'`）でも同じ画面を使う（要求専用にしない）
+// - **（P8-3 の監査 C-1）削除の入口を足した**: 「選んだ 1 枚を削除へ回す」で
+//   `#/pending-deletes?ids=<1 枚>` へ**渡すだけ**（段の選択と確認はあちら。ここでは消さない）
 
 const GROUPS = '/api/groups';
+// **削除へ回す行き先は 1 か所で組む**（`pending.js`。監査 C-1）
+import { toDelete } from './pending.js';
 // ボツの理由（枚ごとに必須）と**キープの理由**（任意）。分ける理由は P6-1b の監査 B1:
 // `decide` は「1 枚に決めたときは**その枚のキープ理由**をまとまりの理由として写す」ので、
 // キープの理由を集めないと要求の `response.reason_code_id` が常に null になる
@@ -135,6 +139,13 @@ function render() {
   if (allReject) allReject.disabled = group.state === 'decided' || !state.items.length || state.busy;
   const zoom = $('group-zoom');
   if (zoom) zoom.disabled = !chosen;
+  // P8-3: **まとまりからの削除の入口**（監査 C-1。`frontend-design.md` §11）。
+  // フィルムストリップで選んでいる 1 枚を削除の確認へ渡す（**ここでは消さない**）
+  const del = $('group-delete');
+  if (del) {
+    del.disabled = !chosen;
+    del.textContent = '選んだ 1 枚を削除へ回す';
+  }
   const note = $('group-note');
   if (note) {
     note.textContent = state.error ? `まとまりを読めません: ${state.error}` : (state.note || '');
@@ -333,6 +344,13 @@ export function wireGroup() {
       if (state.selected) {
         location.hash = `#/asset/${state.selected}?group=${encodeURIComponent(state.groupId)}`;
       }
+    });
+  }
+  // P8-3: 削除の入口（**渡すだけ**。`#/pending-deletes` で段を選ぶ。監査 C-1）
+  const del = $('group-delete');
+  if (del) {
+    del.addEventListener('click', () => {
+      if (state.selected) toDelete([state.selected]);
     });
   }
 }

@@ -645,6 +645,16 @@ el('group-zoom').dispatch('click');
 check(String(location.hash).includes(`#/asset/`) && String(location.hash).includes(`group=${GRP_A}`),
   `拡大にまとまりを引き継ぐ: ${location.hash}`);
 
+// 6b-2. **（監査 C-1）まとまりからも削除へ回せる**（拡大と同じ 1 枚。**押す検査**）
+const chose = String(location.hash).split('#/asset/')[1].split('?')[0];
+location.hash = '';
+el('group-delete').dispatch('click');
+check(el('group-delete').textContent === '選んだ 1 枚を削除へ回す',
+  `まとまりの入口の文言: ${el('group-delete').textContent}`);
+check(location.hash === `#/pending-deletes?ids=${chose}`,
+  `まとまりの入口が削除の確認へ渡す（監査 C-1）: ${location.hash}`);
+location.hash = '';
+
 // 6c. `ai.pick_index` があれば、まとまりを引かずに番号を出す（P6-1a の監査 C1）
 REQ_FIXTURES.length = 0;
 REQ_FIXTURES.push(requestFixture({ ai: { pick_asset_id: PICK, pick_index: 2, note: '手が素直' } }));
@@ -934,20 +944,36 @@ const PENDING_BODY = {
       to_path: null, hold_path: 'C:\\data\\pending-delete\\d1\\A1.png', remaining_sec: 192,
       purge_at: '2026-10-18T03:20:00Z', restored_at: null, size: 1_400_000, reason: null,
       actor: 'agent', at: '2026-10-18T03:15:00Z', request_id: 'r1', state: 'pending',
-      mine: false, undoable: true, needs_as_copy: false },
+      mine: false, undoable: true, needs_as_copy: false, stuck_reason: null },
     { id: 'd2', asset_id: 'a2', stage: 3, path: 'd:\\lib\\a2.png',
       display_path: 'D:\\lib\\A2.png', from_path: 'D:\\lib\\A2.png',
       to_path: null, hold_path: 'C:\\data\\pending-delete\\d2\\A2.png', remaining_sec: null,
       purge_at: null, restored_at: null, size: 900_000, reason: null,
       actor: 'human', at: '2026-10-18T02:00:00Z', request_id: 'r2', state: 'stuck',
-      mine: true, undoable: true, needs_as_copy: true },
+      mine: true, undoable: true, needs_as_copy: true, stuck_reason: 'target_exists' },
     { id: 'd3', asset_id: 'a3', stage: 3, path: 'd:\\lib\\a3.png',
       display_path: 'D:\\lib\\A3.png', from_path: 'D:\\lib\\A3.png',
       to_path: null, hold_path: null, remaining_sec: 10, purge_at: '2026-10-18T03:20:00Z',
       restored_at: null, size: 10, reason: null, actor: 'human', at: '2026-10-18T03:00:00Z',
-      request_id: null, state: 'pending', mine: false, undoable: false, needs_as_copy: false },
+      request_id: null, state: 'pending', mine: false, undoable: false, needs_as_copy: false,
+      stuck_reason: null },
+    // **（監査 C-2）段 1 の行**: 前の版は段 3 しか返さなかったので、画面で段 1 を実行しても
+    // その行が出ず「戻す」の押し先が無かった（`undo` は元から段 1〜3 に効く）
+    { id: 'd4', asset_id: 'a4', stage: 1, path: 'd:\\lib\\a4.png',
+      display_path: 'D:\\lib\\A4.png', from_path: 'D:\\lib\\A4.png',
+      to_path: null, hold_path: null, remaining_sec: null, purge_at: null,
+      restored_at: null, size: 800_000, reason: null, actor: 'human',
+      at: '2026-10-18T01:00:00Z', request_id: null, state: 'hidden', mine: true,
+      undoable: true, needs_as_copy: false, stuck_reason: null },
+    // **段 2 の行は「取り消せる削除」に出さない**（すぐ下のゴミ箱の欄に出る。二重に出さない）
+    { id: 'd5', asset_id: 'a5', stage: 2, path: 'd:\\lib\\a5.png',
+      display_path: 'D:\\lib\\A5.png', from_path: 'D:\\lib\\A5.png',
+      to_path: 'C:\\data\\trash\\20261018\\A5.png', hold_path: null, remaining_sec: null,
+      purge_at: null, restored_at: null, size: 700_000, reason: null, actor: 'human',
+      at: '2026-10-18T00:30:00Z', request_id: null, state: 'trashed', mine: true,
+      undoable: true, needs_as_copy: false, stuck_reason: null },
   ],
-  count: 3, window_sec: 300, pending: 2,
+  count: 5, window_sec: 300, pending: 2,
   found: [{ path: 'C:\\data\\pending-delete\\orphan\\lost.png', size: 12, mtime_ns: 7 }],
   found_count: 1,
 };
@@ -977,6 +1003,8 @@ const PREVIEW_BODY = {
 let DUP_BODY = DUP_NEAR;
 let PREVIEW_NOW = PREVIEW_BODY;
 let BULK_FAILS = null;                       // 409 の本文を入れると失敗の道を見られる
+let UNDO_FAILS = null;                       // **（監査 C-3）** 取り消しの失敗の道
+let PENDING_NOW = PENDING_BODY;              // 409 の後の読み直しを見るために差し替える
 const res = (body, status = 200) => ({
   ok: status >= 200 && status < 300, status,
   text: async () => JSON.stringify(body), json: async () => JSON.parse(JSON.stringify(body)),
@@ -996,10 +1024,21 @@ globalThis.fetch = async (url, options) => {
   if (u.startsWith('/api/jobs/')) return res({ id: 'j9', kind: 'hash', state: 'done',
     progress: { done: 2, total: 2 }, counts: {}, items_failed: [] });
   if (u.startsWith('/api/locations/bulk-delete/preview')) return res(PREVIEW_NOW);
+  if (u.startsWith('/api/roots')) {
+    // **（監査 G-4）** 段 3 の前置きは**実際の置き場**から組む（固定のツール名を埋め込まない）
+    return res({ roots: [
+      { path: 'd:\\lib', display_path: 'D:\\lib', allow_stage3: false, added_at: 't' },
+      { path: 'c:\\other', display_path: 'C:\\other', allow_stage3: true, added_at: 't' },
+    ] });
+  }
   if (u.startsWith('/api/locations/bulk-delete')) {
     if (BULK_FAILS) return res(BULK_FAILS, 409);
     return res({ preview_id: 'pv1', stage: 1, deleted: [], skipped: [], count: 2, bytes: 2_900_000,
                  requested: 2, replayed: false });
+  }
+  if (u.startsWith('/api/pending-deletes') && u.endsWith('/undo')) {
+    if (UNDO_FAILS) return res(UNDO_FAILS, 409);          // **（監査 C-3）** 失敗の道
+    return res({ deleted: false, restored: true });
   }
   if (u.startsWith('/api/pending-deletes')) return res({ deleted: false, restored: true });
   if (u.startsWith('/api/trash')) return res({ restored: true, deletion_id: 't1' });
@@ -1015,7 +1054,7 @@ globalThis.fetch = async (url, options) => {
   const method = String(options?.method || 'GET').toUpperCase();
   if (method === 'GET' && u.startsWith('/api/pending-deletes')) {
     asked.push(u);
-    return res(PENDING_BODY);
+    return res(PENDING_NOW);
   }
   if (method === 'GET' && u.startsWith('/api/trash')) {
     asked.push(u);
@@ -1064,10 +1103,11 @@ check(dupHtml.includes('1024 × 1024') && dupHtml.includes('1.3 MB') && dupHtml.
 check(dupHtml.includes('/api/assets/a1/thumb?size=256'), 'サムネイルを出す');
 check(dupHtml.includes('完全重複はありません。同じ中身が 2 か所以上にある物です。'),
   '完全重複が 0 のときの 1 行を出す（§0.4・§5）');
-check(!/[（）()]/.test(dupHtml.split('dup-exact')[1].split('</div>')[0]),
-  'その 1 行に括弧書きを使わない（§6 の規則）');
 check(dupHtml.includes('まだ計算していない枚が 2 枚あります。') && dupHtml.includes('計算する'),
   `未計算の枚と「計算する」を出す: ${(dupHtml.match(/まだ計算[^<]*/) || [])[0]}`);
+// **（監査 G-4）固定の数を文言に埋めない**（別の置き場では嘘になる）
+check(!/263 枚で 2\.6 秒/.test(dupHtml) && dupHtml.includes('絵を読んで指紋を作ります'),
+  `秒数と枚数を埋め込まない（監査 G-4）: ${(dupHtml.match(/絵を読んで[^<]*/) || [])[0]}`);
 check(dupHtml.includes('&lt;script&gt;alert(1)&lt;/script&gt;') && !dupHtml.includes('<script>alert'),
   'パスの `<script>` を生のまま出さない');
 // **（P8-3 の取り落とし調査）**「別物として確定」で隠れている組の数を出す。出さないと
@@ -1080,7 +1120,23 @@ check(!String(el('dup-list').innerHTML || '').includes('隠しています'),
   '隠れている組が 0 なら出さない');
 DUP_BODY = DUP_NEAR;
 await dupUi.showDuplicates('?max=6');
-check(dupIds() === 'a1,a2,a3', `既定は全部に印: ${dupIds()}`);
+// **（監査の注意）既定は 1 枚も選ばない。** この画面の「削除へ回す」は**壊す操作**への入口なので、
+// 開いた直後に全部へ印が付いていると、押し間違いが全群の削除に化ける（複製で 56 枚が掛かった）
+check(dupIds() === '', `既定は 1 枚も選ばない（監査の注意）: ${dupIds()}`);
+check(String(el('dup-bar').innerHTML || '').includes('選択 0 枚')
+  && String(el('dup-bar').innerHTML || '').includes('全部選ぶ'),
+  '「選択 0 枚」と「全部選ぶ」を出す');
+check(/dup-delete[^>]*disabled/.test(String(el('dup-bar').innerHTML || '')),
+  '1 枚も選んでいなければ「削除へ回す」を押せない');
+
+// 2b. **押す検査**: 「全部選ぶ」→ 全部に印が付く（**人が押したときだけ**）
+el('dup-bar').dispatch('click', { target: hitOf('.dup-all', {}) });
+check(dupIds() === 'a1,a2,a3', `「全部選ぶ」で全部に印: ${dupIds()}`);
+check(String(el('dup-bar').innerHTML || '').includes('全部外す'),
+  '押したら「全部外す」に変わる（同じ 1 つのボタン）');
+el('dup-bar').dispatch('click', { target: hitOf('.dup-all', {}) });
+check(dupIds() === '', `「全部外す」で 0 枚に戻る: ${dupIds()}`);
+el('dup-bar').dispatch('click', { target: hitOf('.dup-all', {}) });   // 以降の検査のために全部選ぶ
 
 // 3. **押す検査**: 印を外して「別物として確定」→ 除外の口が 1 回だけ
 const list_ = el('dup-list');
@@ -1098,7 +1154,11 @@ check(String(el('dup-headline').innerHTML || '').includes('別物として覚え
   '確定したことを知らせる');
 
 // 4. **押す検査**: 「まとまりにする」→ `kind='duplicates'` の口が 1 回だけ・知らせと行き先
-list_.dispatch('change', { target: hitOf('.dup-on-box', { id: 'a3', g: '0' }, { checked: true }) });
+// （除外の POST の後は読み直しで**選択が空に戻る**＝既定の「何も選ばない」に戻る。だから選び直す）
+for (const id of ['a1', 'a2', 'a3']) {
+  list_.dispatch('change', { target: hitOf('.dup-on-box', { id, g: '0' }, { checked: true }) });
+}
+check(dupIds() === 'a1,a2,a3', `選び直せる: ${dupIds()}`);
 writes.length = 0;
 list_.dispatch('click', { target: hitOf('.dup-make', { g: '0' }) });
 await tick();
@@ -1118,6 +1178,24 @@ el('dup-bar').dispatch('click', { target: hitOf('.dup-delete', {}) });
 check(writes.length === 0, `重複の画面では消さない（POST ${writes.length} 回）`);
 check(location.hash === '#/pending-deletes?ids=a1,a2,a3',
   `選んだ枚を削除の確認へ渡す: ${location.hash}`);
+
+// 5b. **（監査 C-1）削除の入口が 3 つとも同じ行き先を使う**（組み立ては `pending.js` の 1 か所）。
+//     押さないテストは穴を隠すので、**下部バーの入口とまとまりの入口も押す**
+check(pdUi.deleteHref(['a1', 'a2']) === '#/pending-deletes?ids=a1,a2'
+  && pdUi.deleteHref([]) === '', `行き先の組み立て: ${pdUi.deleteHref(['a1', 'a2'])}`);
+const barDel = el('btn-delete');
+pdUi.wireDeleteEntry(barDel, () => ['a1', 'a2']);
+pdUi.renderDeleteEntry(barDel, 0);
+check(barDel.textContent === '選んだ 0 枚を削除へ回す' && barDel.disabled === true,
+  `1 枚も選んでいなければ押せない: ${barDel.textContent}`);
+pdUi.renderDeleteEntry(barDel, 2);
+check(barDel.textContent === '選んだ 2 枚を削除へ回す' && barDel.disabled === false,
+  `選んだ枚を文言に出す（下部バー）: ${barDel.textContent}`);
+location.hash = '';
+barDel.dispatch('click');
+check(location.hash === '#/pending-deletes?ids=a1,a2',
+  `下部バーの入口が削除の確認へ渡す（監査 C-1）: ${location.hash}`);
+location.hash = '';
 
 // 6. **押す検査**: 「計算する」→ 202 の口が 1 回だけ・進行が出る
 writes.length = 0;
@@ -1157,11 +1235,27 @@ const runHtml = String(el('pd-running').innerHTML || '');
 check(runHtml.includes('あと 3:12'), '残り時間を出す');
 check(runHtml.includes('エージェント') && runHtml.includes('・ 人 ・'),
   '誰が消したかを語で出す（Q2 の帰結 b）');
-check(runHtml.includes('戻せませんでした。保留していたファイルが見つかりません。'),
-  'stuck の行に理由を出す（§5）');
+// **（監査 G-3）戻せなかった理由を 4 通りに分ける**（前の版は `target_exists` でも
+// 「保留していたファイルが見つかりません」と出ていた）
+check(runHtml.includes('戻せませんでした。元の場所に既にファイルがあります。'),
+  `stuck の行に理由を出す（監査 G-3）: ${(runHtml.match(/戻せませんでした[^<]*/) || [])[0]}`);
+check(pdUi.stuckText('move_failed').includes('元の場所へ移せませんでした')
+  && pdUi.stuckText('different').includes('元の場所には別のファイルがあります')
+  && pdUi.stuckText('missing').includes('保留していたファイルが見つかりません')
+  && pdUi.stuckText(null).includes('保留していたファイルが見つかりません'),
+  '理由ごとに 1 行（古い行は missing と同じ）');
 check(runHtml.includes('別名で戻す'), 'stuck には「別名で戻す」を出す');
-check((runHtml.match(/pd-undo/g) || []).length === 2,
-  `戻せる行にだけ「取り消す」を出す（他人の分も人は戻せる。e-2）: ${(runHtml.match(/pd-undo/g) || []).length}`);
+// **（監査 C-2）段 1 の行も出て、そこから戻せる**（`deletion_log` の 1 行 = 画面の 1 行）。
+// 段 3 の窓 2 枚（d1・d2）＋段 1 の 1 枚（d4）＝ 3 つ。**段 2（d5）はここに出さない**
+check(runHtml.includes('D:\\lib\\A4.png') && runHtml.includes('>戻す<'),
+  `段 1 の行を出して「戻す」を押せるようにする（監査 C-2）: ${(runHtml.match(/>戻す</g) || []).length} 個`);
+check((runHtml.match(/pd-undo/g) || []).length === 3,
+  `戻せる行にだけ出す（他人の分も人は戻せる。e-2。段 1 を含む）: ${(runHtml.match(/pd-undo/g) || []).length}`);
+check(!runHtml.includes('D:\\lib\\A5.png'),
+  '段 2 の行は「取り消せる削除」に二重に出さない（すぐ下のゴミ箱の欄に出る）');
+check(pdUi.rowHtml(PENDING_BODY.items[3]).includes('>戻す<')
+  && pdUi.rowHtml(PENDING_BODY.items[0]).includes('>取り消す<'),
+  '語を段で分ける（段 1・2 は「戻す」、段 3 の窓は「取り消す」）');
 check(runHtml.includes('取り消せる削除はありません。') === false, '0 件の文は出さない');
 check(String(el('pd-found').innerHTML || '').includes('台帳に無いファイルが保留領域に 1 件あります。消しません。'),
   '拾い物を出して「消しません」と言う（G-4）');
@@ -1178,6 +1272,14 @@ check(undoPosts.length === 1, `「取り消す」は 1 回だけ叩く: ${undoPo
 check(JSON.parse(String(undoPosts[0]?.body || '{}')).as_copy === false,
   '普通の取り消しは as_copy を付けない');
 
+// 9b. **押す検査**: 段 1 の行の「戻す」→ 同じ `undo` の口（監査 C-2）
+writes.length = 0;
+el('pd-running').dispatch('click', { target: hitOf('.pd-undo', { id: 'd4' }) });
+await tick();
+await tick();
+check(writes.filter((w) => w.url === '/api/pending-deletes/d4/undo').length === 1,
+  '段 1 の行の「戻す」も 1 回だけ叩く（監査 C-2）');
+
 // 10. **押す検査**: 「別名で戻す」は as_copy: true（人だけ）
 writes.length = 0;
 el('pd-running').dispatch('click', { target: hitOf('.pd-ascopy', { id: 'd2' }) });
@@ -1186,6 +1288,31 @@ await tick();
 const copyPosts = writes.filter((w) => w.url === '/api/pending-deletes/d2/undo');
 check(copyPosts.length === 1 && JSON.parse(String(copyPosts[0]?.body || '{}')).as_copy === true,
   `「別名で戻す」は as_copy を付ける: ${copyPosts[0]?.body}`);
+
+// 10b. **（監査 C-3）409 の直後に「別名で戻す」が出る**（失敗の道でも `load()` する）。
+//      前の版は `render()` だけだったので、文は「『別名で戻す』で戻せます」と言うのに
+//      **ボタンが 1 つも無く、再読込するまで押せなかった**
+UNDO_FAILS = { detail: '元の場所に既にファイルがあります', code: 'target_exists' };
+PENDING_NOW = { ...PENDING_BODY, items: PENDING_BODY.items.map((it) => (it.id === 'd1'
+  ? { ...it, state: 'stuck', remaining_sec: null, purge_at: null, needs_as_copy: true,
+      stuck_reason: 'target_exists' }
+  : it)) };
+writes.length = 0;
+el('pd-running').dispatch('click', { target: hitOf('.pd-undo', { id: 'd1' }) });
+await tick();
+await tick();
+await tick();
+const c3Html = String(el('pd-running').innerHTML || '');
+check(writes.filter((w) => w.url === '/api/pending-deletes/d1/undo').length === 1,
+  '失敗した取り消しも 1 回だけ叩く');
+check(c3Html.includes('別名で戻す'),
+  `409 の直後に「別名で戻す」を出す（監査 C-3。読み直していない）: ${(c3Html.match(/pd-ascopy/g) || []).length} 個`);
+check(c3Html.includes('戻せませんでした。元の場所に既にファイルがあります。'),
+  '読み直した行の理由も出す（監査 G-3）');
+check(String(el('pd-msg').innerHTML || '').includes('元の場所に既にファイルがあります'),
+  `失敗の理由を 1 行で知らせる: ${String(el('pd-msg').innerHTML || '').slice(0, 80)}`);
+UNDO_FAILS = null;
+PENDING_NOW = PENDING_BODY;
 
 // 11. **押す検査**: 「いま消す」は確認を 1 回挟む（取り消したら叩かない）
 writes.length = 0;
@@ -1256,7 +1383,12 @@ await pdUi.preview();
 confirmHtml = String(el('pd-confirm').innerHTML || '');
 check(confirmHtml.includes('最後の 1 つが 1 枚あります') && confirmHtml.includes('これも消す'),
   '最後の 1 つは重い確認を出す');
-check(confirmHtml.includes('illust-authoring'), '別のツールの管理下である 1 行を出す（Q8）');
+// **（監査 G-4）段 3 の前置きは実際の置き場から組む**（固定のツール名を埋め込まない）。
+// 印が無いのは `D:\lib` だけなので、そこだけ出す（`C:\other` には印がある）
+check(confirmHtml.includes('この置き場は段 3 の印が付いていません（D:\\lib）'),
+  `段 3 の前置きを実際の置き場から組む（監査 G-4）: ${(confirmHtml.match(/この置き場[^<]*/) || [])[0]}`);
+check(!confirmHtml.includes('illust-authoring') && !confirmHtml.includes('C:\\other'),
+  '固定の名前を埋め込まない（印のある置き場は黙る。監査 G-4）');
 check(confirmHtml.includes('印の無い置き場の 1 枚'), '段 3 にできない枚を出す（D-2）');
 writes.length = 0;
 el('pd-confirm').dispatch('click', { target: hitOf('.pd-exec', {}) });
@@ -1288,6 +1420,18 @@ check(confirmHtml.includes('確認した一覧の有効期限が切れました�
   '失効したら 1 行出す');
 check(/pd-exec[^>]*disabled/.test(confirmHtml), '失効したら押せなくする');
 BULK_FAILS = null;
+
+// 15b. **段 2 だけのとき**の空の文（**監査 C-2**）: 「ゴミ箱の N 件は下から戻せます。」
+//      （段 2 は「取り消せる削除」の一覧に出さないので、空でも戻せる物があると分かるようにする）
+PENDING_NOW = { ...PENDING_BODY, items: PENDING_BODY.items.filter((i) => i.state === 'trashed') };
+await pdUi.showPending('?ids=');
+check(String(el('pd-running').innerHTML || '')
+  .includes('取り消せる削除はありません。ゴミ箱の 1 件は下から戻せます。'),
+  `段 2 だけのときはゴミ箱を案内する: ${String(el('pd-running').innerHTML || '').slice(0, 60)}`);
+check(String(el('pd-trash').innerHTML || '').includes('戻す'), 'その行はゴミ箱の欄から戻せる');
+PENDING_NOW = PENDING_BODY;
+await pdUi.showPending('?ids=');
+check(String(el('pd-running').innerHTML || '').includes('あと 3:12'), '本体の応答に戻した');
 
 // 16. 上部バーの入口（§4.6。取り消せる削除が 0 なら出さない）
 badge.renderDeleteBadge(PENDING_BODY.items);

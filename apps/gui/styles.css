@@ -644,3 +644,165 @@ body.taglist #tags, body.jobs #jobs { display: flex; flex-direction: column; fle
 /* ---- 上部バーのジョブの印（§5.5） ---- */
 .job-badge.job-on { color: var(--accent); }
 .job-badge.job-done { color: var(--keep); }
+
+/* ---- 重複の整理（`#/duplicates`）と最近の削除（`#/pending-deletes`）。P8-3 ---- */
+#duplicates, #pending { display: none; }
+body.duplicating #app > .proto, body.duplicating #app > .topbar,
+body.duplicating #app > .body, body.duplicating #app > .bottombar,
+body.pending #app > .proto, body.pending #app > .topbar,
+body.pending #app > .body, body.pending #app > .bottombar { display: none; }
+body.duplicating #duplicates, body.pending #pending {
+  display: flex; flex-direction: column; flex: 1; min-height: 0;
+}
+#duplicates .topbar .back, #pending .topbar .back {
+  font-size: 12px; color: var(--ink-muted); text-decoration: none;
+  border: 1px solid var(--line); padding: 2px 8px; border-radius: 2px;
+}
+#duplicates .topbar .back:hover, #pending .topbar .back:hover {
+  color: var(--accent); border-color: var(--accent);
+}
+.topbar .del-badge { color: var(--warn); }
+
+/* 重複の整理 */
+.dup-thresholds { display: flex; gap: 4px; }
+.dup-thresholds .dup-th {
+  font-size: 11px; padding: 1px 6px; background: transparent; color: var(--ink);
+  border: 1px solid var(--line); border-radius: 2px; cursor: pointer;
+}
+.dup-thresholds .dup-th.on { color: var(--accent); border-color: var(--accent); }
+.dup-body { flex: 1 1 auto; overflow: auto; min-height: 0; }
+.dup-headline { padding: 0; }
+.dup-msg {
+  font-size: 12px; color: var(--accent); padding: 6px 12px; border-bottom: 1px solid var(--line);
+}
+.dup-msg.bad { color: var(--drop); }
+.dup-exact {
+  font-size: 12px; color: var(--ink-muted); padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.dup-exact .stat, .dup-sub .stat { margin-left: 8px; color: var(--ink-muted); font-size: 11px; }
+.dup-compute {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--surface);
+}
+.dup-cmsg { font-size: 12px; color: var(--warn); }
+.dup-compute button, .dup-ghead button, .dup-bar button, .dup-ex-row button {
+  font-size: 11px; padding: 1px 8px; background: transparent; color: var(--ink);
+  border: 1px solid var(--line); border-radius: 2px; cursor: pointer;
+}
+.dup-compute button:hover:not(:disabled), .dup-ghead button:hover:not(:disabled),
+.dup-bar button:hover:not(:disabled), .dup-ex-row button:hover { color: var(--accent); border-color: var(--accent); }
+.dup-compute button:disabled, .dup-ghead button:disabled, .dup-bar button:disabled { color: var(--ink-muted); opacity: .6; }
+.dup-head { font-size: 12px; color: var(--ink-muted); padding: 6px 12px; }
+.dup-group { border-bottom: 1px solid var(--line); }
+.dup-ghead {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 12px; background: var(--surface);
+}
+.dup-title { font-weight: 700; }
+.dup-dist { font-size: 12px; color: var(--accent); }
+.dup-sug { font-size: 12px; color: var(--ink-muted); }
+.dup-ghead .spacer { flex: 1; }
+.dup-items { padding: 2px 0; }
+.dup-item {
+  display: flex; align-items: center; gap: 10px; padding: 3px 12px;
+  border-left: 2px solid transparent; cursor: default;
+}
+.dup-item.keep { border-left-color: var(--keep); }
+.dup-item img { width: 56px; height: 56px; object-fit: contain; background: var(--paper); flex: 0 0 auto; }
+.dup-no { font-size: 11px; color: var(--ink-muted); flex: 0 0 2em; }
+.dup-item .dup-on, .dup-item .dup-keep { flex: 0 0 auto; }
+.dup-meta { font-size: 11px; color: var(--ink-muted); flex: 0 0 auto; }
+.dup-path {
+  font-size: 11px; color: var(--ink-muted); flex: 1 1 12em; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dup-mark {
+  font-size: 11px; padding: 0 5px; line-height: 16px; border: 1px solid var(--line);
+  border-radius: 2px; color: var(--accent); flex: 0 0 auto;
+}
+.dup-mark.keep { color: var(--keep); border-color: var(--keep); }
+.dup-mark.drop { color: var(--drop); border-color: var(--drop); }
+.dup-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 12px; border-top: 1px solid var(--line); background: var(--surface);
+}
+.dup-picked { font-size: 12px; color: var(--ink-muted); }
+.dup-bar .spacer { flex: 1; }
+.dup-exclusions { border-top: 1px solid var(--line); }
+.dup-exhead { display: flex; gap: 10px; align-items: center; padding: 6px 12px; font-weight: 700; }
+.dup-ex-row { display: flex; align-items: center; gap: 8px; padding: 3px 12px; flex-wrap: wrap; }
+.dup-ex-row img { width: 40px; height: 40px; object-fit: contain; background: var(--paper); }
+.dup-ex-ids { font-size: 11px; color: var(--ink-muted); }
+.dup-ex-reason { font-size: 12px; flex: 1 1 8em; min-width: 0; }
+.dup-ex-row .spacer { flex: 1; }
+.dup-help, .pd-help {
+  font-size: 11px; color: var(--ink-muted); padding: 8px 12px;
+  border-top: 1px solid var(--line); line-height: 1.7;
+}
+
+/* 最近の削除 */
+.pd-body { flex: 1 1 auto; overflow: auto; min-height: 0; }
+.pd-block { border-bottom: 1px solid var(--line); }
+.pd-sub {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 12px; font-weight: 700; background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.pd-sub .stat { font-weight: 400; font-size: 11px; color: var(--ink-muted); }
+.pd-legend { padding: 4px 12px; }
+.pd-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 4px 12px; border-bottom: 1px solid var(--line);
+}
+.pd-row .spacer { flex: 1; }
+.pd-strip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+.pd-step { color: var(--ink-muted); border: 1px solid var(--line); padding: 0 5px; border-radius: 2px; }
+.pd-step.on { color: var(--accent); border-color: var(--accent); }
+.pd-arrow { color: var(--ink-muted); }
+.pd-remain { font-size: 12px; flex: 0 0 5.5em; }
+.pd-row.pd-pending .pd-remain { color: var(--warn); }
+.pd-row.pd-stuck { border-left: 2px solid var(--drop); }
+.pd-path {
+  font-size: 11px; flex: 1 1 14em; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pd-meta { font-size: 11px; color: var(--ink-muted); flex: 0 0 auto; }
+.pd-row button, .pd-confirm-actions button {
+  font-size: 11px; padding: 1px 8px; background: transparent; color: var(--ink);
+  border: 1px solid var(--line); border-radius: 2px; cursor: pointer;
+}
+.pd-row button:hover:not(:disabled), .pd-confirm-actions button:hover:not(:disabled) {
+  color: var(--accent); border-color: var(--accent);
+}
+.pd-row button:disabled, .pd-confirm-actions button:disabled { color: var(--ink-muted); opacity: .6; }
+.pd-reason {
+  flex: 1 1 100%; font-size: 11px; color: var(--drop);
+}
+.pd-found { border-bottom: 1px solid var(--line); }
+.pd-found-row { display: flex; gap: 10px; padding: 2px 12px; font-size: 11px; color: var(--ink-muted); }
+.pd-found-row .mono { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pd-trash-head { font-size: 12px; color: var(--ink-muted); padding: 4px 12px; }
+.pd-day { border-bottom: 1px solid var(--line); }
+.pd-day-head { font-size: 12px; color: var(--ink-muted); padding: 4px 12px; background: var(--surface); }
+.pd-confirm { border-bottom: 1px solid var(--line); }
+.pd-stages { display: flex; gap: 10px; flex-wrap: wrap; padding: 6px 12px; }
+.pd-stage {
+  font-size: 12px; border: 1px solid var(--line); padding: 2px 8px; border-radius: 2px; cursor: pointer;
+}
+.pd-stage.on { color: var(--accent); border-color: var(--accent); }
+.pd-picked { display: flex; gap: 4px; padding: 6px 12px; flex-wrap: wrap; }
+.pd-picked img { width: 56px; height: 56px; object-fit: contain; background: var(--paper); }
+.pd-items { max-height: 16em; overflow: auto; }
+.pd-item { display: flex; gap: 10px; padding: 2px 12px; font-size: 11px; }
+.pd-item .pd-path { flex: 1 1 auto; }
+.pd-sum { font-size: 12px; padding: 4px 12px; }
+.pd-frees { font-size: 12px; color: var(--ink-muted); padding: 0 12px 4px; }
+.pd-warn { font-size: 12px; color: var(--warn); padding: 4px 12px; }
+.pd-last { margin-left: 8px; }
+.pd-confirm-actions {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 6px 12px 10px;
+}
+.pd-done { font-size: 12px; color: var(--keep); padding: 6px 12px; }
+.pd-msg { font-size: 12px; color: var(--accent); padding: 6px 12px; }
+.pd-msg.bad { color: var(--drop); }

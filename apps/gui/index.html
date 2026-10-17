@@ -22,6 +22,10 @@
     <a class="pending req-badge" id="stat-requests" href="#/requests" hidden></a>
     <!-- P4-3: タグ付けの進行と完了（`#/jobs`。§5.5）。0 件なら出さない -->
     <a class="pending job-badge" id="stat-jobs" href="#/jobs" hidden></a>
+    <!-- P8-3: 最近の削除の入口（`frontend-design.md` §4.6。**上部バー**）。
+         取り消せる削除が 1 件でもある間だけ出す（残り時間つき）。
+         **`#/jobs` の隣に 4 つ目の入口は作らない**（点検 B5）ので、これは (b) の 1 つ -->
+    <a class="pending del-badge" id="stat-deletes" href="#/pending-deletes" hidden></a>
     <span class="spacer"></span>
     <button id="btn-provenance" title="来歴のある画像 / ない画像を切り替える">来歴: すべて</button>
     <button id="btn-density">密度: 普</button>
@@ -167,6 +171,59 @@
     <div class="jb-help">
       タグ付けの進行です。<b>中断</b>は 1 枚ごとに効きます。失敗した枚は理由つきで出るので、
       <b>もう一度</b>で失敗した分だけやり直せます。終わったジョブは履歴として残ります。
+    </div>
+  </div>
+
+  <!-- 重複の整理（P8-3）。`#/duplicates?max=6`。
+       おすすめは**推薦するだけ**。ここでは消さない（削除へ渡すだけ） -->
+  <div id="duplicates">
+    <div class="topbar">
+      <a class="back" href="#" id="dup-back">← 一覧</a>
+      <span class="name">重複の整理</span>
+      <span class="stat" id="dup-brief">—</span>
+      <span class="spacer"></span>
+      <span class="dup-thresholds" id="dup-thresholds"></span>
+      <a class="back" href="#/jobs">ジョブへ</a>
+    </div>
+    <div class="dup-body">
+      <div class="dup-headline" id="dup-headline"></div>
+      <div class="dup-list" id="dup-list"></div>
+    </div>
+    <div class="dup-bar" id="dup-bar"></div>
+    <div class="dup-help">
+      <b>確実な物から</b>並びます（群の中のいちばん遠い組の距離が小さい順）。
+      <b>おすすめ</b>は推薦です（人・画素数・サイズ・新しさの順に見ています）。
+      残す 1 枚は<b>人が選び直せます</b>。まとまりを作るのは<b>押したときだけ</b>で、
+      代表を決めるのはまとまりレビューです。<b>ここでは消しません</b>（選んだ枚は削除の確認へ渡します）。
+    </div>
+  </div>
+
+  <!-- 最近の削除（P8-3）。`#/pending-deletes?ids=a,b` で削除の確認から入る。
+       常設（`frontend-design.md` §4.6）。**拾い物は消さない**・**ゴミ箱は自動で消さない** -->
+  <div id="pending">
+    <div class="topbar">
+      <a class="back" href="#" id="pd-back">← 一覧</a>
+      <span class="name">最近の削除</span>
+      <span class="stat" id="pd-brief">—</span>
+      <span class="spacer"></span>
+      <button id="pd-again">再読込</button>
+    </div>
+    <div class="pd-body">
+      <div id="pd-confirm"></div>
+      <div class="pd-block">
+        <div class="pd-sub">取り消せる削除<span class="stat">残り時間のうちに「取り消す」で戻せます。</span></div>
+        <div id="pd-legend"></div>
+        <div id="pd-running"></div>
+      </div>
+      <div id="pd-found"></div>
+      <div id="pd-trash"></div>
+      <div class="pd-msg" id="pd-msg"></div>
+    </div>
+    <div class="pd-help">
+      消した直後の 5 分は<b>取り消す</b>で戻せます（残り時間はアプリが動いていた時間で数えます）。
+      段 1 はカタログから外すだけ・段 2 はゴミ箱・段 3 は実体を消す用意です。
+      <b>いま消す</b>と <b>別名で戻す</b>は人の操作です。人が消した物も、エージェントが消した物も戻せます
+      （エージェントは自分の分だけ）。ゴミ箱は<b>自動では消しません</b>。
     </div>
   </div>
 

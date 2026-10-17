@@ -898,5 +898,395 @@ badge.renderJobBadge([justDone], Date.now() + 1000);
 check(el('stat-jobs').textContent === textAfter, '同じジョブで二度言わない（監査 C-3）');
 badge.resetBadge();
 
+// ---- P8-3: 重複の整理（`#/duplicates`）と最近の削除（`#/pending-deletes`）----
+//
+// **押す検査**を入れる（P7-4 の教訓: 押さないテストは穴を隠す）。押すのは
+// `wireDuplicates()` / `wirePending()` が付けた**本物の委譲の聞き手**（作り物の DOM の
+// `dispatch` に `target` を渡す）。`fetch` は飲むので**サーバのデータは書かない**。
+const dupUi = await import('../apps/gui/duplicates.js');
+const pdUi = await import('../apps/gui/pending.js');
+// **本物の配線を通す**（`app.js` は読み込まないので、ここで張る。押す検査はこの聞き手を叩く）
+dupUi.wireDuplicates();
+pdUi.wirePending();
+
+const DUP_ITEM = (id, extra) => ({
+  id, sha256: `sha-${id}`, width: 1024, height: 1024, phash: '0f0f', dhash: null,
+  first_seen_at: '2026-10-01T00:00:00Z', size: 1_400_000, mtime_ns: 1,
+  path: `D:\\lib\\${id}.png`, verdict: null, ...extra,
+});
+const DUP_NEAR = {
+  max_distance: 6, hashed: 91, unhashed: 2, total_groups: 1, total_images: 3,
+  groups: [{
+    suggested_id: 'a2', reason: '画素数が最大', max_distance_within: 3, count: 3,
+    items: [DUP_ITEM('a1', { verdict: 'reject' }), DUP_ITEM('a2', { verdict: 'keep' }),
+            DUP_ITEM('a3', { path: '<script>alert(1)</script>' })],
+  }],
+};
+const DUP_EXACT = {
+  items: [], count: 0,
+  message: '完全に同じファイルはありません（同じ内容は 1 行にまとめています）',
+};
+const PENDING_BODY = {
+  items: [
+    { id: 'd1', asset_id: 'a1', stage: 3, path: 'd:\\lib\\a1.png',
+      display_path: 'D:\\lib\\A1.png', from_path: 'D:\\lib\\A1.png',
+      to_path: null, hold_path: 'C:\\data\\pending-delete\\d1\\A1.png', remaining_sec: 192,
+      purge_at: '2026-10-18T03:20:00Z', restored_at: null, size: 1_400_000, reason: null,
+      actor: 'agent', at: '2026-10-18T03:15:00Z', request_id: 'r1', state: 'pending',
+      mine: false, undoable: true, needs_as_copy: false },
+    { id: 'd2', asset_id: 'a2', stage: 3, path: 'd:\\lib\\a2.png',
+      display_path: 'D:\\lib\\A2.png', from_path: 'D:\\lib\\A2.png',
+      to_path: null, hold_path: 'C:\\data\\pending-delete\\d2\\A2.png', remaining_sec: null,
+      purge_at: null, restored_at: null, size: 900_000, reason: null,
+      actor: 'human', at: '2026-10-18T02:00:00Z', request_id: 'r2', state: 'stuck',
+      mine: true, undoable: true, needs_as_copy: true },
+    { id: 'd3', asset_id: 'a3', stage: 3, path: 'd:\\lib\\a3.png',
+      display_path: 'D:\\lib\\A3.png', from_path: 'D:\\lib\\A3.png',
+      to_path: null, hold_path: null, remaining_sec: 10, purge_at: '2026-10-18T03:20:00Z',
+      restored_at: null, size: 10, reason: null, actor: 'human', at: '2026-10-18T03:00:00Z',
+      request_id: null, state: 'pending', mine: false, undoable: false, needs_as_copy: false },
+  ],
+  count: 3, window_sec: 300, pending: 2,
+  found: [{ path: 'C:\\data\\pending-delete\\orphan\\lost.png', size: 12, mtime_ns: 7 }],
+  found_count: 1,
+};
+const TRASH_BODY = {
+  days: [{ date: '20261018', count: 1, bytes: 500_000, items: [
+    { id: 't1', asset_id: 'a9', stage: 2, path: 'd:\\lib\\a9.png',
+      display_path: 'D:\\lib\\A9.png', from_path: 'D:\\lib\\A9.png',
+      to_path: 'C:\\data\\trash\\20261018\\A9.png', hold_path: null, remaining_sec: null,
+      purge_at: null, restored_at: null, size: 500_000, reason: null, actor: 'human',
+      at: '2026-10-18T01:00:00Z', request_id: null, state: 'trashed', mine: true,
+      undoable: false, needs_as_copy: false },
+  ] }],
+  count: 1, bytes: 500_000,
+};
+const PREVIEW_BODY = {
+  preview_id: 'pv1', stage: 1, count: 2, bytes: 2_900_000, last_copies: 0,
+  expires_at: '2026-10-18T03:30:00Z', not_allowed: [], not_allowed_count: 0,
+  frees: { stage: 1, bytes: 0, at: null, note: 'カタログから外すだけです（容量は空きません）' },
+  items: [
+    { asset_id: 'a1', path: 'd:\\lib\\a1.png', display_path: 'D:\\lib\\A1.png', size: 1_400_000,
+      mtime_ns: 1 },
+    { asset_id: 'a2', path: 'd:\\lib\\a2.png', display_path: 'D:\\lib\\A2.png', size: 1_500_000,
+      mtime_ns: 2 },
+  ],
+};
+
+let DUP_BODY = DUP_NEAR;
+let PREVIEW_NOW = PREVIEW_BODY;
+let BULK_FAILS = null;                       // 409 の本文を入れると失敗の道を見られる
+const res = (body, status = 200) => ({
+  ok: status >= 200 && status < 300, status,
+  text: async () => JSON.stringify(body), json: async () => JSON.parse(JSON.stringify(body)),
+});
+
+globalThis.fetch = async (url, options) => {
+  const u = String(url);
+  const method = String(options?.method || 'GET').toUpperCase();
+  asked.push(u);
+  if (method !== 'GET') writes.push({ url: u, method, body: options?.body });
+  if (u.startsWith('/api/duplicates/near')) return res(DUP_BODY);
+  if (u.startsWith('/api/duplicates/exact')) return res(DUP_EXACT);
+  if (u.startsWith('/api/duplicates/exclusions')) return res({ items: [], count: 0 });
+  if (u.startsWith('/api/duplicates/compute')) return res({ job_id: 'j9', total: 2 }, 202);
+  if (u.startsWith('/api/jobs/j9')) return res({ id: 'j9', kind: 'hash', state: 'running',
+    progress: { done: 1, total: 2 }, counts: {}, items_failed: [] });
+  if (u.startsWith('/api/jobs/')) return res({ id: 'j9', kind: 'hash', state: 'done',
+    progress: { done: 2, total: 2 }, counts: {}, items_failed: [] });
+  if (u.startsWith('/api/locations/bulk-delete/preview')) return res(PREVIEW_NOW);
+  if (u.startsWith('/api/locations/bulk-delete')) {
+    if (BULK_FAILS) return res(BULK_FAILS, 409);
+    return res({ preview_id: 'pv1', stage: 1, deleted: [], skipped: [], count: 2, bytes: 2_900_000,
+                 requested: 2, replayed: false });
+  }
+  if (u.startsWith('/api/pending-deletes')) return res({ deleted: false, restored: true });
+  if (u.startsWith('/api/trash')) return res({ restored: true, deletion_id: 't1' });
+  if (u.startsWith('/api/deletions/')) return res({ deletion_id: 'd2', purged: true });
+  if (u.startsWith('/api/groups')) return res({ id: 'grp-1', kind: 'duplicates' });
+  if (u.startsWith('/api/pending') || u.startsWith('/api/trash')) return res(PENDING_BODY);
+  return res(PENDING_BODY);
+};
+// `GET /api/pending-deletes` と `GET /api/trash` は本文が違う（POST の宛先と字が重なる）
+const realFetch = globalThis.fetch;
+globalThis.fetch = async (url, options) => {
+  const u = String(url);
+  const method = String(options?.method || 'GET').toUpperCase();
+  if (method === 'GET' && u.startsWith('/api/pending-deletes')) {
+    asked.push(u);
+    return res(PENDING_BODY);
+  }
+  if (method === 'GET' && u.startsWith('/api/trash')) {
+    asked.push(u);
+    return res(TRASH_BODY);
+  }
+  return realFetch(url, options);
+};
+
+/** 作り物の「押された的」（`closest` と `dataset` だけを持つ）。 */
+function hitOf(selector, data = {}, extra = {}) {
+  const node = { dataset: data, ...extra };
+  return { ...node, closest: (sel) => (sel === selector ? node : null) };
+}
+
+/** `GET /api/pending-deletes` に**人だと名乗るヘッダ**が付いているか（P8-3 の穴）。 */
+let pendingGetHeaders = null;
+const asHumanFetch = globalThis.fetch;
+globalThis.fetch = async (url, options) => {
+  const u = String(url);
+  const method = String(options?.method || 'GET').toUpperCase();
+  if (method === 'GET' && u.startsWith('/api/pending-deletes')) {
+    pendingGetHeaders = options?.headers || null;
+  }
+  return asHumanFetch(url, options);
+};
+
+const dupIds = () => dupUi.pickedIds().join(',');
+
+// 1. しきい値の切り替えと既定（Q3）
+check(dupUi.THRESHOLDS.join(',') === '3,6,10', `しきい値は 3 つ: ${dupUi.THRESHOLDS}`);
+check(dupUi.query('?max=6').max === 6 && dupUi.query('?max=10').max === 10,
+  'しきい値を URL から読む');
+check(dupUi.query('?max=7').max === 6 && dupUi.query('').max === 6,
+  '語彙の外と無指定は既定の 6（Q3）');
+
+// 2. 群の描画（サムネイル・距離・おすすめ・寸法とサイズと日時）
+writes.length = 0;
+await dupUi.showDuplicates('?max=6');
+const dupHtml = String(el('dup-list').innerHTML || '');
+check(dupHtml.includes('同じ絵が 3 枚'), '群の枚数を出す');
+check(dupHtml.includes('距離 3'), '群の中の最大距離を出す（点検 C3）');
+check(dupHtml.includes('おすすめ: 2 番') && dupHtml.includes('画素数が最大'),
+  `おすすめと理由を出す（Q4）: ${(dupHtml.match(/おすすめ[^<]*/) || [])[0]}`);
+check(dupHtml.includes('1024 × 1024') && dupHtml.includes('1.3 MB') && dupHtml.includes('2026-10-01'),
+  '寸法・サイズ・日時を出す');
+check(dupHtml.includes('/api/assets/a1/thumb?size=256'), 'サムネイルを出す');
+check(dupHtml.includes('完全重複はありません。同じ中身が 2 か所以上にある物です。'),
+  '完全重複が 0 のときの 1 行を出す（§0.4・§5）');
+check(!/[（）()]/.test(dupHtml.split('dup-exact')[1].split('</div>')[0]),
+  'その 1 行に括弧書きを使わない（§6 の規則）');
+check(dupHtml.includes('まだ計算していない枚が 2 枚あります。') && dupHtml.includes('計算する'),
+  `未計算の枚と「計算する」を出す: ${(dupHtml.match(/まだ計算[^<]*/) || [])[0]}`);
+check(dupHtml.includes('&lt;script&gt;alert(1)&lt;/script&gt;') && !dupHtml.includes('<script>alert'),
+  'パスの `<script>` を生のまま出さない');
+check(dupIds() === 'a1,a2,a3', `既定は全部に印: ${dupIds()}`);
+
+// 3. **押す検査**: 印を外して「別物として確定」→ 除外の口が 1 回だけ
+const list_ = el('dup-list');
+list_.dispatch('change', { target: hitOf('.dup-on-box', { id: 'a3', g: '0' }, { checked: false }) });
+check(dupIds() === 'a1,a2', `外した枚は選択から落ちる: ${dupIds()}`);
+writes.length = 0;
+list_.dispatch('click', { target: hitOf('.dup-exclude', { g: '0' }) });
+await tick();
+await tick();
+const exPosts = writes.filter((w) => w.url === '/api/duplicates/exclude');
+check(exPosts.length === 1, `「別物として確定」は 1 回だけ叩く: ${exPosts.length} 回`);
+check(JSON.parse(String(exPosts[0]?.body || '{}')).a_id === 'a1',
+  `選んだ 2 枚を送る: ${exPosts[0]?.body}`);
+check(String(el('dup-headline').innerHTML || '').includes('別物として覚えました'),
+  '確定したことを知らせる');
+
+// 4. **押す検査**: 「まとまりにする」→ `kind='duplicates'` の口が 1 回だけ・知らせと行き先
+list_.dispatch('change', { target: hitOf('.dup-on-box', { id: 'a3', g: '0' }, { checked: true }) });
+writes.length = 0;
+list_.dispatch('click', { target: hitOf('.dup-make', { g: '0' }) });
+await tick();
+await tick();
+const mkPosts = writes.filter((w) => w.url === '/api/groups');
+check(mkPosts.length === 1, `「まとまりにする」は 1 回だけ叩く: ${mkPosts.length} 回`);
+const mkBody = JSON.parse(String(mkPosts[0]?.body || '{}'));
+check(mkBody.kind === 'duplicates' && mkBody.policy === 'pick_one',
+  `まとまりの種類は duplicates / pick_one: ${JSON.stringify(mkBody.kind)} ${mkBody.policy}`);
+check(mkBody.asset_ids.join(',') === 'a1,a2,a3', `群の枚を全部入れる: ${mkBody.asset_ids}`);
+check(String(el('dup-headline').innerHTML || '').includes('#/group/grp-1'),
+  '作ったまとまりへ行ける（まとまりレビュー）');
+
+// 5. **押す検査**: 「削除へ回す」→ 最近の削除へ**渡すだけ**（ここでは消さない）
+writes.length = 0;
+el('dup-bar').dispatch('click', { target: hitOf('.dup-delete', {}) });
+check(writes.length === 0, `重複の画面では消さない（POST ${writes.length} 回）`);
+check(location.hash === '#/pending-deletes?ids=a1,a2,a3',
+  `選んだ枚を削除の確認へ渡す: ${location.hash}`);
+
+// 6. **押す検査**: 「計算する」→ 202 の口が 1 回だけ・進行が出る
+writes.length = 0;
+el('dup-list').dispatch('click', { target: hitOf('.dup-do-compute', {}) });
+await tick();
+await tick();
+const cpPosts = writes.filter((w) => w.url === '/api/duplicates/compute');
+check(cpPosts.length === 1, `「計算する」は 1 回だけ叩く: ${cpPosts.length} 回`);
+check(String(el('dup-list').innerHTML || '').includes('計算中 0 / 2'),
+  `進行を出す（背景ジョブ）: ${(String(el('dup-list').innerHTML).match(/計算中[^<]*/) || [])[0]}`);
+check(dupUi.pollActive() === true, '見ている間は進行を見る');
+dupUi.stopPoll();
+check(dupUi.pollActive() === false, '離れたら止める');
+
+// 7. 最近の削除: 残り時間の書き方と 3 段階の進行（§4.6・§11）
+check(pdUi.fmtRemain(192) === '3:12', `あと 3:12 の形: ${pdUi.fmtRemain(192)}`);
+check(pdUi.fmtRemain(0) === '0:00' && pdUi.fmtRemain(-5) === '0:00', '負は 0 に丸める');
+const stepped = pdUi.stepRemain([{ remaining_sec: 5 }, { remaining_sec: null }]);
+check(stepped[0].remaining_sec === 4 && stepped[1].remaining_sec === null,
+  '毎秒の見た目だけを減らす（`GET` は書かない）');
+const strip3 = pdUi.stageStrip(3);
+check(strip3.includes('1 印') && strip3.includes('2 ゴミ箱') && strip3.includes('3 実削除'),
+  `3 段階の進行を出す: ${strip3.replace(/</g, '‹')}`);
+check(/class="pd-step on">3 実削除/.test(strip3), 'いまの段に印を付ける');
+check(!/class="pd-step on">1 印/.test(strip3), '前の段には印を付けない');
+
+// 8. 行の描画（誰が・残り時間・戻せない理由）
+pendingGetHeaders = null;
+await pdUi.showPending('?ids=');
+check(String(pendingGetHeaders?.['X-Image-Reviewer-Actor'] || '') === 'human',
+  `GET でも人だと名乗る（名乗らないと undoable が false で「取り消す」が消える）: `
+  + `${JSON.stringify(pendingGetHeaders)}`);
+check(pdUi.fmtWhen('2026-10-18T03:15:00Z') !== '—' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(
+  pdUi.fmtWhen('2026-10-18T03:15:00Z')), `現地の時刻で出す: ${pdUi.fmtWhen('2026-10-18T03:15:00Z')}`);
+check(!/pd-step on/.test(pdUi.legendHtml()), '凡例の段には印を付けない（行と見分ける）');
+const runHtml = String(el('pd-running').innerHTML || '');
+check(runHtml.includes('あと 3:12'), '残り時間を出す');
+check(runHtml.includes('エージェント') && runHtml.includes('・ 人 ・'),
+  '誰が消したかを語で出す（Q2 の帰結 b）');
+check(runHtml.includes('戻せませんでした。保留していたファイルが見つかりません。'),
+  'stuck の行に理由を出す（§5）');
+check(runHtml.includes('別名で戻す'), 'stuck には「別名で戻す」を出す');
+check((runHtml.match(/pd-undo/g) || []).length === 2,
+  `戻せる行にだけ「取り消す」を出す（他人の分も人は戻せる。e-2）: ${(runHtml.match(/pd-undo/g) || []).length}`);
+check(runHtml.includes('取り消せる削除はありません。') === false, '0 件の文は出さない');
+check(String(el('pd-found').innerHTML || '').includes('台帳に無いファイルが保留領域に 1 件あります。消しません。'),
+  '拾い物を出して「消しません」と言う（G-4）');
+check(String(el('pd-trash').innerHTML || '').includes('20261018')
+  && String(el('pd-trash').innerHTML).includes('戻す'), 'ゴミ箱を日付ごとに出す（Q7）');
+
+// 9. **押す検査**: 「取り消す」→ `undo` が 1 回だけ
+writes.length = 0;
+el('pd-running').dispatch('click', { target: hitOf('.pd-undo', { id: 'd1' }) });
+await tick();
+await tick();
+const undoPosts = writes.filter((w) => w.url === '/api/pending-deletes/d1/undo');
+check(undoPosts.length === 1, `「取り消す」は 1 回だけ叩く: ${undoPosts.length} 回`);
+check(JSON.parse(String(undoPosts[0]?.body || '{}')).as_copy === false,
+  '普通の取り消しは as_copy を付けない');
+
+// 10. **押す検査**: 「別名で戻す」は as_copy: true（人だけ）
+writes.length = 0;
+el('pd-running').dispatch('click', { target: hitOf('.pd-ascopy', { id: 'd2' }) });
+await tick();
+await tick();
+const copyPosts = writes.filter((w) => w.url === '/api/pending-deletes/d2/undo');
+check(copyPosts.length === 1 && JSON.parse(String(copyPosts[0]?.body || '{}')).as_copy === true,
+  `「別名で戻す」は as_copy を付ける: ${copyPosts[0]?.body}`);
+
+// 11. **押す検査**: 「いま消す」は確認を 1 回挟む（取り消したら叩かない）
+writes.length = 0;
+globalThis.confirm = () => false;
+el('pd-running').dispatch('click', { target: hitOf('.pd-purge', { id: 'd2' }) });
+await tick();
+check(writes.filter((w) => w.url.includes('/purge')).length === 0,
+  '確認でやめたら消さない（押し間違いを防ぐ）');
+globalThis.confirm = () => true;
+el('pd-running').dispatch('click', { target: hitOf('.pd-purge', { id: 'd2' }) });
+await tick();
+await tick();
+const purgePosts = writes.filter((w) => w.url === '/api/deletions/d2/purge');
+check(purgePosts.length === 1, `「いま消す」は 1 回だけ叩く: ${purgePosts.length} 回`);
+check(JSON.parse(String(purgePosts[0]?.body || '{}')).confirm === true, 'confirm: true を送る');
+
+// 12. **押す検査**: ゴミ箱の「戻す」→ `trash/restore` が 1 回だけ
+writes.length = 0;
+el('pd-trash').dispatch('click', { target: hitOf('.pd-trash-restore', { id: 't1' }) });
+await tick();
+await tick();
+const trPosts = writes.filter((w) => w.url === '/api/trash/restore');
+check(trPosts.length === 1 && JSON.parse(String(trPosts[0]?.body || '{}')).deletion_id === 't1',
+  `ゴミ箱の「戻す」は 1 回だけ叩く: ${trPosts.length} 回`);
+
+// 13. **押す検査**: 削除の確認（`?ids=`）→ 段の選択 → 凍結 → 用意（**画面の中の段**）
+await pdUi.showPending('?ids=a1,a2');
+let confirmHtml = String(el('pd-confirm').innerHTML || '');
+check(confirmHtml.includes('選んだ 2 枚') && confirmHtml.includes('消す物を確かめる'),
+  '渡された枚と「消す物を確かめる」を出す');
+check(confirmHtml.includes('段 1 カタログから外す') && confirmHtml.includes('段 2 ゴミ箱へ移す')
+  && confirmHtml.includes('段 3 完全に消す用意をする'), '段を 3 つ出す');
+check(pdUi.stageTaken() === 1, '既定は段 1（いきなり消さない）');
+check(pdUi.askStage(3) === true && pdUi.stageTaken() === 3, '段を選べる');
+pdUi.askStage(1);
+writes.length = 0;
+el('pd-confirm').dispatch('click', { target: hitOf('.pd-preview', {}) });
+await tick();
+await tick();
+const pvPosts = writes.filter((w) => w.url === '/api/locations/bulk-delete/preview');
+check(pvPosts.length === 1, `「消す物を確かめる」は 1 回だけ叩く: ${pvPosts.length} 回`);
+const pvBody = JSON.parse(String(pvPosts[0]?.body || '{}'));
+check(pvBody.stage === 1 && pvBody.scope.asset_ids.join(',') === 'a1,a2',
+  `段と枚を送る: ${JSON.stringify(pvBody)}`);
+confirmHtml = String(el('pd-confirm').innerHTML || '');
+check(confirmHtml.includes('2 枚 ・ 2.8 MB'), `凍結した件数と合計バイトを出す: ${(confirmHtml.match(/2 枚[^<]*/) || [])[0]}`);
+check(confirmHtml.includes('D:\\lib\\A1.png'), '対象の一覧そのもの（パスとサイズ）を出す');
+check(confirmHtml.includes('カタログから外すだけです') && confirmHtml.includes('容量は空きません'),
+  'いつ空くかを出す（段 1 は空かない。§8.1 の 16）');
+writes.length = 0;
+el('pd-confirm').dispatch('click', { target: hitOf('.pd-exec', {}) });
+await tick();
+await tick();
+const blPosts = writes.filter((w) => w.url === '/api/locations/bulk-delete');
+check(blPosts.length === 1, `「消す用意をする」は 1 回だけ叩く: ${blPosts.length} 回`);
+const blBody = JSON.parse(String(blPosts[0]?.body || '{}'));
+check(blBody.confirm === true && blBody.preview_id === 'pv1', `confirm と preview_id を送る: ${JSON.stringify(blBody)}`);
+check(blBody.client_token && blBody.client_token.length > 8, '二重に消さない鍵を付ける（§0.13）');
+check(String(el('pd-confirm').innerHTML || '').includes('2 枚を消す用意をしました。'),
+  '消す用意ができたことを知らせる');
+
+// 14. 最後の 1 つは重い確認（段 3 のときだけ。§8.1 の 43）
+PREVIEW_NOW = { ...PREVIEW_BODY, stage: 3, last_copies: 1, not_allowed_count: 1,
+                frees: { stage: 3, bytes: 2_900_000, at: null, note: '5 分の窓が過ぎた時点で空きます' } };
+await pdUi.showPending('?ids=a1,a2');
+pdUi.askStage(3);
+await pdUi.preview();
+confirmHtml = String(el('pd-confirm').innerHTML || '');
+check(confirmHtml.includes('最後の 1 つが 1 枚あります') && confirmHtml.includes('これも消す'),
+  '最後の 1 つは重い確認を出す');
+check(confirmHtml.includes('illust-authoring'), '別のツールの管理下である 1 行を出す（Q8）');
+check(confirmHtml.includes('印の無い置き場の 1 枚'), '段 3 にできない枚を出す（D-2）');
+writes.length = 0;
+el('pd-confirm').dispatch('click', { target: hitOf('.pd-exec', {}) });
+await tick();
+check(writes.filter((w) => w.url === '/api/locations/bulk-delete').length === 0,
+  '「これも消す」に印が無ければ消さない');
+check(String(el('pd-msg').innerHTML || '').includes('これも消す'),
+  '印を付けるよう促す');
+el('pd-confirm').dispatch('change', { target: hitOf('.pd-last-box', {}, { checked: true }) });
+writes.length = 0;
+el('pd-confirm').dispatch('click', { target: hitOf('.pd-exec', {}) });
+await tick();
+await tick();
+const bl3 = writes.filter((w) => w.url === '/api/locations/bulk-delete');
+check(bl3.length === 1 && JSON.parse(String(bl3[0]?.body || '{}')).confirm_last_copy === true,
+  `印を付けたら confirm_last_copy を送る: ${bl3[0]?.body}`);
+
+// 15. 凍結が失効したら 1 行出して押せなくする（§5）
+BULK_FAILS = { detail: '確認した一覧の有効期限が切れました', code: 'preview_expired' };
+PREVIEW_NOW = { ...PREVIEW_BODY, stage: 1 };
+await pdUi.showPending('?ids=a1,a2');
+await pdUi.preview();
+writes.length = 0;
+el('pd-confirm').dispatch('click', { target: hitOf('.pd-exec', {}) });
+await tick();
+await tick();
+confirmHtml = String(el('pd-confirm').innerHTML || '');
+check(confirmHtml.includes('確認した一覧の有効期限が切れました。もう一度確認してください。'),
+  '失効したら 1 行出す');
+check(/pd-exec[^>]*disabled/.test(confirmHtml), '失効したら押せなくする');
+BULK_FAILS = null;
+
+// 16. 上部バーの入口（§4.6。取り消せる削除が 0 なら出さない）
+badge.renderDeleteBadge(PENDING_BODY.items);
+check(el('stat-deletes').textContent === '最近の削除 2 ・ あと 0:10',
+  `入口に件数と残り時間（いちばん短い物）を出す: ${el('stat-deletes').textContent}`);
+check(el('stat-deletes').hidden === false, '取り消せる削除があるときは出す');
+badge.renderDeleteBadge([PENDING_BODY.items[1]]);          // `stuck` の 1 枚だけ（窓が無い）
+check(el('stat-deletes').hidden === true, '戻せない物だけなら出さない');
+badge.renderDeleteBadge([]);
+check(el('stat-deletes').hidden === true, '0 件なら出さない（§4.6）');
+
 console.log(failures.length ? `\n${failures.length} 件 NG` : '\nすべて ok');
 process.exit(failures.length ? 1 : 0);

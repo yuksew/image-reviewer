@@ -8,6 +8,9 @@
 //   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen asset --ids <1 枚>  # 注記とタグの欄（P6-2 / P4-3）
 //   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen tags             # 語の一覧（P4-3）
 //   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen jobs             # ジョブ（P4-3）
+//   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen duplicates       # 重複の整理（P8-3）
+//   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen pending          # 最近の削除（P8-3）
+//   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen pending --ids a,b  # 削除の確認つき
 //   オプション: --viewport 1200x800 / --dump / --rows 2 / --min-used 0.6 / --chrome <path> / --help
 //
 // なぜ要るか（監査 B1・実行込みのやり直し）:
@@ -22,6 +25,11 @@
 //   - 注記の画面（`--screen asset`。P6-2）: **印が画像の中**／**印の番号が一覧の番号と同じ**／
 //     一覧が横に溢れない／**入口がスクロール無しで見える**（監査 §F-1）
 //     （POST は押す直前に差し替えた `fetch` が飲むので、**サーバのデータは書かない**）
+//   - 重複の整理（`--screen duplicates`。P8-3）: 横に溢れない／**群と枚が出る**／
+//     **入口（まとまりにする）がスクロール無しで見える**／**押すと POST が 1 回だけ**
+//   - 最近の削除（`--screen pending`。P8-3）: 横に溢れない／**残り時間と段の印が出る**／
+//     **上部バーの入口が見える**（保留があるとき）／**押すと POST が 1 回だけ**
+//     （`--ids a,b` を渡すと削除の確認も押す。POST は差し替えた `fetch` が飲む）
 //
 // 前提: サーバが動いていること（GUI と API を同じオリジンで配る）。
 
@@ -42,7 +50,8 @@ const EXPECTED_ROWS = Number(argOf('rows', '0'));   // 0 = 行数は窓次第（
 const MIN_USED = Number(argOf('min-used', '0'));    // 舞台の使われ方の下限（0〜1。0 で見ない）
 const VIEWPORTS = [[1400, 900], [1200, 800], [1920, 1080]];
 const ONLY = argOf('viewport', null);       // 例: --viewport 1200x800
-const SCREEN = argOf('screen', 'compare');  // compare（既定）| requests | group（P6-1b）
+const SCREEN = argOf('screen', 'compare');  // compare | requests | tags | jobs
+                                            // | duplicates / pending（P8-3）| group（P6-1b）
 const GROUP = argOf('group', null);         // --screen group のまとまり id
 
 // **まとまりの id が空だと Chrome を開く前に落ちる**（実際に踏んだ: Node が
@@ -66,6 +75,9 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   node tools/gui_layout.mjs --base <url> --screen asset --ids <1 枚>   注記とタグの欄（P6-2 / P4-3）
   node tools/gui_layout.mjs --base <url> --screen tags                 語の一覧（P4-3）
   node tools/gui_layout.mjs --base <url> --screen jobs                 ジョブ（P4-3）
+  node tools/gui_layout.mjs --base <url> --screen duplicates           重複の整理（P8-3）
+  node tools/gui_layout.mjs --base <url> --screen pending              最近の削除（P8-3）
+  node tools/gui_layout.mjs --base <url> --screen pending --ids a,b    最近の削除（削除の確認つき）
 オプション:
   --viewport 1200x800   1 つの窓だけ見る
   --rows 2              行数を合否に使う（既定は窓次第で見ない）
@@ -289,6 +301,193 @@ const MEASURE_JOBS = `(() => {
   };
 })()`;
 
+// 重複の整理（`#/duplicates`。P8-3）。群・枚・横のはみ出し・**入口が見えるか**を見る
+const MEASURE_DUP = `(() => {
+  const list = document.getElementById('dup-list');
+  const groups = [...document.querySelectorAll('#dup-list .dup-group')];
+  const items = [...document.querySelectorAll('#dup-list .dup-item')];
+  const de = document.documentElement;
+  const head = groups.length ? groups[0].querySelector('.dup-ghead') : null;
+  const box = list ? list.getBoundingClientRect() : null;
+  const right = box ? box.right + 1 : 0;
+  return {
+    groups: groups.length,
+    items: items.length,
+    marks: document.querySelectorAll('#dup-list .dup-mark').length,
+    scripts: document.querySelectorAll('#dup-list script').length,
+    exclusions: document.querySelectorAll('#dup-list .dup-ex-row').length,
+    exReason: (document.querySelector('#dup-list .dup-ex-reason') || {}).textContent || '',
+    bodyClass: document.body.className,
+    thumbs: [...document.querySelectorAll('#dup-list .dup-item img')]
+      .filter((im) => im.naturalWidth > 0).length,
+    exact: !!document.querySelector('#dup-list .dup-exact'),
+    exactText: (document.querySelector('#dup-list .dup-exact') || {}).textContent || '',
+    compute: !!document.querySelector('#dup-list .dup-compute'),
+    thresholds: document.querySelectorAll('#dup-thresholds .dup-th').length,
+    chosen: (document.querySelector('#dup-thresholds .dup-th.on') || {}).textContent || '',
+    brief: (document.getElementById('dup-brief') || {}).textContent || '',
+    listOverflow: list ? Math.max(0, list.scrollWidth - list.clientWidth) : 0,
+    pageOverflow: Math.max(0, de.scrollWidth - de.clientWidth),
+    wide: items.filter((it) => it.getBoundingClientRect().right > right).length,
+    entryVisible: (() => {
+      if (!head) return false;
+      const r = head.getBoundingClientRect();
+      return r.top >= 0 && r.top < innerHeight;
+    })(),
+  };
+})()`;
+
+// 重複の整理で**押す**（POST は差し替えた `fetch` が飲む。サーバのデータは書かない）。
+// 「まとまりにする」と「別物として確定」（2 枚だけ残す）を押して、POST の回数と本文を見る
+const PRESS_DUP = `(async () => {
+  const real = window.fetch;
+  const json = (body) => new Response(JSON.stringify(body),
+    { status: 200, headers: { 'Content-Type': 'application/json' } });
+  window.__posts = [];
+  window.fetch = (url, opt = {}) => {
+    const method = (opt.method || 'GET').toUpperCase();
+    if (method !== 'POST') return real(url, opt);
+    window.__posts.push({ url: String(url), body: opt.body || null });
+    return Promise.resolve(json({ id: 'gui-made-group', kind: 'duplicates',
+                                  a_id: 'a', b_id: 'b', excluded: true }));
+  };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = { pressedMake: false, pressedExclude: false, error: null };
+  try {
+    const make = document.querySelector('#dup-list .dup-group .dup-make');
+    if (make && !make.disabled) { make.click(); out.pressedMake = true; await wait(400); }
+    const boxes = [...document.querySelectorAll('#dup-list .dup-item .dup-on-box')];
+    boxes.forEach((b, i) => {
+      if (i >= 2 && b.checked) { b.checked = false; b.dispatchEvent(new Event('change', { bubbles: true })); }
+    });
+    await wait(250);
+    const ex = document.querySelector('#dup-list .dup-group .dup-exclude');
+    if (ex && !ex.disabled) { ex.click(); out.pressedExclude = true; await wait(500); }
+  } catch (error) { out.error = String(error); }
+  window.fetch = real;
+  out.posts = window.__posts;
+  return out;
+})()`;
+
+// **除外の一覧を開いて、その場で測る**（理由の script タグが要素にならないこと。§8.2-7）。
+// 描き直しと競合しないよう、**押すのと測るのを同じ評価の中で**行う
+const OPEN_EXCLUSIONS = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 10; i++) {
+    if (document.querySelectorAll('#dup-list .dup-ex-row').length > 0) break;
+    const btn = document.querySelector('#dup-bar .dup-show-ex');
+    if (btn && !document.querySelector('#dup-list .dup-exclusions')) btn.click();
+    await wait(400);
+  }
+  return {
+    rows: document.querySelectorAll('#dup-list .dup-ex-row').length,
+    scripts: document.querySelectorAll('#dup-list script').length,
+    reason: (document.querySelector('#dup-list .dup-ex-reason') || {}).textContent || '',
+  };
+})()`;
+
+// 最近の削除（`#/pending-deletes`。P8-3）。行・残り時間・段の印・拾い物・ゴミ箱・横のはみ出し
+const MEASURE_PENDING = `(() => {
+  const rows = [...document.querySelectorAll('#pd-running .pd-row')];
+  const found = [...document.querySelectorAll('#pd-found .pd-found-row')];
+  const trash = [...document.querySelectorAll('#pd-trash .pd-row')];
+  const confirm = document.getElementById('pd-confirm');
+  const items = [...document.querySelectorAll('#pd-confirm .pd-item')];
+  const body = document.querySelector('#pending .pd-body');
+  const de = document.documentElement;
+  const first = rows[0] || null;
+  return {
+    rows: rows.length,
+    found: found.length,
+    trash: trash.length,
+    remain: (document.querySelector('#pd-running .pd-remain') || {}).textContent || '',
+    remains: [...document.querySelectorAll('#pd-running .pd-remain')].map((m) => m.textContent || ''),
+    strip: (document.querySelector('#pd-running .pd-strip') || {}).textContent || '',
+    actors: [...document.querySelectorAll('#pd-running .pd-meta')].map((m) => m.textContent || ''),
+    brief: (document.getElementById('pd-brief') || {}).textContent || '',
+    empty: !!document.querySelector('#pd-running .note'),
+    scripts: document.querySelectorAll('#pending script').length,
+    bodyClass: document.body.className,
+    confirmText: (confirm || {}).textContent || '',
+    confirmVisible: (() => {
+      if (!confirm || !(confirm.textContent || '').trim()) return false;
+      const r = confirm.getBoundingClientRect();
+      return r.height > 0 && r.top >= 0 && r.top < innerHeight;
+    })(),
+    entryVisible: (() => {
+      if (!first) return false;
+      const r = first.getBoundingClientRect();
+      return r.top >= 0 && r.top < innerHeight;
+    })(),
+    bodyOverflow: body ? Math.max(0, body.scrollWidth - body.clientWidth) : 0,
+    pageOverflow: Math.max(0, de.scrollWidth - de.clientWidth),
+  };
+})()`;
+
+// 上部バーの入口（取り消せる削除があるときに見えるか。§4.6）
+const ENTRY_DELETES = `(() => {
+  const el = document.getElementById('stat-deletes');
+  if (!el) return { exists: false };
+  const r = el.getBoundingClientRect();
+  return { exists: true, hidden: el.hidden === true, text: (el.textContent || '').trim(),
+           top: Math.round(r.top), height: Math.round(r.height),
+           visible: el.hidden !== true && r.top >= 0 && r.top < innerHeight && r.height > 0 };
+})()`;
+
+// 最近の削除で**押す**（取り消す・削除の確認の 2 段。POST は飲む）。
+// 凍結の応答は作り物を返すので、**サーバに凍結は作られない**
+const PRESS_PENDING = `(async () => {
+  const real = window.fetch;
+  const json = (body, status = 200) => new Response(JSON.stringify(body),
+    { status, headers: { 'Content-Type': 'application/json' } });
+  const preview = {
+    preview_id: 'gui-preview', stage: 1, count: 2, bytes: 2000000, last_copies: 0,
+    expires_at: '2999-01-01T00:00:00Z', not_allowed: [], not_allowed_count: 0,
+    frees: { stage: 1, bytes: 0, at: null, note: 'カタログから外すだけです（容量は空きません）' },
+    items: [
+      { asset_id: 'x1', path: 'd:\\\\lib\\\\x1.png', display_path: 'D:\\\\lib\\\\X1.png',
+        size: 1000000, mtime_ns: 1 },
+      { asset_id: 'x2', path: 'd:\\\\lib\\\\x2.png', display_path: 'D:\\\\lib\\\\X2.png',
+        size: 1000000, mtime_ns: 2 },
+    ],
+  };
+  window.__posts = [];
+  window.confirm = () => true;              // 「いま消す」の確認は自動で yes
+  window.fetch = (url, opt = {}) => {
+    const method = (opt.method || 'GET').toUpperCase();
+    if (method !== 'POST') return real(url, opt);
+    const u = String(url);
+    window.__posts.push({ url: u, body: opt.body || null });
+    if (u.includes('bulk-delete/preview')) return Promise.resolve(json(preview));
+    if (u.includes('/bulk-delete')) {
+      return Promise.resolve(json({ preview_id: 'gui-preview', stage: 1, deleted: [], skipped: [],
+                                    count: 2, bytes: 2000000, requested: 2, replayed: false }));
+    }
+    return Promise.resolve(json({ restored: true, deletion_id: 'gui' }));
+  };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = { pressedUndo: false, pressedPreview: false, pressedExec: false, error: null };
+  try {
+    const undo = document.querySelector('#pd-running .pd-undo');
+    if (undo) { undo.click(); out.pressedUndo = true; await wait(400); }
+    const pv = document.querySelector('#pd-confirm .pd-preview');
+    if (pv) {
+      pv.click(); out.pressedPreview = true; await wait(600);
+      // **凍結した一覧は「消す用意」を押す前に測る**（押すと結果の 1 行に置き換わる）
+      out.items = document.querySelectorAll('#pd-confirm .pd-item').length;
+      out.itemsText = (document.querySelector('#pd-confirm .pd-items') || {}).textContent || '';
+      out.sumText = (document.querySelector('#pd-confirm .pd-sum') || {}).textContent || '';
+      out.freesText = (document.querySelector('#pd-confirm .pd-frees') || {}).textContent || '';
+      const exec = document.querySelector('#pd-confirm .pd-exec');
+      if (exec && !exec.disabled) { exec.click(); out.pressedExec = true; await wait(600); }
+    }
+  } catch (error) { out.error = String(error); }
+  window.fetch = real;
+  out.posts = window.__posts;
+  out.doneText = (document.querySelector('#pd-confirm .pd-done') || {}).textContent || '';
+  return out;
+})()`;
+
 // まとまりレビュー（`#/group/<id>`。P6-1b / 設計 §5.1b）を見る。
 // フィルムストリップが横に溢れないこと・見出し・**決めるボタンの配線**。
 // 決めるボタンは**押す前に `fetch` を差し替えて POST を止める**（データを書かない。
@@ -483,6 +682,167 @@ try {
         + ` markNos=[${got.markNos.join(',')}] rowNos=[${got.rowNos.join(',')}]`
         + ` タグ: rows=${got.tagRows} overflow=${got.tagOverflow} 高さの差=${got.tagHeightSpread}px`
         + ` 折り返し=${got.tagWrapped}/語名=${got.tagWrappedEn} 印=${got.tagMarks} 語釈=${got.tagWithGloss} script=${got.tagScripts}`
+        + (bad.length ? `  ← ${bad.join(', ')}` : ''));
+    }
+    ws.close();
+    console.log(failures ? `${failures} 件 NG` : 'すべて ok');
+    process.exit(failures ? 1 : 0);
+  }
+
+  // 重複の整理（`#/duplicates`。P8-3）。群と枚が出るか・横に溢れないか・**押すと POST 1 回**
+  if (SCREEN === 'duplicates') {
+    const url = `${BASE}/#/duplicates?max=6`;
+    let expectedGroups = null;
+    try {
+      const body = await (await fetch(`${BASE}/api/duplicates/near?max_distance=6`)).json();
+      expectedGroups = (body.groups || []).length;
+    } catch (error) {
+      console.log(`注意: API から群を取れませんでした（群の数は見ない）: ${error.message}`);
+    }
+    if (expectedGroups === 0) {
+      console.log('注意: 距離 ≤ 6 の群が 0 です（複製に重複が無いと押す検査はできません）');
+    }
+    for (const [width, height] of VIEWPORTS) {
+      if (ONLY && ONLY !== `${width}x${height}`) continue;
+      await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      await send('Page.navigate', { url });
+      let got = null;
+      for (let i = 0; i < 60; i++) {
+        got = await evaluate(MEASURE_DUP);
+        if (got && (got.groups > 0 || got.exact)) break;
+        await sleep(250);
+      }
+      if (got) { await sleep(400); got = await evaluate(MEASURE_DUP); }
+      if (!got) {
+        failures++;
+        console.log(`NG   ${width}x${height} 重複: 計測できません`);
+        continue;
+      }
+      const pressed = got.groups > 0 ? await evaluate(PRESS_DUP) : null;
+      const ex = got.groups > 0 ? await evaluate(OPEN_EXCLUSIONS) : null;
+      const posts = (pressed && pressed.posts) || [];
+      const makePosts = posts.filter((p) => String(p.url).includes('/api/groups'));
+      const exPosts = posts.filter((p) => String(p.url).includes('/api/duplicates/exclude'));
+      const bad = [];
+      if (expectedGroups !== null && got.groups !== expectedGroups) {
+        bad.push(`群=${expectedGroups}`);
+      }
+      if (got.items < got.groups * 2) bad.push('群に 2 枚以上');
+      if (ex && ex.rows < 1) bad.push('除外の一覧が出る');
+      else if (ex && ex.scripts !== 0) bad.push('除外の理由の script タグを実行しない');
+      else if (ex && !String(ex.reason).includes('<script>alert(1)</script>')) {
+        bad.push('除外の理由を文字として出す');
+      }
+      if (!String(got.bodyClass).includes('duplicating')) bad.push('道が重複の画面になっている');
+      if (got.thresholds !== 3) bad.push('しきい値が 3 つ');
+      if (!got.chosen.includes('≤ 6')) bad.push('既定は ≤ 6');
+      if (!got.exact) bad.push('完全重複の 1 行');
+      if (got.listOverflow !== 0) bad.push('一覧が横に溢れない');
+      if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
+      if (got.wide !== 0) bad.push(`行が右へ出ない（${got.wide}）`);
+      if (!got.entryVisible) bad.push('入口が見える（まとまりにする）');
+      if (got.groups > 0) {
+        if (!pressed || !pressed.pressedMake) bad.push('「まとまりにする」を押せない');
+        else if (makePosts.length !== 1) bad.push(`まとまりの POST=${makePosts.length}`);
+        else if (JSON.parse(String(makePosts[0].body || '{}')).kind !== 'duplicates') {
+          bad.push('まとまりの種類が duplicates');
+        }
+        if (!pressed || !pressed.pressedExclude) bad.push('「別物として確定」を押せない');
+        else if (exPosts.length !== 1) bad.push(`除外の POST=${exPosts.length}`);
+      }
+      if (bad.length) failures++;
+      console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} 重複: `
+        + `groups=${got.groups}${expectedGroups === null ? '' : `/${expectedGroups}`} items=${got.items} `
+        + `おすすめの印=${got.marks} 絵=${got.thumbs} しきい値=${got.thresholds}(${got.chosen}) `
+        + `overflow=${got.listOverflow}/${got.pageOverflow} wide=${got.wide} 入口=${got.entryVisible} `
+        + `除外の一覧=${(ex || {}).rows} 理由=${JSON.stringify(String((ex || {}).reason).slice(0, 24))} `
+        + `script=${(ex || {}).scripts} body=${JSON.stringify(got.bodyClass)} `
+        + `POST まとまり=${makePosts.length} 除外=${exPosts.length} brief=${JSON.stringify(got.brief)}`
+        + (bad.length ? `  ← ${bad.join(', ')}` : ''));
+    }
+    ws.close();
+    console.log(failures ? `${failures} 件 NG` : 'すべて ok');
+    process.exit(failures ? 1 : 0);
+  }
+
+  // 最近の削除（`#/pending-deletes`。P8-3）。**上部バーの入口**・行・段の印・押す検査
+  if (SCREEN === 'pending') {
+    const url = IDS.length
+      ? `${BASE}/#/pending-deletes?ids=${IDS.map(encodeURIComponent).join(',')}`
+      : `${BASE}/#/pending-deletes`;
+    let pendingExpected = null;
+    try {
+      const body = await (await fetch(`${BASE}/api/pending-deletes`)).json();
+      pendingExpected = (body.items || []).filter((it) => it.state === 'pending').length;
+    } catch (error) {
+      console.log(`注意: API から保留を取れませんでした（入口の可視は見ない）: ${error.message}`);
+    }
+    for (const [width, height] of VIEWPORTS) {
+      if (ONLY && ONLY !== `${width}x${height}`) continue;
+      await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      // **入口（上部バーの「最近の削除」）を先に見る**（ライブラリの画面）
+      await send('Page.navigate', { url: `${BASE}/#/` });
+      await sleep(1200);
+      const entry = await evaluate(ENTRY_DELETES);
+      await send('Page.navigate', { url });
+      let got = null;
+      for (let i = 0; i < 60; i++) {
+        got = await evaluate(MEASURE_PENDING);
+        if (got && (got.rows > 0 || got.empty)) break;
+        await sleep(250);
+      }
+      if (got) { await sleep(400); got = await evaluate(MEASURE_PENDING); }
+      if (!got) {
+        failures++;
+        console.log(`NG   ${width}x${height} 最近の削除: 計測できません`);
+        continue;
+      }
+      const pressed = await evaluate(PRESS_PENDING);
+      const posts = (pressed && pressed.posts) || [];
+      const undoPosts = posts.filter((p) => String(p.url).includes('/undo'));
+      const pvPosts = posts.filter((p) => String(p.url).includes('/bulk-delete/preview'));
+      const bulkPosts = posts.filter((p) => /\/bulk-delete$/.test(String(p.url)));
+      const bad = [];
+      if (got.rows <= 0 && !got.empty) bad.push('行か空の文が出る');
+      if (got.scripts !== 0) bad.push('パスの `<script>` を実行しない');
+      if (!String(got.bodyClass).includes('pending')) bad.push('道が最近の削除になっている');
+      if (got.rows > 0 && !/3 実削除/.test(got.strip)) bad.push('段の印（3 実削除）');
+      if (got.bodyOverflow !== 0) bad.push('本体が横に溢れない');
+      if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
+      if (!got.entryVisible) bad.push('入口が見える（先頭の行）');
+      if (pendingExpected) {
+        if (!entry || entry.hidden || !entry.visible) bad.push('上部バーの入口が見える');
+        else if (!/最近の削除/.test(entry.text)) bad.push('入口に「最近の削除」と出る');
+        else if (!/あと \d+:\d\d/.test(entry.text)) bad.push(`入口に残り時間（${entry.text}）`);
+        if (!got.remains.some((t) => /あと \d+:\d\d/.test(t))) {
+          bad.push(`行に残り時間（${got.remains.join('/')}）`);
+        }
+      }
+      if (pressed && pressed.pressedUndo && undoPosts.length !== 1) bad.push(`取り消しの POST=${undoPosts.length}`);
+      if (IDS.length) {
+        if (!got.confirmVisible) bad.push('削除の確認が見える');
+        if (!pressed || !pressed.pressedPreview) bad.push('「消す物を確かめる」を押せない');
+        else if (pvPosts.length !== 1) bad.push(`凍結の POST=${pvPosts.length}`);
+        if (pvPosts.length === 1 && pressed.items < 2) bad.push('凍結した一覧を出す');
+        if (pvPosts.length === 1 && !/2 枚/.test(pressed.sumText || '')) bad.push('凍結の件数を出す');
+        if (pvPosts.length === 1 && !/カタログから外すだけ/.test(String(pressed.freesText))) {
+          bad.push('いつ空くかを出す');
+        }
+        if (pressed && pressed.pressedExec) {
+          if (bulkPosts.length !== 1) bad.push(`消す用意の POST=${bulkPosts.length}`);
+          else if (JSON.parse(String(bulkPosts[0].body || '{}')).confirm !== true) bad.push('confirm: true');
+          if (!/消す用意をしました/.test(pressed.doneText || '')) bad.push('用意ができた 1 行');
+        }
+      }
+      if (bad.length) failures++;
+      console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} 最近の削除: `
+        + `rows=${got.rows} 拾い物=${got.found} ゴミ箱=${got.trash} 残り=${JSON.stringify(got.remains)} `
+        + `段=${JSON.stringify(got.strip)} overflow=${got.bodyOverflow}/${got.pageOverflow} `
+        + `入口=${got.entryVisible} バー=${entry ? JSON.stringify(entry.text) : '—'} `
+        + `確認=${got.confirmVisible}(${String(got.confirmText).trim().slice(0, 12)}) `
+        + `POST 取り消し=${undoPosts.length} 凍結=${pvPosts.length} 用意=${bulkPosts.length} `
+        + `一覧=${(pressed || {}).items} script=${got.scripts} body=${JSON.stringify(got.bodyClass)} `
+        + `brief=${JSON.stringify(got.brief)}`
         + (bad.length ? `  ← ${bad.join(', ')}` : ''));
     }
     ws.close();

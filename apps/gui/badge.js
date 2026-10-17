@@ -12,11 +12,16 @@
 
 const COUNT_API = '/api/review-requests?state=open&count_only=1';
 const JOBS_API = '/api/jobs?limit=5';       // P4-3: 進行と完了（§5.5）
+// P8-3: 取り消せる削除（`frontend-design.md` §4.6 の上部バーの入口）。**読むだけ**
+const DELETES_API = '/api/pending-deletes';
 const TITLE_BASE = 'image-reviewer';       // `(3) image-reviewer` の土台（§5.4）
 const POLL_MS = 5000;
 const DONE_NOTICE_MS = 60000;              // 「終わりました」を出しておく長さ
 
 const $ = (id) => document.getElementById(id);
+
+// 「あと 3:12」の書き方は `pending.js` と 1 つにする（**画面の語は 1 つ**。§4.6）
+import { fmtRemain } from './pending.js';
 
 let timer = null;
 let lastStates = new Map();                // job_id → state（実行中 → 完了 の移り変わりを見る）
@@ -116,13 +121,42 @@ async function fetchJobs() {
   }
 }
 
+// ---- P8-3: 取り消せる削除の入口（上部バー。§4.6・§11）----
+//
+// - 取り消せる削除が 1 件でもある間だけ出す（**残り時間つき**。`最近の削除 3 ・ あと 3:12`）
+// - いちばん短い残り時間を出す（**窓が切れる順**。§11）
+// - **`GET` は書かない**（残り時間はサーバのタイマーだけが減らす）。ここも読むだけ
+
+export function renderDeleteBadge(items) {
+  const el = $('stat-deletes');
+  if (!el) return;
+  const pending = (items || []).filter((it) => it.state === 'pending' && it.remaining_sec != null);
+  const text = pending.length
+    ? `最近の削除 ${pending.length} ・ あと ${fmtRemain(Math.min(...pending.map((it) => Number(it.remaining_sec) || 0)))}`
+    : '';
+  el.textContent = text;
+  el.hidden = !text;
+}
+
+async function fetchDeletes() {
+  try {
+    const res = await fetch(DELETES_API);
+    if (!res.ok) return;
+    const body = await res.json();
+    renderDeleteBadge(body.items || []);
+  } catch (error) {
+    // 件数が取れないだけ（次の周期で再挑戦する）
+  }
+}
+
 // 画面を開いている間だけ回す。`stop` を呼ぶか、タブを閉じれば止まる
 export function wireBadge({ pollMs = POLL_MS } = {}) {
   stopBadge();
   fetchCount();
   fetchJobs();
+  fetchDeletes();
   if (pollMs > 0) {
-    timer = setInterval(() => { fetchCount(); fetchJobs(); }, pollMs);
+    timer = setInterval(() => { fetchCount(); fetchJobs(); fetchDeletes(); }, pollMs);
   }
 }
 

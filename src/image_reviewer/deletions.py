@@ -437,27 +437,61 @@ class DeletionService:
                 done += 1
             return done
 
-    def _original_exists(self, row) -> bool:
-        """その行の**元の場所にファイルが在るか**（B-1 の「動かす前に落ちた」の判定）。"""
+    def _original_state(self, row) -> str:
+        """元の場所の様子（`missing` / `same` / `different`。B-1 の判定。**P8-3 の D-2**）。
+
+        - `missing` その場所の登録が無い・ファイルが無い
+        - `same` **登録した物と同じ中身**（`(size, mtime_ns)` が登録の行と一致）＝動かす前に落ちた
+        - `different` ファイルは在るが**別の物**（登録の値と違う）
+
+        **（D-2）`os.path.exists` だけで「戻した」ことにしてはいけない。** 保留の実体が外から
+        消され、元の場所に別のファイルが置かれた形でも `restored_at` が立ち、
+        **`missing_at` が立ったまま `restored_at` も立つ**という矛盾した行ができる
+        （監査 `checks2.py` K3c。登録 `size` 565,252 に対して実体 12 B）。中身を見る。
+
+        登録の値が `NULL` の欄は比べない（古い行で「分からない」を「違う」と読まない）。
+        """
         if not row["path"]:
-            return False
+            return "missing"
         with self.store.locked() as con:
-            loc = con.execute("SELECT display_path FROM asset_location WHERE path = ?",
-                              (row["path"],)).fetchone()
-        return bool(loc is not None and os.path.exists(str(loc["display_path"])))
+            loc = con.execute("SELECT display_path, size, mtime_ns FROM asset_location"
+                              " WHERE path = ?", (row["path"],)).fetchone()
+        if loc is None:
+            return "missing"
+        display = str(loc["display_path"] or "")
+        if not display or not os.path.exists(display):
+            return "missing"
+        try:
+            size, mtime_ns = identity_of(display)
+        except OSError:
+            return "missing"
+        known_size, known_mtime = loc["size"], loc["mtime_ns"]
+        if known_size is not None and int(known_size) != size:
+            return "different"
+        if known_mtime is not None and int(known_mtime) != mtime_ns:
+            return "different"
+        return "same"
 
     def _recover_missing_hold(self, row) -> bool:
         """**保留の実体が無い行**の後始末（B-1 の順序にしたことで増えた道）。
 
         - **元の場所にファイルが在る** → `rename` の前に落ちた（**削除は起きていない**）。
           **戻したことにする**（`restored_at` を立てる）。ファイルも登録もそのまま。
+        - **元の場所は在るが中身が違う**（**P8-3 の D-2**）→ 「戻した」ことにしない。
+          `missing_at` が立ったままなのに `restored_at` も立つ矛盾を作らない。
+          **戻せなかった**印（`stuck`）にして、このツールはこの行に黙って触らない。
         - **どちらにも無い** → 前の周期の実削除が DB の前に落ちた。**後始末を完了する**
           （`asset_location` の行を消して `hold_path` を「消えた印」に）。
 
         どちらも**ファイルを 1 バイトも触らない**（消えた物は戻せないし、在る物は消さない）。
         """
         at = self.clock.now()
-        if self._original_exists(row):
+        state = self._original_state(row)
+        if state == "different":
+            log.warning("保留に無く、元の場所は別のファイルです（戻せませんでした）: %s", row["id"])
+            self._mark_unrestorable(row["id"])
+            return False                                          # 実削除ではない（人が決める）
+        if state == "same":
             log.warning("保留に移す前に落ちた行を戻しました（削除は起きていません）: %s", row["id"])
             with self.store.transaction() as con:
                 con.execute("UPDATE deletion_log SET restored_at = ?, purge_at = NULL,"
@@ -1088,11 +1122,20 @@ class DeletionService:
                 raise ReviewError(409, "実体は既に消えています（戻せません）", code="already_purged",
                                   details={"deletion_id": deletion_id})
             if not os.path.exists(source):
-                if os.path.exists(str(destination)):
+                state = self._original_state(row)
+                if state == "same":
                     # **（B-1）台帳を先に書く順で増えた道**: 移動の前に落ちた（削除は起きていない）。
                     # **ファイルは元の場所に在る**ので、戻したことにする（1 バイトも触らない）
                     return self._mark_recovered(row, at=self.clock.now(), actor=actor)
                 self._mark_unrestorable(deletion_id)
+                if state == "different":
+                    # **（P8-3 の D-2）** 元の場所に在るのは**登録した物ではない**。
+                    # 「戻した」ことにすると `missing_at` と `restored_at` が両方立つ
+                    raise ReviewError(
+                        409, "保留していたファイルが無く、元の場所には別のファイルがあります"
+                             "（戻せませんでした）", code="restore_failed",
+                        details={"deletion_id": deletion_id, "source": source,
+                                 "original": str(destination)})
                 raise ReviewError(409, "保留していたファイルが見つかりません（戻せませんでした）",
                                   code="restore_failed",
                                   details={"deletion_id": deletion_id, "source": source})
@@ -1286,11 +1329,21 @@ class DeletionService:
                               details={"client_token": client_token}) from exc
         return request_id
 
-    def _drop_request(self, request_id: str) -> None:
-        """断った要求の行を消す（**台帳は消さないが、要求の控えは残さない**）。"""
+    def _drop_request(self, request_id: str) -> bool:
+        """断った要求の行を消す（**台帳は消さないが、要求の控えは残さない**）。消せたら真。
+
+        **（P8-3 の D-1）台帳が参照している行は消さない。** 移動の後で取引が落ちた形では
+        `deletion_log.request_id` が既にこの行を指しているので、消そうとすると
+        `PRAGMA foreign_keys = ON` の外部キーに当たって `IntegrityError` になり、
+        **元の例外が隠れる**（500 の文面が外部キーになる。監査 `checks2.py` K3a）。
+        消せなければそのまま残す（`result_json` が無いので、600 秒後に `_replay` が巻き取る）。
+        """
         with self.store.transaction() as con:
-            con.execute("DELETE FROM delete_request WHERE id = ? AND result_json IS NULL",
-                        (request_id,))
+            cur = con.execute(
+                "DELETE FROM delete_request WHERE id = ? AND result_json IS NULL"
+                "   AND NOT EXISTS (SELECT 1 FROM deletion_log WHERE request_id = ?)",
+                (request_id, request_id))
+            return int(cur.rowcount or 0) > 0
 
     def _close_request(self, request_id: str, *, count: int, result: dict) -> None:
         with self.store.transaction() as con:
@@ -1326,9 +1379,13 @@ class DeletionService:
             # **落ちた要求の行を捨てる**（残すと同じ token が永久に `in_progress` になる）
             log.warning("結果の残っていない古い要求を捨てます（同じ client_token の再送を許します）: %s",
                         client_token)
-            with self.store.transaction() as con:
-                con.execute("DELETE FROM delete_request WHERE id = ? AND result_json IS NULL",
-                            (row["id"],))
+            if not self._drop_request(row["id"]):
+                # **（P8-3 の D-1）台帳が参照している行は消せない**（＝前の要求は実際に消した）。
+                # 黙って再送を通すと**二重に消す**ので、断る（外部キーで 500 にしない）
+                log.warning("古い要求を捨てられません（台帳が参照しています）: %s", client_token)
+                raise ReviewError(409, "同じ client_token の削除が台帳に残っています",
+                                  code="client_token_in_progress",
+                                  details={"client_token": client_token, "request_id": row["id"]})
             return None
         return {**json.loads(row["result_json"]), "replayed": True}
 

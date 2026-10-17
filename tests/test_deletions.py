@@ -1815,3 +1815,93 @@ def test_the_hold_area_reports_what_the_ledger_does_not_know(svc, store, library
         assert svc.found_in_hold()["count"] == 1, "台帳に在る物を拾い物に数えている"
     finally:
         svc.stop()
+
+
+# ---- P8-3 の D-1・D-2（再確認の軽微 2 件。どちらも「失敗の道」）----
+
+
+def test_a_failure_after_the_move_keeps_the_original_error(svc, store, library, monkeypatch):
+    """壊すと落ちる: `_drop_request` が台帳の外部キーに当たって**元の例外を隠す**（D-1）。
+
+    B-1 で台帳を先に書く順にしたので、移動の後で取引が落ちると
+    `deletion_log.request_id` が要求の行を指している。そこで `DELETE FROM delete_request` を
+    素直に投げると `PRAGMA foreign_keys = ON` の外部キーに当たり、
+    **上がる例外が `IntegrityError` になって元の失敗（`RuntimeError`）が隠れる**
+    （監査 `checks2.py` K3a。500 の文面が外部キーになる）。
+    """
+    path = make_png(library / "d1.png", seed=251)
+    asset_id = add_asset(store, path)
+    moved = {}
+
+    def boom(con, asset_id_, at):
+        raise RuntimeError("移動の後の取引で落ちた")
+
+    monkeypatch.setattr(DeletionService, "_sync_hidden", staticmethod(boom))
+    with pytest.raises(RuntimeError) as err:
+        svc.delete(asset_id=asset_id, path=str(path), stage=2, actor="human",
+                   client_token="tok-d1")
+    assert "落ちた" in str(err.value), f"元の例外が隠れた: {err.value!r}"
+    # **行は正しく残る**（台帳 1 行・要求 1 行）。ファイルはゴミ箱に在る
+    row = store.con.execute("SELECT request_id, restored_at FROM deletion_log").fetchone()
+    assert row is not None and row["request_id"], "台帳の行が消えた（迷子になる）"
+    assert store.con.execute("SELECT count(*) AS n FROM delete_request WHERE client_token ="
+                             " 'tok-d1'").fetchone()["n"] == 1, "要求の控えが消えた"
+    assert svc.ledger(actor="human")["items"][0]["state"] == "trashed", "ゴミ箱に出ない"
+    assert svc.pending(actor="human")["found_count"] == 0, "保留に無い物を拾い物に数えている"
+    # **同じ token の再送は二重に消さない**（台帳が参照しているので巻き取らない）
+    monkeypatch.undo()                                      # `_sync_hidden` を元に戻す
+    with pytest.raises(ReviewError) as again:
+        svc.delete(asset_id=asset_id, path=str(path), stage=2, actor="human",
+                   client_token="tok-d1")
+    assert again.value.status == 409 and again.value.code == "client_token_in_progress", \
+        again.value.code
+
+
+def test_a_different_file_at_the_original_place_is_not_recovered(svc, store, library, clock):
+    """壊すと落ちる: 「戻したことにする」が**元の場所の中身を見ない**（D-2。窓切れの道）。
+
+    保留の実体が外から消え、元の場所に**別のファイル**が在る形。`os.path.exists` だけで
+    判断すると `restored_at` が立ち、**`missing_at` が立ったまま `restored_at` も立つ**
+    矛盾した行ができる（監査 `checks2.py` K3c。登録 565,252 B に対して実体 12 B）。
+    """
+    path = make_png(library / "d2.png", seed=252)
+    asset_id = add_asset(store, path)
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                     confirm_last_copy=True)
+    os.remove(got["hold_path"])                             # **保留を外から消す**
+    path.write_bytes(b"x" * 12)                             # **元の場所は別のファイル**
+    with store.transaction() as con:                        # 窓を尽きさせる
+        con.execute("UPDATE deletion_log SET remaining_sec = 0 WHERE id = ?",
+                    (got["deletion_id"],))
+    clock.advance(mono=60)
+    svc.tick()
+    svc.tick()
+    row = store.con.execute("SELECT restored_at, purge_at FROM deletion_log WHERE id = ?",
+                            (got["deletion_id"],)).fetchone()
+    assert row["restored_at"] is None, "別のファイルを『戻した』ことにした（D-2）"
+    assert row["purge_at"] is None, "戻せない行が自動削除の対象に残っている"
+    assert svc.ledger(actor="human")["items"][0]["state"] == "stuck", "戻せませんでしたに出ない"
+    assert path.read_bytes() == b"x" * 12, "元の場所の別のファイルに触った（1 バイトも触らない）"
+    assert where(store, asset_id)["missing_at"] is not None, "削除は起きているのに登録を戻した"
+
+
+def test_undo_refuses_when_the_original_place_holds_another_file(svc, store, library):
+    """壊すと落ちる: `undo` が**別のファイル**を「戻した」ことにする（D-2。取り消しの道）。
+
+    保留の実体が無く、元の場所に別のファイルが在るときは 409 `restore_failed` で止め、
+    `stuck`（`purge_at` NULL）にする。**元の場所のファイルは 1 バイトも触らない。**
+    """
+    path = make_png(library / "d2b.png", seed=253)
+    asset_id = add_asset(store, path)
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                     confirm_last_copy=True)
+    os.remove(got["hold_path"])
+    path.write_bytes(b"y" * 20)
+    with pytest.raises(ReviewError) as err:
+        svc.undo(got["deletion_id"], actor="human")
+    assert err.value.status == 409 and err.value.code == "restore_failed", err.value.code
+    row = store.con.execute("SELECT restored_at, purge_at FROM deletion_log WHERE id = ?",
+                            (got["deletion_id"],)).fetchone()
+    assert row["restored_at"] is None and row["purge_at"] is None, "stuck になっていない"
+    assert path.read_bytes() == b"y" * 20, "別のファイルに触った"
+    assert where(store, asset_id)["missing_at"] is not None

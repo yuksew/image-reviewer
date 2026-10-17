@@ -916,6 +916,7 @@ const DUP_ITEM = (id, extra) => ({
 });
 const DUP_NEAR = {
   max_distance: 6, hashed: 91, unhashed: 2, total_groups: 1, total_images: 3,
+  excluded_pairs: 1,
   groups: [{
     suggested_id: 'a2', reason: '画素数が最大', max_distance_within: 3, count: 3,
     items: [DUP_ITEM('a1', { verdict: 'reject' }), DUP_ITEM('a2', { verdict: 'keep' }),
@@ -1069,6 +1070,16 @@ check(dupHtml.includes('まだ計算していない枚が 2 枚あります。')
   `未計算の枚と「計算する」を出す: ${(dupHtml.match(/まだ計算[^<]*/) || [])[0]}`);
 check(dupHtml.includes('&lt;script&gt;alert(1)&lt;/script&gt;') && !dupHtml.includes('<script>alert'),
   'パスの `<script>` を生のまま出さない');
+// **（P8-3 の取り落とし調査）**「別物として確定」で隠れている組の数を出す。出さないと
+// **群が 1 つ足りないのが帯の取りこぼしに見える**（実データで実際にそう見えた）
+check(dupHtml.includes('別物として確定で 1 組を隠しています'),
+  `隠れている組の数を出す: ${(dupHtml.match(/別物として確定[^<]*/) || [])[0]}`);
+DUP_BODY = { ...DUP_NEAR, excluded_pairs: 0 };
+await dupUi.showDuplicates('?max=6');
+check(!String(el('dup-list').innerHTML || '').includes('隠しています'),
+  '隠れている組が 0 なら出さない');
+DUP_BODY = DUP_NEAR;
+await dupUi.showDuplicates('?max=6');
 check(dupIds() === 'a1,a2,a3', `既定は全部に印: ${dupIds()}`);
 
 // 3. **押す検査**: 印を外して「別物として確定」→ 除外の口が 1 回だけ

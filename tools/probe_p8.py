@@ -8,6 +8,12 @@
     uv run --no-sync python tools/probe_p8.py --delete     # P8-2（線 5〜8。削除と取り消し）
     uv run --no-sync python tools/probe_p8.py --all        # 両方
     uv run --no-sync python tools/probe_p8.py --keep       # 複製を残す
+    uv run --no-sync python tools/probe_p8.py --distances 0,3,6,10   # 距離を絞る
+
+線 2（帯 vs 総当たり）は**既定で 0〜64 の全部**を見る（P8-3 の取り落とし調査。
+`docs/p8-3-band-miss.md`）。**「別物として確定」で隠れている組は総当たりから引いてから比べる**
+（`candidate_pairs` が外すため。引かないと**除外 1 組が「取りこぼし 1 組」に見える**）。
+線 1・3 の群の数も**総当たりから出した数**と比べる（固定の数字を期待値にしない）。
 
 P8-2 は **HTTP（`TestClient`）で口を叩く**（設計の線が「そのまま打てる形」で書いてあるため）。
 5 分の窓だけは**時計を注入**する（`Clock` を 1 つ。`app.state.deletions` を差し替える）。
@@ -31,13 +37,18 @@ sys.path.insert(0, str(ROOT / "src"))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from image_reviewer.duplicates import (BANDS, DuplicatesService,  # noqa: E402
+from image_reviewer.duplicates import (BANDS, MAX_DISTANCE_LIMIT, DuplicatesService,  # noqa: E402
                                        candidate_pairs)
 from image_reviewer.store import Store, normalize_path           # noqa: E402
 
 REAL = ROOT / ".data" / "db.sqlite3"
 REAL_DIR = ROOT / ".data"
 WORK = ROOT / ".tmp-audit-redo" / "p8probe"
+
+#: 帯と総当たりを突き合わせる距離。**既定は 0〜64 の全部**（P8-3 の取り落とし調査。
+# 前の版は (0, 3, 6, 10, 15, 16, 32, 64) の 8 段だけで、**その間の距離を見ていなかった**）。
+# `--distances 0,3,6,10` で絞れる（速く回したいとき）。
+DISTANCES: list[int] = list(range(0, MAX_DISTANCE_LIMIT + 1))
 
 
 def copy_real(into: Path) -> Path:
@@ -78,6 +89,42 @@ def brute_force(con, max_distance: int) -> set[tuple[str, str]]:
     return out
 
 
+def excluded_edges(con) -> set[tuple[str, str]]:
+    """**「別物として確定」で隠れている組**（`candidate_pairs` が外す物）。
+
+    **（P8-3 の取り落とし調査。`docs/p8-3-band-miss.md`）** `brute_force` は `asset` を読むだけなので
+    除外を知らない。**引かずに比べると、除外が 1 組あるだけで「取りこぼし 1 組」と嘘を言う**
+    （実データで実際にそう見えた。帯は 1 組も落としていなかった）。
+    """
+    return {(row["a_id"], row["b_id"]) for row in
+            con.execute("SELECT a_id, b_id FROM duplicate_exclusion")}
+
+
+def groups_of(edges: set[tuple[str, str]]) -> tuple[int, int]:
+    """組（辺）から**群の数と枚数**を出す（`near_groups` と同じ連結成分の物差し）。
+
+    **API の `total_groups` / `total_images` を「総当たりから出した数」と比べる**ために使う
+    （固定の数字を書くと、除外や実データの変化で嘘の NG になる）。
+    """
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in edges:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+    groups: dict[str, set[str]] = {}
+    for a, b in edges:
+        groups.setdefault(find(a), set()).update((a, b))
+    return len(groups), sum(len(m) for m in groups.values())
+
+
 def probe_duplicates() -> bool:
     """P8-1 の線 1〜3 を複製で通す（**サービス直呼び**。HTTP の形はテストが見る）。"""
     ok = True
@@ -101,10 +148,12 @@ def probe_duplicates() -> bool:
         print(f"   compute を開始（サービス直呼び）→ job={started['job_id']} total={started['total']}")
         job = svc.wait(started["job_id"], timeout=900)
         took = time.monotonic() - t0
-        decoded = started["total"] - hashed0          # **復号するのは pHash の無い枚だけ**
-        per = took / max(1, decoded)
-        print(f"   job={job['state']} / {job['message']} / 実測 {took:.1f} 秒"
-              f"（復号した {decoded} 枚で {per * 1000:.1f} ms/枚）")
+        # **復号するのは pHash の無い枚だけ**。全部そろっていると `total` が 0 になり、
+        # 前の版は「復号した -263 枚で 116.2 ms/枚」という**嘘の数字**を出していた（実測で踏んだ）
+        decoded = max(0, started["total"] - hashed0)
+        per = took / decoded if decoded else 0.0
+        rate = f"（復号した {decoded} 枚で {per * 1000:.1f} ms/枚）" if decoded else "（復号は不要。全部そろっていた）"
+        print(f"   job={job['state']} / {job['message']} / 実測 {took:.1f} 秒{rate}")
         hashed1 = con.execute("SELECT count(*) AS n FROM asset WHERE phash IS NOT NULL"
                               " AND deleted_at IS NULL").fetchone()["n"]
         bands1 = con.execute("SELECT count(*) AS n FROM phash_band").fetchone()["n"]
@@ -116,31 +165,46 @@ def probe_duplicates() -> bool:
         # --- 線 2: 帯と総当たりが集合として一致（**取りこぼし 0**）---
         # **（P8-1 の監査 B-1 / C-5）距離ごとに確かめる。** 4bit × 16 本なので保証は ≤15。
         # **16 以上は総当たりに落ちる**（`candidate_pairs` の中）ので、そこも一致するはず。
-        print("2. 帯 vs 総当たり（距離ごと）:")
-        for dist in (0, 3, 6, 10, 15, 16, 32, 64):
+        # **（P8-3 の取り落とし調査）既定は 0〜64 の全部**（`--distances` で絞れる）。
+        # **除外を引いてから比べる**: `candidate_pairs` は「別物として確定」を外すので、
+        # 引かずに比べると**除外 1 組が「取りこぼし 1 組」に見える**（実データで実際に踏んだ）。
+        hidden = excluded_edges(con)
+        print(f"2. 帯 vs 総当たり（距離 {'/'.join(str(d) for d in DISTANCES[:6])}"
+              f"{'…' if len(DISTANCES) > 6 else ''}・{len(DISTANCES)} 段）:")
+        if hidden:
+            print(f"   除外（別物として確定）{len(hidden)} 組は総当たりから引いて比べる"
+                  f"（`candidate_pairs` が外すため。帯の取りこぼしではない）")
+        for dist in DISTANCES:
             t0 = time.monotonic()
             band = {tuple(sorted((a, b))) for a, b, _ in candidate_pairs(con, dist)}
             band_ms = (time.monotonic() - t0) * 1000
             brute = brute_force(con, dist)
-            mark = "OK" if band == brute else "NG"
-            if band != brute:
+            want = brute - hidden
+            mark = "OK" if band == want else "NG"
+            if band != want:
                 ok = False
-            print(f"   ≤{dist:<2}: 帯 {len(band):>5} 組（{band_ms:5.0f} ms）/ 総当たり {len(brute):>5} 組"
-                  f" → {mark}" + ("" if band == brute else
-                                  f" 取りこぼし {len(brute - band)} / 余分 {len(band - brute)}"))
-        # 参考: ≤6 の群の数（点検・P8-1 の実測と一致するはず）
+            print(f"   ≤{dist:<2}: 帯 {len(band):>5} 組（{band_ms:5.0f} ms）"
+                  f"/ 総当たり {len(brute):>5} 組 - 除外 {len(brute & hidden):>3}"
+                  f" = {len(want):>5} → {mark}" + ("" if band == want else
+                  f" 取りこぼし {len(want - band)} / 余分 {len(band - want)}"))
 
-        # --- 線 1・3: 群の数（≤3 / ≤6 / ≤10）と完全重複 ---
-        print("3. 群（連結成分）:")
-        for dist in (3, 6, 10):
+        # --- 線 1・3: 群の数（**総当たりから出した数**と一致するか）と完全重複 ---
+        # **固定の数字を期待値にしない**（除外が 1 組あるだけで嘘の NG になる。P8-3 の調査）。
+        print("3. 群（連結成分）: API vs 総当たりから出した数")
+        for dist in (0, 3, 6, 10, 15):
             got = svc.near(max_distance=dist)
-            print(f"   ≤{dist}: {got['total_groups']} 群 / {got['total_images']} 枚"
-                  f"（pHash あり {got['hashed']}・未計算 {got['unhashed']}）")
+            want_g, want_i = groups_of(brute_force(con, dist) - hidden)
+            pairs_want = len(brute_force(con, dist))
+            line_ok = ((got["total_groups"], got["total_images"]) == (want_g, want_i)
+                       and got.get("total_pairs", 0) + got.get("excluded_pairs", 0) == pairs_want)
+            if not line_ok:
+                ok = False
+            print(f"   ≤{dist:<2}: {got['total_groups']} 群 / {got['total_images']} 枚"
+                  f"（総当たり {want_g} 群 / {want_i} 枚）・組 {got.get('total_pairs')}"
+                  f" + 除外 {got.get('excluded_pairs')} = {pairs_want}"
+                  f"・pHash あり {got['hashed']}・未計算 {got['unhashed']}"
+                  f" → {'OK' if line_ok else 'NG'}")
         got6 = svc.near(max_distance=6)
-        expect = {3: (17, 39), 6: (21, 57), 10: (28, 87)}[6]
-        if (got6["total_groups"], got6["total_images"]) != expect:
-            ok = False
-            print(f"   NG: ≤6 が {expect} のはず（点検の実測）")
         first = got6["groups"][0] if got6["groups"] else None
         if first:
             print(f"   先頭の群: {first['count']} 枚・最大距離 {first['max_distance_within']}"
@@ -194,12 +258,22 @@ def probe_duplicates() -> bool:
 
 
 def main() -> int:
+    global DISTANCES
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--duplicates", action="store_true", help="P8-1（線 1〜3）")
     ap.add_argument("--delete", action="store_true", help="P8-2（線 5〜8）")
     ap.add_argument("--all", action="store_true", help="両方")
+    ap.add_argument("--distances", default=None,
+                    help=f"帯と総当たりを比べる距離（既定は 0〜{MAX_DISTANCE_LIMIT} の全部。"
+                         "例: 0,3,6,10）")
     args = ap.parse_args()
+    if args.distances:
+        DISTANCES = [int(v) for v in str(args.distances).replace(" ", "").split(",") if v != ""]
+        for dist in DISTANCES:                       # 語彙の外は**先に**弾く（黙って丸めない）
+            if not (0 <= dist <= MAX_DISTANCE_LIMIT):
+                print(f"NG: --distances は 0〜{MAX_DISTANCE_LIMIT}（{dist} が外）")
+                return 1
     both = args.all or not (args.duplicates or args.delete)
     ok = True
     if both or args.duplicates:

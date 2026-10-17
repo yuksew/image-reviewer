@@ -60,7 +60,7 @@ export function query(search) {
 
 const state = {
   max: DEFAULT_MAX,
-  groups: [], hashed: 0, unhashed: 0, totalGroups: 0, totalImages: 0,
+  groups: [], hashed: 0, unhashed: 0, totalGroups: 0, totalImages: 0, excludedPairs: 0,
   exact: { count: 0, message: null },
   exclusions: [], showExclusions: false,
   view: new Map(),          // 群の番号 → {keep: asset_id, on: Set(asset_id)}
@@ -100,6 +100,12 @@ export function headHtml() {
   const images = state.totalImages;
   const bits = [`候補 ${groups} 群`, `${images} 枚`];
   if (!state.unhashed) bits.push(`計算済み ${state.hashed} 枚`);
+  // **（P8-3 の取り落とし調査）人が「別物として確定」した組は候補から外れる**ので、
+  // その数を出す。出さないと「群が 1 つ足りない」が**帯の取りこぼしに見える**
+  // （実データで実際にそう見えた。`docs/p8-3-band-miss.md`）。0 のときは出さない。
+  if (state.excludedPairs) {
+    bits.push(`別物として確定で ${state.excludedPairs} 組を隠しています`);
+  }
   return `<div class="dup-head">${bits.map(esc).join(' ・ ')}</div>`;
 }
 
@@ -236,6 +242,8 @@ async function load() {
   state.unhashed = near.unhashed || 0;
   state.totalGroups = near.total_groups || 0;
   state.totalImages = near.total_images || 0;
+  // **（P8-3 の取り落とし調査）** 「別物として確定」で隠れている組の数（数の辻褄を画面に出す）
+  state.excludedPairs = near.excluded_pairs || 0;
   state.exact = { count: exact.count || 0, message: exact.message || null };
   state.view = makeView(state.groups);
   state.busy = false;

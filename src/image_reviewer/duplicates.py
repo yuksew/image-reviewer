@@ -214,6 +214,29 @@ def _hashed_assets(con: sqlite3.Connection) -> dict[str, int]:
         "   AND phash IS NOT NULL AND phash <> ''")}
 
 
+def excluded_pair_count(con: sqlite3.Connection, max_distance: int) -> int:
+    """その距離でなら候補に入っていたのに、**除外（「別物として確定」）で隠れている組**の数。
+
+    **（P8-3 の取り落とし調査。`docs/p8-3-band-miss.md`）** `candidate_pairs` は除外を
+    黙って外すので、**これが無いと「帯の取りこぼし」と見分けが付かない**。実データで実際に
+    起きた: 「別物として確定」が 1 組あるだけで、距離 4 の 2 枚だけの群が丸ごと消え、
+    `GET /api/duplicates/near?max_distance=6` が **20 群 / 55 枚**（総当たりは 21 群 / 57 枚）
+    を返した。帯は 1 組も落としていなかった（4208 行が `asset.phash` と完全に一致）。
+
+    `near_groups` が返す `total_pairs` と足すと、**その距離の総当たりの組数**になる
+    （`total_pairs + excluded_pairs = 距離 ≤ d の総当たり`）。**数えた物は消さない**（家風）。
+    """
+    hashes = _hashed_assets(con)
+    n = 0
+    for row in con.execute("SELECT a_id, b_id FROM duplicate_exclusion"):
+        pa, pb = hashes.get(row["a_id"]), hashes.get(row["b_id"])
+        if pa is None or pb is None:      # 消した枚・pHash の無い枚は候補に入らない
+            continue
+        if (pa ^ pb).bit_count() <= max_distance:
+            n += 1
+    return n
+
+
 def candidate_pairs(con: sqlite3.Connection, max_distance: int) -> list[tuple[str, str, int]]:
     """**帯で絞ってから**距離を計算する（`max_distance` 以下だけ返す）。
 
@@ -277,6 +300,10 @@ def near_groups(con: sqlite3.Connection, *, max_distance: int = DEFAULT_MAX_DIST
     - 各群に **`suggested_id` / `reason` / `max_distance_within`** を入れる（§0.9・点検 C2）
     - **`unhashed`**（pHash がまだの枚数）を返す（**計算はしない**）
     - **`cursor` は付けない**（連結成分は切れない。点検 C7）
+    - **`total_pairs` / `excluded_pairs`** を返す（**P8-3 の取り落とし調査**）。
+      `total_pairs` は距離 ≤ `max_distance` の組の数、`excluded_pairs` は
+      **「別物として確定」で隠れている組の数**。**足すとその距離の総当たりの組数**になるので、
+      群が丸ごと消えたときに「帯の取りこぼし」と「人の除外」を**外から見分けられる**。
     """
     if limit is not None and int(limit) < 1:
         # **（監査 D-4）負や 0 は黙って 1 にしない**。語彙の外は 422（家風）
@@ -286,6 +313,7 @@ def near_groups(con: sqlite3.Connection, *, max_distance: int = DEFAULT_MAX_DIST
         "SELECT count(*) AS n FROM asset"
         " WHERE deleted_at IS NULL AND (phash IS NULL OR phash = '')").fetchone()["n"]
     pairs = candidate_pairs(con, max_distance)
+    hidden = excluded_pair_count(con, max_distance)
     # --- 連結成分（union-find）---
     parent: dict[str, str] = {}
 
@@ -329,6 +357,9 @@ def near_groups(con: sqlite3.Connection, *, max_distance: int = DEFAULT_MAX_DIST
         "max_distance": max_distance,
         "hashed": len(hashed),
         "unhashed": int(unhashed),
+        # **数の辻褄**（`total_pairs + excluded_pairs` = その距離の総当たり。P8-3 の調査）
+        "total_pairs": len(pairs),
+        "excluded_pairs": int(hidden),
         "groups": out_groups,
         "total_groups": len(built),
         "total_images": sum(g["count"] for g in out_groups),

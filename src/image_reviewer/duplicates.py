@@ -5,9 +5,11 @@
 - **pHash は `GET` では計算しない**（家風: `GET` は 1 バイトも書かない）。足りない分は
   **`POST /api/duplicates/compute` の背景ジョブ**（`job` を使う。`kind='hash'`）で埋める。
   実測: **14.8 ms/枚（復号込み）**。実データは **91 / 263 枚**にしか入っていない
-- **帯索引**（`phash_band`。**8bit × 8 本**の 16 進 2 文字）で候補を絞る。
-  **取りこぼし 0**: ハミング距離が `d` なら**少なくとも 1 本の帯は完全に一致する**（`d < 8`）ので、
-  同じ `(band, value)` を持つ組だけを候補にすれば必ず含まれる（実データ 54/54・合成 3,457/3,457 で実測）
+- **帯索引**（`phash_band`。**4bit × 16 本**の 16 進 1 文字）で候補を絞る。
+  **取りこぼし 0 の保証は「ハミング距離 ≤ 15」**: 距離 `d` なら**少なくとも 1 本の帯は完全に一致する**
+  （鳩の巣。`d < 16`）ので、同じ `(band, value)` を持つ組だけを候補にすれば必ず含まれる。
+  **（P8-1 の監査 B-1）8bit × 8 本では保証が距離 7 までだった**（実測: ≤12 で 3 組・≤16 で 72 組を
+  取りこぼす）。**16 以上を求められたら帯で絞らず総当たりに落とす**（263 枚で 20 ms）。
 - **群は連結成分**。**群の中の最大距離が小さい順**に出す（**確実な物から**。点検の規模の判定）。
   **頁送りは付けない**（連結成分は切れない。点検 C7）
 - **代表は推薦するだけ**（§0.9 の決定的な規則）。**自動では外さない**
@@ -23,24 +25,27 @@ import time
 from typing import Any, Iterable, Sequence
 
 from . import db
-from .compare import hash_distance
 from .review import ReviewError
 
-#: 帯の本数と 1 本のビット数（`comparison.md` §1.3。8 × 8 = 64bit）
-BANDS = 8
-BAND_HEX = 2                                   # 8bit = 16 進 2 文字
+#: 帯の本数と 1 本のビット数（`comparison.md` §1.3。**4 × 16 = 64bit**。監査 B-1）
+BANDS = 16
+BAND_HEX = 1                                   # 4bit = 16 進 1 文字
+#: 帯で**取りこぼし 0** を保証できる最大の距離（鳩の巣。`d < BANDS`）
+BAND_GUARANTEE = BANDS - 1
 
 #: 「近い」の既定（`compare.PHASH_NEAR_THRESHOLD` と同じ値。**画面で切り替えられる**）
 DEFAULT_MAX_DISTANCE = 6
-#: 画面が選べる 3 段（§0.14 Q3）
+#: 画面が選べる 3 段（§0.14 Q3）。**どれも帯の保証（≤15）の中**なので、Q3 の ≤10 が正しい
 ALLOWED_MAX_DISTANCE = (3, 6, 10)
+#: 口が受ける上限（**16 以上は総当たりに落ちる**）
+MAX_DISTANCE_LIMIT = 64
 
 
 # ---- 帯（純関数に近い。`con` を渡すのは書き込みだけ）----
 
 
 def bands_of(phash: str) -> list[tuple[int, str]]:
-    """16 進 16 文字の pHash を **8 本の帯**（8bit ずつ）に割る。
+    """16 進 16 文字の pHash を **16 本の帯**（4bit ずつ）に割る。
 
     **小文字に揃える**（同じ値が大文字と小文字で別の帯にならないように）。
     """
@@ -63,14 +68,58 @@ def write_bands(con: sqlite3.Connection, asset_id: str, phash: str | None) -> in
     return len(rows)
 
 
+def _band_rows(rows) -> list[tuple[str, int, str]]:
+    """`(id, phash)` の並びを `phash_band` の行に開く（**まとめて入れるため**）。"""
+    out: list[tuple[str, int, str]] = []
+    for row in rows:
+        for band, value in bands_of(row["phash"]):
+            out.append((row["id"], band, value))
+    return out
+
+
 def fill_missing_bands(con: sqlite3.Connection) -> int:
-    """`asset.phash` はあるのに帯が無い枚を埋める（**移行の後始末**。何度呼んでも同じ）。"""
+    """`asset.phash` はあるのに帯が無い枚を埋める（**移行の後始末**。何度呼んでも同じ）。
+
+    **1 枚ずつではなくまとめて入れる**（1 万枚の移行で 16 万行を書くので、1 枚 1 取引だと
+    何分もかかる。実測で踏んだ）。**`asset.phash` がまだ無い DB では何もしない**。
+    """
+    cols = {row["name"] for row in con.execute("PRAGMA table_info(asset)")}
+    if "phash" not in cols:
+        return 0
     rows = con.execute(
         "SELECT a.id, a.phash FROM asset a"
         " WHERE a.phash IS NOT NULL AND a.phash <> ''"
         "   AND NOT EXISTS (SELECT 1 FROM phash_band b WHERE b.asset_id = a.id)").fetchall()
-    for row in rows:
-        write_bands(con, row["id"], row["phash"])
+    if not rows:
+        return 0
+    con.executemany("INSERT OR REPLACE INTO phash_band(asset_id, band, value) VALUES (?, ?, ?)",
+                    _band_rows(rows))
+    return len(rows)
+
+
+def rebuild_stale_bands(con: sqlite3.Connection) -> int:
+    """**本数が 16 でない帯**を `asset.phash` から作り直す（監査 B-1 の移行。何度でも安全）。
+
+    8bit × 8 本で作られた帯（旧版）や、帯の表を作り直した直後の DB が対象。
+    **帯は `asset.phash` から引き直せる**ので、消して作り直して害が無い。
+
+    **`asset.phash` がまだ無い DB**（v3 より前の形のまま版だけ進んだ試験用の DB など）では
+    **何もしない**（列の有無を見てから触る。家風「列を見てから」）。
+    """
+    cols = {row["name"] for row in con.execute("PRAGMA table_info(asset)")}
+    if "phash" not in cols:
+        return 0
+    rows = con.execute(
+        "SELECT a.id, a.phash FROM asset a JOIN phash_band b ON b.asset_id = a.id"
+        " WHERE a.phash IS NOT NULL AND a.phash <> ''"
+        " GROUP BY a.id, a.phash HAVING count(*) <> ?", (BANDS,)).fetchall()
+    if not rows:
+        return 0
+    # **まとめて**（1 枚ずつだと 1 万枚で何分もかかる。`fill_missing_bands` と同じ理由）
+    con.executemany("DELETE FROM phash_band WHERE asset_id = ?",
+                    [(row["id"],) for row in rows])
+    con.executemany("INSERT OR REPLACE INTO phash_band(asset_id, band, value) VALUES (?, ?, ?)",
+                    _band_rows(rows))
     return len(rows)
 
 
@@ -96,66 +145,128 @@ def _asset_rows(con: sqlite3.Connection, ids: Sequence[str]) -> dict[str, dict]:
     return {row["id"]: dict(row) for row in rows}
 
 
+def _pixels(row: dict) -> int:
+    return int(row.get("width") or 0) * int(row.get("height") or 0)
+
+
+def _kept(row: dict) -> int:
+    return 1 if (row.get("verdict") or "") == "keep" else 0
+
+
+def _rejected(row: dict) -> int:
+    """**人が「ボツ」と言った物は推薦しない**（監査 D-3 / G-4）。0 = ボツでない、1 = ボツ。"""
+    return 1 if (row.get("verdict") or "") == "reject" else 0
+
+
+def _rank(row: dict) -> tuple:
+    # **大きい方が先**（`-` を付ける）。`reject` と `id` だけ「小さい方が先」
+    return (-_kept(row), _rejected(row), -_pixels(row), -int(row.get("size") or 0),
+            -int(row.get("mtime_ns") or 0), str(row.get("id")))
+
+
+#: 推薦の規則（**上から順に見て、上位 2 枚を分けた規則を言う**。監査 D-2）
+_RULES: tuple[tuple[str, Any], ...] = (
+    ("人がキープと言った物", _kept),
+    ("人がボツと言っていない物", lambda r: -_rejected(r)),
+    ("画素数が最大", _pixels),
+    ("ファイルが大きい", lambda r: int(r.get("size") or 0)),
+    ("新しい方（同じ寸法の作り直しは最終版を残す）", lambda r: int(r.get("mtime_ns") or 0)),
+)
+
+
 def representative(members: Sequence[dict]) -> tuple[str, str]:
     """**代表を推薦する**（§0.9 の決定的な規則。**自動では外さない**）。
 
     1. **人が「キープ」と言った物**（`decision` の最新が `keep`）
-    2. **画素数が最大**
-    3. **ファイルが大きい**
-    4. **`mtime_ns` が新しい**（**同じ寸法の作り直しでは「最終版」が新しい**。点検 C2・G3。
+    2. **人が「ボツ」と言っていない物**（**`reject` は最下位**。監査 D-3 / G-4 =
+       「要らない」と言った物を「おすすめ」に出さない）
+    3. **画素数が最大**
+    4. **ファイルが大きい**
+    5. **`mtime_ns` が新しい**（**同じ寸法の作り直しでは「最終版」が新しい**。点検 C2・G3。
        `first_seen_at` は効かない＝全 263 枚が 1 回の走査で入っている）
-    5. **`id` の昇順**（決定的にする）
+    6. **`id` の昇順**（決定的にする）
 
-    返すのは `(asset_id, reason)`。`reason` は**どの規則で選んだか**（画面に出す）。
+    返すのは `(asset_id, reason)`。**`reason` は「上位 2 枚を分けた規則」**（監査 D-2:
+    群の中で最初に違う属性ではなく、**推薦の決め手**を言う。例: 画素数が同じでサイズが違うなら
+    「ファイルが大きい」）。
     """
     if not members:
         raise ValueError("空の群からは選べない")
+    ordered = sorted(members, key=_rank)
+    best = ordered[0]
+    if len(ordered) == 1:
+        return str(best["id"]), "1 枚だけ"
+    second = ordered[1]
+    for label, get in _RULES:
+        if get(best) != get(second):
+            return str(best["id"]), label
+    return str(best["id"]), "id の順（他に違いが無い）"
 
-    def key(row: dict) -> tuple:
-        kept = 1 if (row.get("verdict") or "") == "keep" else 0
-        pixels = int(row.get("width") or 0) * int(row.get("height") or 0)
-        size = int(row.get("size") or 0)
-        mtime = int(row.get("mtime_ns") or 0)
-        # **大きい方が先**（`-` を付ける）。`id` だけ昇順
-        return (-kept, -pixels, -size, -mtime, str(row.get("id")))
 
-    best = sorted(members, key=key)[0]
-    if (best.get("verdict") or "") == "keep":
-        reason = "人がキープと言った物"
-    elif len({(int(m.get("width") or 0), int(m.get("height") or 0)) for m in members}) > 1:
-        reason = "画素数が最大"
-    elif len({int(m.get("size") or 0) for m in members}) > 1:
-        reason = "ファイルが大きい"
-    elif len({int(m.get("mtime_ns") or 0) for m in members}) > 1:
-        reason = "新しい方（同じ寸法の作り直しは最終版を残す）"
-    else:
-        reason = "id の順（他に違いが無い）"
-    return str(best["id"]), reason
+def _hashed_assets(con: sqlite3.Connection) -> dict[str, int]:
+    """**生きている**（`deleted_at IS NULL`）枚の pHash を int で返す（監査 C-4 / D-7）。
+
+    **段 1（`deleted_at`）の枚は群にも候補にも出さない**。同じ応答の中で `hashed` の数と
+    群の中身が食い違わないようにする（監査 C-4）。
+    """
+    return {row["id"]: int(row["phash"], 16) for row in con.execute(
+        "SELECT id, phash FROM asset WHERE deleted_at IS NULL"
+        "   AND phash IS NOT NULL AND phash <> ''")}
 
 
 def candidate_pairs(con: sqlite3.Connection, max_distance: int) -> list[tuple[str, str, int]]:
     """**帯で絞ってから**距離を計算する（`max_distance` 以下だけ返す）。
 
-    **除外（`duplicate_exclusion`）はここで外す**（§0.10）。
+    - **除外（`duplicate_exclusion`）はここで外す**（§0.10）
+    - **`deleted_at` の枚は候補に入れない**（監査 C-4）
+    - **帯の保証は距離 ≤ 15**（鳩の巣。`BAND_GUARANTEE`）。**16 以上は帯で絞らず総当たり**
+      （263 枚で 20 ms。**帯で絞ると取りこぼす**＝監査 B-1）
+    - **距離は int に直してから** `bit_count()`（文字列の正規表現を毎回回さない。監査 D-7）
     """
-    if max_distance not in ALLOWED_MAX_DISTANCE and not (0 <= max_distance <= 64):
-        raise ReviewError(422, "max_distance は 0〜64 です", details={"max_distance": max_distance})
-    rows = con.execute(
-        "SELECT a.asset_id AS a, b.asset_id AS b,"
-        "       (SELECT phash FROM asset x WHERE x.id = a.asset_id) AS pa,"
-        "       (SELECT phash FROM asset y WHERE y.id = b.asset_id) AS pb"
-        "  FROM phash_band a JOIN phash_band b"
-        "    ON a.band = b.band AND a.value = b.value AND a.asset_id < b.asset_id"
-        "  LEFT JOIN duplicate_exclusion e"
-        "    ON e.a_id = a.asset_id AND e.b_id = b.asset_id"
-        " WHERE e.a_id IS NULL"
-        " GROUP BY a.asset_id, b.asset_id").fetchall()
+    if not (0 <= int(max_distance) <= MAX_DISTANCE_LIMIT):
+        raise ReviewError(422, f"max_distance は 0〜{MAX_DISTANCE_LIMIT} です",
+                          details={"max_distance": max_distance})
+    excluded = {(row["a_id"], row["b_id"]) for row in
+                con.execute("SELECT a_id, b_id FROM duplicate_exclusion")}
     out: list[tuple[str, str, int]] = []
-    for row in rows:
-        dist = hash_distance(row["pa"], row["pb"])
-        if dist is not None and dist <= max_distance:
-            out.append((row["a"], row["b"], dist))
-    return out
+    if max_distance >= BANDS:
+        # **帯では保証できない距離**。総当たり（`deleted_at` は `_hashed_assets` で外れる）
+        hashes = _hashed_assets(con)
+        ids = sorted(hashes)
+        for i, a_id in enumerate(ids):
+            pa = hashes[a_id]
+            for b_id in ids[i + 1:]:
+                dist = (pa ^ hashes[b_id]).bit_count()
+                if dist <= max_distance and (a_id, b_id) not in excluded:
+                    out.append((a_id, b_id, dist))
+        return out
+    # **帯ごとに引く**（1 本ずつ。`(band, value)` の索引が効く）。
+    # 1 回の大きな自己結合にすると SQLite が**一時ファイル**を要求し、この環境では
+    # `unable to open database file` で落ちる（実測。`%TEMP%` に書けない制約）。
+    # **候補を全部溜めない**: 帯で当たった組は**その場で距離を計算して、条件を満たす物だけ**残す
+    # （1 万枚では候補が 240 万組になるので、溜めてから距離を取ると遅い。実測）。
+    hashes = _hashed_assets(con)
+    found: dict[tuple[str, str], int] = {}
+    for band in range(BANDS):
+        rows = con.execute(
+            "SELECT ba.asset_id AS a, bb.asset_id AS b"
+            "  FROM phash_band ba"
+            "  JOIN phash_band bb"
+            "    ON bb.band = ba.band AND bb.value = ba.value AND bb.asset_id > ba.asset_id"
+            "  JOIN asset xa ON xa.id = ba.asset_id AND xa.deleted_at IS NULL"
+            "  JOIN asset xb ON xb.id = bb.asset_id AND xb.deleted_at IS NULL"
+            " WHERE ba.band = ?", (band,)).fetchall()
+        for row in rows:
+            key = (row["a"], row["b"])
+            if key in found or key in excluded:
+                continue
+            pa, pb = hashes.get(key[0]), hashes.get(key[1])
+            if pa is None or pb is None:
+                continue
+            dist = (pa ^ pb).bit_count()
+            if dist <= max_distance:
+                found[key] = dist
+    return [(a_id, b_id, dist) for (a_id, b_id), dist in found.items()]
 
 
 def near_groups(con: sqlite3.Connection, *, max_distance: int = DEFAULT_MAX_DISTANCE,
@@ -167,8 +278,10 @@ def near_groups(con: sqlite3.Connection, *, max_distance: int = DEFAULT_MAX_DIST
     - **`unhashed`**（pHash がまだの枚数）を返す（**計算はしない**）
     - **`cursor` は付けない**（連結成分は切れない。点検 C7）
     """
-    hashed = {row["id"]: row["phash"] for row in con.execute(
-        "SELECT id, phash FROM asset WHERE deleted_at IS NULL AND phash IS NOT NULL")}
+    if limit is not None and int(limit) < 1:
+        # **（監査 D-4）負や 0 は黙って 1 にしない**。語彙の外は 422（家風）
+        raise ReviewError(422, "limit は 1 以上です", details={"limit": limit})
+    hashed = _hashed_assets(con)
     unhashed = con.execute(
         "SELECT count(*) AS n FROM asset"
         " WHERE deleted_at IS NULL AND (phash IS NULL OR phash = '')").fetchone()["n"]
@@ -199,7 +312,7 @@ def near_groups(con: sqlite3.Connection, *, max_distance: int = DEFAULT_MAX_DIST
     # 小さい距離の群から。同じなら大きい群。同じなら最初の id
     built.sort(key=lambda g: (g["max_distance_within"], -len(g["ids"]), g["ids"][0]))
     if limit is not None:
-        built = built[:max(1, int(limit))]
+        built = built[:int(limit)]
     info = _asset_rows(con, [i for g in built for i in g["ids"]])
     out_groups = []
     for g in built:
@@ -254,7 +367,6 @@ class DuplicatesService:
         self._poll = poll
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
-        self._cancelled: set[str] = set()
         if recover:
             self.recover_stale()
 
@@ -299,30 +411,41 @@ class DuplicatesService:
 
     def _start(self, job_id: str, targets: list[str]) -> None:
         with self._lock:
-            self._cancelled.discard(job_id)
             thread = threading.Thread(target=self._run, args=(job_id, targets),
                                       name=f"hash-{job_id}", daemon=True)
             self._thread = thread
             thread.start()
 
     def cancel(self, job_id: str) -> dict:
-        """中断の印を立てる（**画像 1 枚ごとに見る**）。"""
+        """**中断の印を `job` 表に立てる**（監査 C-1。**画像 1 枚ごとに見る**）。
+
+        印を**メモリでなく DB** に置くのが要点: `POST /api/jobs/{id}/cancel`
+        （`JobService`）からもこのサービスからも**同じ印が見える**ので、
+        **ハッシュの背景ジョブが HTTP から止まる**（前の版は別の集合を見ていて止まらなかった）。
+        再起動をまたいでも印が残る。
+        """
         with self.store.transaction() as con:
             row = con.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
             if row is None:
                 raise ReviewError(404, "その job はありません", details={"job_id": job_id})
             if row["state"] not in ("queued", "running"):
                 return self.get(job_id)
-        with self._lock:
-            self._cancelled.add(job_id)
+            con.execute("UPDATE job SET cancel_requested = 1 WHERE id = ?", (job_id,))
         return self.get(job_id)
 
     def _is_cancelled(self, job_id: str) -> bool:
-        with self._lock:
-            return job_id in self._cancelled
+        """**DB の印を見る**（監査 C-1。メモリの集合はもう使わない）。"""
+        with self.store.locked() as con:
+            row = con.execute("SELECT cancel_requested FROM job WHERE id = ?",
+                              (job_id,)).fetchone()
+        return bool(row and row["cancel_requested"])
 
     def _run(self, job_id: str, targets: list[str]) -> None:
-        """**1 枚ずつ**: 復号（重い）は**取引の外**、`asset` と帯の書き込みは**短い 1 取引**。"""
+        """**1 枚ずつ**: 復号（重い）は**取引の外**、`asset` と帯の書き込みは**短い 1 取引**。
+
+        **（監査 D-1）1 枚あたりの時間**: 実データの既定の対象は 172 枚（pHash が無い枚）で
+        2.3 秒＝**13.4 ms/枚**（点検の 14.0 ms/枚と同じ桁。91 枚は帯を書くだけで復号しない）。
+        """
         done = 0
         failed = 0
         started = time.monotonic()
@@ -349,10 +472,9 @@ class DuplicatesService:
                     else:
                         from .compare import hash_file
                         phash, dhash = hash_file(row["path"])       # **取引の外**
-                        with self.store.transaction() as con:
-                            con.execute("UPDATE asset SET phash = ?, dhash = ? WHERE id = ?",
-                                        (phash, dhash, asset_id))
-                            write_bands(con, asset_id, phash)
+                        # **（監査 C-3）`set_hashes` を通す**（pHash の書き手を 1 つに。
+                        # 検査（16 進 16 文字の小文字）と**帯も一緒に書く**が 1 か所に入る）
+                        self.store.set_hashes(asset_id, phash, dhash)
                     done += 1
                 except Exception as exc:                          # noqa: BLE001  1 枚の失敗で全体を止めない
                     failed += 1

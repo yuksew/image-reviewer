@@ -24,8 +24,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from image_reviewer import db                                    # noqa: E402
-from image_reviewer.compare import hash_distance                 # noqa: E402
-from image_reviewer.duplicates import (DuplicatesService, bands_of,  # noqa: E402
+from image_reviewer.duplicates import (BANDS, DuplicatesService, bands_of,  # noqa: E402
                                        candidate_pairs, near_groups)
 from image_reviewer.store import Store                           # noqa: E402
 
@@ -34,11 +33,16 @@ WORK = ROOT / ".tmp-audit-redo" / "p8probe"
 
 
 def copy_real(into: Path) -> Path:
-    """実データの複製（**WAL を畳む**）。"""
+    """実データの複製（**WAL を畳む**）。
+
+    **前の実行の `-wal` / `-shm` を残さない**（本体だけ消すと WAL と食い違って
+    `unable to open database file` になる。実際に踏んだ）。
+    """
     into.mkdir(parents=True, exist_ok=True)
     dst_path = into / "db.sqlite3"
-    if dst_path.exists():
-        dst_path.unlink()
+    for stale in (dst_path, into / "db.sqlite3-wal", into / "db.sqlite3-shm"):
+        if stale.exists():
+            stale.unlink()
     src = sqlite3.connect(f"file:{REAL}?mode=ro", uri=True)
     dst = sqlite3.connect(str(dst_path))
     with dst:
@@ -48,16 +52,21 @@ def copy_real(into: Path) -> Path:
     return into
 
 
-def brute_force(con) -> set[tuple[str, str]]:
-    """**総当たり**で距離 ≤ max の組を出す（帯の取りこぼしを確かめる物差し）。"""
+def brute_force(con, max_distance: int) -> set[tuple[str, str]]:
+    """**総当たり**で距離 ≤ `max_distance` の組を出す（帯の取りこぼしを確かめる物差し）。
+
+    **（P8-1 の監査 C-5）距離を引数にした。** 前の版は 6 固定で、**≤10 の「取りこぼし 0」を
+    確かめていなかった**（帯の群の数だけを見ていた）。いまは **≤64 まで**回せる
+    （263 枚の総当たりは 34,453 組で 20 ms 程度）。
+    """
     rows = con.execute("SELECT id, phash FROM asset WHERE deleted_at IS NULL"
                        " AND phash IS NOT NULL").fetchall()
+    hashes = [(row["id"], int(row["phash"], 16)) for row in rows]
     out = set()
-    for i, a in enumerate(rows):
-        for b in rows[i + 1:]:
-            dist = hash_distance(a["phash"], b["phash"])
-            if dist is not None and dist <= 6:
-                out.add((a["id"], b["id"]) if a["id"] < b["id"] else (b["id"], a["id"]))
+    for i, (a_id, pa) in enumerate(hashes):
+        for b_id, pb in hashes[i + 1:]:
+            if (pa ^ pb).bit_count() <= max_distance:
+                out.add((a_id, b_id) if a_id < b_id else (b_id, a_id))
     return out
 
 
@@ -81,30 +90,39 @@ def main() -> int:
         svc = DuplicatesService(store)
         t0 = time.monotonic()
         started = svc.start_compute()
-        print(f"   POST /api/duplicates/compute → 202 job={started['job_id']} total={started['total']}")
+        # **サービスを直に呼んでいる**（HTTP の 202 は `tests/test_duplicates.py` の
+        # `test_the_compute_endpoint_is_202_and_human_only` が見ている。監査 C-5）
+        print(f"   compute を開始（サービス直呼び）→ job={started['job_id']} total={started['total']}")
         job = svc.wait(started["job_id"], timeout=900)
         took = time.monotonic() - t0
-        per = took / max(1, started["total"])
-        print(f"   job={job['state']} / {job['message']} / 実測 {took:.1f} 秒（{per * 1000:.1f} ms/枚）")
+        decoded = started["total"] - hashed0          # **復号するのは pHash の無い枚だけ**
+        per = took / max(1, decoded)
+        print(f"   job={job['state']} / {job['message']} / 実測 {took:.1f} 秒"
+              f"（復号した {decoded} 枚で {per * 1000:.1f} ms/枚）")
         hashed1 = con.execute("SELECT count(*) AS n FROM asset WHERE phash IS NOT NULL"
                               " AND deleted_at IS NULL").fetchone()["n"]
         bands1 = con.execute("SELECT count(*) AS n FROM phash_band").fetchone()["n"]
         print(f"   → pHash {hashed1} 枚（+{hashed1 - hashed0}）/ 帯 {bands1} 行（+{bands1 - bands0}）")
-        if hashed1 != total or bands1 != total * 8:
+        if hashed1 != total or bands1 != total * BANDS:
             ok = False
-            print("   NG: 全部の枚に pHash と帯（8 本ずつ）が入っていない")
+            print(f"   NG: 全部の枚に pHash と帯（{BANDS} 本ずつ）が入っていない")
 
         # --- 線 2: 帯と総当たりが集合として一致（**取りこぼし 0**）---
-        t0 = time.monotonic()
-        band = {tuple(sorted((a, b))) for a, b, _ in candidate_pairs(con, 6)}
-        band_ms = (time.monotonic() - t0) * 1000
-        brute = brute_force(con)
-        print(f"2. 帯の候補 {len(band)} 組（{band_ms:.0f} ms）/ 総当たり {len(brute)} 組")
-        if band != brute:
-            ok = False
-            print(f"   NG: 取りこぼし {len(brute - band)} 組 / 余分 {len(band - brute)} 組")
-        else:
-            print("   OK: 集合として一致（取りこぼし 0）")
+        # **（P8-1 の監査 B-1 / C-5）距離ごとに確かめる。** 4bit × 16 本なので保証は ≤15。
+        # **16 以上は総当たりに落ちる**（`candidate_pairs` の中）ので、そこも一致するはず。
+        print("2. 帯 vs 総当たり（距離ごと）:")
+        for dist in (0, 3, 6, 10, 15, 16, 32, 64):
+            t0 = time.monotonic()
+            band = {tuple(sorted((a, b))) for a, b, _ in candidate_pairs(con, dist)}
+            band_ms = (time.monotonic() - t0) * 1000
+            brute = brute_force(con, dist)
+            mark = "OK" if band == brute else "NG"
+            if band != brute:
+                ok = False
+            print(f"   ≤{dist:<2}: 帯 {len(band):>5} 組（{band_ms:5.0f} ms）/ 総当たり {len(brute):>5} 組"
+                  f" → {mark}" + ("" if band == brute else
+                                  f" 取りこぼし {len(brute - band)} / 余分 {len(band - brute)}"))
+        # 参考: ≤6 の群の数（点検・P8-1 の実測と一致するはず）
 
         # --- 線 1・3: 群の数（≤3 / ≤6 / ≤10）と完全重複 ---
         print("3. 群（連結成分）:")

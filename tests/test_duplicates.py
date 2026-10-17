@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -19,8 +20,8 @@ from PIL import Image
 
 from image_reviewer import db
 from image_reviewer.compare import hash_distance
-from image_reviewer.duplicates import (BANDS, DuplicatesService, bands_of, candidate_pairs,
-                                       near_groups, representative)
+from image_reviewer.duplicates import (BAND_GUARANTEE, BANDS, DuplicatesService, bands_of,
+                                       candidate_pairs, near_groups, representative)
 from image_reviewer.review import ReviewError
 from image_reviewer.store import Store
 
@@ -71,12 +72,18 @@ def store(tmp_path: Path):
 # ---- 帯（§0.5）----
 
 
-def test_bands_split_a_phash_into_eight_hex_pairs():
-    """壊すと落ちる: `BANDS` を 8 以外にする・`BAND_HEX` を 2 以外にする。"""
+def test_bands_split_a_phash_into_sixteen_hex_digits():
+    """壊すと落ちる: `BANDS` を 16 以外にする・`BAND_HEX` を 1 以外にする。
+
+    **（P8-1 の監査 B-1）8 本 × 8bit から 16 本 × 4bit に変えた。** 旧版は「1 本は必ず一致する」
+    の保証が距離 7 までで、`max_distance` を 64 まで受ける口と両立しなかった。
+    """
     got = bands_of("0123456789abcdef")
-    assert got == [(0, "01"), (1, "23"), (2, "45"), (3, "67"),
-                   (4, "89"), (5, "ab"), (6, "cd"), (7, "ef")]
-    assert len(got) == BANDS
+    assert got == [(0, "0"), (1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5"), (6, "6"), (7, "7"),
+                   (8, "8"), (9, "9"), (10, "a"), (11, "b"), (12, "c"), (13, "d"), (14, "e"),
+                   (15, "f")]
+    assert len(got) == BANDS == 16
+    assert BAND_GUARANTEE == 15, "帯の保証（鳩の巣）は BANDS - 1"
     # **大文字でも同じ帯**（別の帯にすると同じ絵が候補に上がらない）
     assert bands_of("0123456789ABCDEF") == got
     with pytest.raises(ValueError):
@@ -86,25 +93,22 @@ def test_bands_split_a_phash_into_eight_hex_pairs():
 def test_the_band_index_never_misses_a_near_pair(store: Store, tmp_path: Path):
     """壊すと落ちる: 帯を 1 本だけ見る（`a.band = b.band` を外す）と**取りこぼす**。
 
-    ハミング距離が `d` なら**少なくとも 1 本の帯は完全に一致する**（`d < 8`）。だから
-    「同じ `(band, value)` を持つ組」だけを候補にしても、**距離 6 以下の組は必ず含まれる**。
-    ここでは**距離 1〜6 の組を意図的に作り**、総当たりと集合が一致することを見る。
+    ハミング距離が `d` なら**少なくとも 1 本の帯は完全に一致する**（`d < 16`。鳩の巣）。だから
+    「同じ `(band, value)` を持つ組」だけを候補にしても、**距離 15 以下の組は必ず含まれる**。
+    ここでは**それぞれ違う帯のビットを 1 つだけ反転**した 15 枚を作り（距離は 2 ずつ）、
+    総当たりと集合が一致することを見る。
     """
-    # **それぞれ違う帯のビットを 1 つだけ反転**した 7 枚を作る（距離は 2 ずつ）。
-    # **帯 0 だけを見る実装だと、帯 0 を反転した枚の組を取りこぼす**ので、
-    # 「1 本でも一致すれば候補に入れる」ことが試験される（`ON a.band = b.band` を
-    # 固定の帯にすると落ちる）。
     base = 0b1010101010101010101010101010101010101010101010101010101010101010
     values: dict[str, str] = {}
-    for i in range(7):
+    for i in range(15):
         name = f"a{i}"
-        values[name] = f"{base ^ (1 << (63 - 8 * i)):016x}"
+        values[name] = f"{base ^ (1 << (63 - 4 * i)):016x}"
         asset_id = add_asset(store, make_png(tmp_path / "images" / f"{name}.png", seed=i),
                              name=name)
         put_phash(store, asset_id, values[name])
         values[name] = asset_id          # 以降は asset_id で扱う
     by_id = {v: k for k, v in values.items()}
-    phash_of = {asset_id: f"{base ^ (1 << (63 - 8 * i)):016x}"
+    phash_of = {asset_id: f"{base ^ (1 << (63 - 4 * i)):016x}"
                 for i, asset_id in enumerate(values.values())}
     got = {tuple(sorted((a, b))) for a, b, _ in candidate_pairs(store.con, 6)}
     ids = sorted(phash_of)
@@ -112,6 +116,31 @@ def test_the_band_index_never_misses_a_near_pair(store: Store, tmp_path: Path):
             if (hash_distance(phash_of[a], phash_of[b]) or 99) <= 6}
     assert want, f"試験の前提が壊れている（距離 6 以下の組が 1 つも無い）: {by_id}"
     assert want <= got, f"帯が取りこぼした: {sorted(want - got)}"
+
+
+def test_distances_above_the_band_guarantee_fall_back_to_brute_force(store: Store, tmp_path: Path):
+    """壊すと落ちる: **16 以上で帯に頼る**（＝総当たりに落とさない）と取りこぼす。
+
+    4bit × 16 本で「1 本は必ず一致する」のは距離 15 まで。**16 以上は帯で絞れない**ので、
+    `candidate_pairs` は**総当たりに落ちる**（監査 B-1。263 枚で 20 ms）。
+    距離 16 の 2 枚を入れ、`candidate_pairs(16)` が**その組を返す**ことを見る。
+    """
+    a = add_asset(store, make_png(tmp_path / "images" / "a.png", seed=1), name="a")
+    b = add_asset(store, make_png(tmp_path / "images" / "b.png", seed=2), name="b")
+    pa = int("f0f0f0f0f0f0f0f0", 16)
+    # **16 本の帯それぞれで 1 ビットずつ**反転する（距離 16。**どの帯も一致しない**ので、
+    # 帯の索引では絶対に候補にならない＝「保証の外」が効いていることが分かる）
+    mask = sum(1 << (63 - 4 * i) for i in range(16))
+    pb = pa ^ mask
+    assert (pa ^ pb).bit_count() == 16, "試験の前提（距離 16）"
+    put_phash(store, a, f"{pa:016x}")
+    put_phash(store, b, f"{pb:016x}")
+    # 帯（16 未満）では候補に入らない＝帯だけでは取りこぼす
+    assert (min(a, b), max(a, b)) not in {(x, y) for x, y, _ in candidate_pairs(store.con, 15)}
+    # **16 以上は総当たりに落ちる**ので取れる（監査 B-1）
+    pairs = candidate_pairs(store.con, 16)
+    assert (min(a, b), max(a, b)) in {(x, y) for x, y, _ in pairs}, \
+        "距離 16 で帯に頼って取りこぼした（監査 B-1）"
 
 
 # ---- 代表の推薦（§0.9）----
@@ -152,6 +181,28 @@ def test_the_representative_is_deterministic():
     members = [member("b"), member("a")]
     assert representative(members)[0] == "a"
     assert representative(list(reversed(members)))[0] == "a"
+
+
+def test_the_representative_never_recommends_a_rejected_one():
+    """壊すと落ちる: `reject` を最下位にしないと、**人が「要らない」と言った物が推薦になる**
+    （監査 D-3 / G-4）。"""
+    members = [member("bad", width=4096, height=4096, size=99999, verdict="reject"),
+               member("ok", width=64, height=64, size=10)]
+    got = representative(members)
+    assert got[0] == "ok", f"ボツにした枚を推薦した: {got}"
+    assert got[1] == "人がボツと言っていない物", got
+
+
+def test_the_reason_is_the_deciding_rule_not_the_first_difference():
+    """壊すと落ちる: 理由を「群の中で最初に違う属性」にすると、**決め手と違うことを言う**（監査 D-2）。
+
+    `A(100px, 10B)・B(100px, 20B)・C(50px, 30B)` は **B** が選ばれる（画素数で勝った）。
+    理由は「画素数が最大」ではなく、**上位 2 枚（B と A）を分けた規則＝「ファイルが大きい」**。
+    """
+    members = [member("a", width=100, height=100, size=10),
+               member("b", width=100, height=100, size=20),
+               member("c", width=50, height=50, size=30)]
+    assert representative(members) == ("b", "ファイルが大きい")
 
 
 # ---- 群（§3.1 の `near`）----
@@ -252,21 +303,206 @@ def test_a_second_compute_is_refused_while_one_runs(store: Store, tmp_path: Path
     assert got.value.status == 409
 
 
+def test_cancel_stops_the_hash_job_through_the_database(store: Store, tmp_path: Path, monkeypatch):
+    """壊すと落ちる: 中断の印を**自前の集合**に持つ（DB を見ない）と、**外から止められない**。
+
+    （P8-1 の監査 C-1）`POST /api/jobs/{id}/cancel` は `JobService` が受けるので、
+    ハッシュのジョブ（`DuplicatesService`）が**自分の集合だけ**を見ていると止まらない
+    （実測: cancel → 200 `running` → 1 秒後 `done 263 / 263`）。印を `job` 表に置いたので、
+    **どちらのサービスから立てても効く**。
+    """
+    import image_reviewer.compare as compare
+    for i in range(5):
+        add_asset(store, make_png(tmp_path / "images" / f"{i}.png", seed=i))
+    real = compare.hash_file
+
+    def slow(path):                               # 1 枚ごとに間を空けて、中断の窓を作る
+        time.sleep(0.05)
+        return real(path)
+
+    monkeypatch.setattr(compare, "hash_file", slow)
+    svc = DuplicatesService(store, recover=False)
+    started = svc.start_compute()
+    svc.cancel(started["job_id"])
+    job = svc.wait(started["job_id"], timeout=60)
+    assert job["state"] == "cancelled", job
+    done = store.con.execute("SELECT progress_done FROM job WHERE id = ?",
+                             (started["job_id"],)).fetchone()["progress_done"]
+    assert done < 5, f"中断したのに全部計算した（{done} 枚）"
+
+
+def test_cancel_from_the_jobs_endpoint_stops_the_hash_job(client, monkeypatch):
+    """壊すと落ちる: 印を DB に置かないと、**`#/jobs` の中断ボタンが効かない**（監査 C-1）。
+
+    `POST /api/jobs/{id}/cancel`（`JobService`）→ ハッシュの job が `cancelled` で終わる。
+    """
+    import image_reviewer.compare as compare
+    real = compare.hash_file
+    monkeypatch.setattr(compare, "hash_file", lambda path: (time.sleep(0.05), real(path))[1])
+    # 5 枚登録する（口からではなく DB に直接。口は `compute` だけを試す）
+    data = Path(__import__("os").environ["IMAGE_REVIEWER_DATA"])
+    store = Store(data)
+    try:
+        for i in range(5):
+            add_asset(store, make_png(data / "images" / f"{i}.png", seed=i))
+    finally:
+        store.close()
+    got = client.post("/api/duplicates/compute", headers=HUMAN)
+    assert got.status_code == 202, got.text
+    job_id = got.json()["job_id"]
+    assert client.post(f"/api/jobs/{job_id}/cancel", headers=HUMAN).status_code == 200
+    for _ in range(200):                          # 1 枚 0.05 秒 × 5 枚＝最大 0.25 秒
+        body = client.get(f"/api/jobs/{job_id}", headers=HUMAN).json()
+        if body["state"] in ("done", "failed", "cancelled"):
+            break
+        time.sleep(0.02)
+    assert body["state"] == "cancelled", body
+
+
 def test_the_get_endpoints_do_not_write(store: Store, tmp_path: Path):
-    """壊すと落ちる: `near` の中で pHash を計算する（家風: `GET` は 1 バイトも書かない）。"""
+    """壊すと落ちる: `near` の中で pHash を計算する・`dhash` を書き換える・`job` を足す（家風）。
+
+    **（P8-1 の監査 F-1）行数だけでなく「中身」も見る。** 前の版は `phash_band` と `asset` の
+    **行数**しか比べていなかったので、**`asset.dhash` の書き換え**や **`job` の 1 行追加**を
+    見逃した（監査の N10b が緑のまま通った）。ここでは**全表の行数と、pHash / dHash の値、
+    実ファイルの size と mtime** を前後で比べる。
+    """
     a = add_asset(store, make_png(tmp_path / "images" / "a.png", seed=1))
     b = add_asset(store, make_png(tmp_path / "images" / "b.png", seed=1))
-    put_phash(store, a, "0000000000000000")
-    put_phash(store, b, "0000000000000000")
-    before = (store.con.execute("SELECT count(*) AS n FROM phash_band").fetchone()["n"],
-              store.con.execute("SELECT count(*) AS n FROM asset").fetchone()["n"])
+    put_phash(store, a, "0000000000000000", dhash="1111111111111111")
+    put_phash(store, b, "0000000000000000", dhash="2222222222222222")
+
+    def snapshot() -> tuple:
+        tables = sorted(row[0] for row in store.con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+            " AND name NOT LIKE 'sqlite_%'"))
+        counts = tuple((t, store.con.execute(f"SELECT count(*) AS n FROM {t}").fetchone()["n"])
+                       for t in tables)
+        hashes = tuple(store.con.execute(
+            "SELECT id, phash, dhash FROM asset ORDER BY id").fetchall())
+        files = tuple(sorted((p.name, p.stat().st_size, p.stat().st_mtime_ns)
+                             for p in (tmp_path / "images").glob("*.png")))
+        return counts, tuple(tuple(h) for h in hashes), files
+
+    before = snapshot()
     svc = DuplicatesService(store, recover=False)
     svc.near(max_distance=6)
     svc.exact()
     svc.exclusions()
-    after = (store.con.execute("SELECT count(*) AS n FROM phash_band").fetchone()["n"],
-             store.con.execute("SELECT count(*) AS n FROM asset").fetchone()["n"])
-    assert before == after, "GET が書いている"
+    svc.get(_job_id_of(store)) if _job_id_of(store) else None
+    assert snapshot() == before, "GET が書いている（行数・pHash / dHash・ファイルのどれかが変わった）"
+
+
+def _job_id_of(store: Store) -> str | None:
+    row = store.con.execute("SELECT id FROM job LIMIT 1").fetchone()
+    return row["id"] if row else None
+
+
+def test_compute_includes_the_assets_that_only_lack_bands(store: Store, tmp_path: Path):
+    """壊すと落ちる: 対象から「帯の無い枚」を外すと、**pHash がある 91 枚が一生群に出ない**。
+
+    （P8-1 の監査 F-2 / N17）実データは **91 / 263 枚**に pHash だけが入っていて帯が無い
+    （P5-3 が pHash を入れたが帯は P8-1 で足した）。この道を塞ぐと**その 91 枚が永久に
+    候補にならない**ので、`start_compute` の対象に入れる（復号せず帯だけ書く）。
+    """
+    a = add_asset(store, make_png(tmp_path / "images" / "a.png", seed=1))
+    put_phash(store, a, "0123456789abcdef")
+    with store.transaction() as con:                # 帯だけ消す（pHash は残す）
+        con.execute("DELETE FROM phash_band WHERE asset_id = ?", (a,))
+    svc = DuplicatesService(store, recover=False)
+    started = svc.start_compute()
+    assert started["total"] == 1, "帯の無い枚が対象から外れている（監査 F-2）"
+    job = svc.wait(started["job_id"], timeout=60)
+    assert job["state"] == "done"
+    assert store.con.execute("SELECT count(*) AS n FROM phash_band").fetchone()["n"] == BANDS
+
+
+def test_one_broken_file_does_not_stop_the_job(store: Store, tmp_path: Path):
+    """壊すと落ちる: 1 枚の失敗で job 全体を `failed` にすると、**残りが計算されない**。
+
+    （P8-1 の監査 F / N27）実体の無い枚（登録後にファイルが消えた）を混ぜても、`done` で
+    続き、失敗は `job_item` に 1 件残る（設計「1 枚の失敗で全体を止めない」）。
+    """
+    good = [add_asset(store, make_png(tmp_path / "images" / f"{i}.png", seed=i)) for i in range(2)]
+    gone = add_asset(store, make_png(tmp_path / "images" / "gone.png", seed=9))
+    (tmp_path / "images" / "gone.png").unlink()
+    svc = DuplicatesService(store, recover=False)
+    started = svc.start_compute()
+    job = svc.wait(started["job_id"], timeout=60)
+    assert job["state"] == "done", job
+    assert job["counts"]["failed"] == 1, job
+    hashed = store.con.execute("SELECT count(*) AS n FROM asset WHERE phash IS NOT NULL"
+                               " AND phash <> ''").fetchone()["n"]
+    assert hashed == 2, f"失敗の後ろの枚が計算されていない: {hashed}"
+    assert store.con.execute("SELECT count(*) AS n FROM job_item WHERE job_id = ?",
+                             (started["job_id"],)).fetchone()["n"] == 1
+
+
+def test_a_stale_running_hash_job_is_marked_failed_on_the_next_start(store: Store, tmp_path: Path):
+    """壊すと落ちる: `recover_stale` を無効にすると、**前のプロセスの job が running のまま**残り、
+    `start_compute` が 409 で永久に詰まる（監査 F / N14）。"""
+    with store.transaction() as con:
+        con.execute("INSERT INTO job(id, kind, state, created_at) VALUES ('old', 'hash', 'running', 't')")
+    DuplicatesService(store)                     # recover=True（既定）
+    row = store.con.execute("SELECT state, message FROM job WHERE id = 'old'").fetchone()
+    assert row["state"] == "failed", row
+    assert "終了" in (row["message"] or ""), row
+
+
+def test_near_respects_the_limit(store: Store, tmp_path: Path):
+    """壊すと落ちる: `limit` を無視すると、**画面が要求した数より多く返す**（監査 F / N20）。"""
+    for i in range(4):                            # 距離 0 の 4 枚＝1 群、別の 2 枚＝もう 1 群
+        add_asset(store, make_png(tmp_path / "images" / f"same{i}.png", seed=1),
+                  name=f"same{i}.png")
+    for i in range(2):
+        add_asset(store, make_png(tmp_path / "images" / f"other{i}.png", seed=2),
+                  name=f"other{i}.png")
+    ids = [row["id"] for row in store.con.execute("SELECT id FROM asset ORDER BY id")]
+    for asset_id in ids[:4]:
+        put_phash(store, asset_id, "0000000000000000")
+    for asset_id in ids[4:]:
+        put_phash(store, asset_id, "ffffffffffffffff")
+    got = near_groups(store.con, max_distance=6)
+    assert got["total_groups"] == 2, got["total_groups"]
+    assert len(near_groups(store.con, max_distance=6, limit=1)["groups"]) == 1
+    with pytest.raises(ReviewError) as err:      # **（監査 D-4）負や 0 は黙って 1 にしない**
+        near_groups(store.con, max_distance=6, limit=0)
+    assert err.value.status == 422
+
+
+def test_a_deleted_asset_leaves_the_groups_and_the_pairs(store: Store, tmp_path: Path):
+    """壊すと落ちる: 候補（`candidate_pairs`）で `deleted_at` を絞らないと、
+    **`hashed` の数と群の中身が食い違う**（監査 C-4）。"""
+    a = add_asset(store, make_png(tmp_path / "images" / "a.png", seed=1), name="a")
+    b = add_asset(store, make_png(tmp_path / "images" / "b.png", seed=1), name="b")
+    put_phash(store, a, "0000000000000000")
+    put_phash(store, b, "0000000000000000")
+    assert near_groups(store.con, max_distance=6)["total_images"] == 2
+    with store.transaction() as con:             # 段 1（論理削除）
+        con.execute("UPDATE asset SET deleted_at = 't' WHERE id = ?", (b,))
+    got = near_groups(store.con, max_distance=6)
+    assert got["hashed"] == 1, got["hashed"]
+    assert got["groups"] == [], "消した枚が群に残っている（監査 C-4）"
+    assert candidate_pairs(store.con, 6) == [], "消した枚が候補に残っている（監査 C-4）"
+
+
+def test_an_exclusion_twice_is_fine_and_records_the_actor(store: Store, tmp_path: Path):
+    """壊すと落ちる: 2 回目の除外で落ちる（`INSERT` に替える）・`actor` を記録しない（監査 F）。
+
+    （N21 / N30）同じ組を 2 回除外しても 200 で通り（`INSERT OR REPLACE`。履歴は要らない＝§0.10）、
+    記録した人は `human` のまま残る。
+    """
+    a = add_asset(store, make_png(tmp_path / "images" / "a.png", seed=1), name="a")
+    b = add_asset(store, make_png(tmp_path / "images" / "b.png", seed=2), name="b")
+    svc = DuplicatesService(store, recover=False)
+    svc.exclude(a_id=a, b_id=b, reason="別物", actor="human")
+    again = svc.exclude(a_id=a, b_id=b, reason="やっぱり別物", actor="human")   # 落ちない
+    assert again["excluded"] is True
+    items = svc.exclusions()["items"]
+    assert len(items) == 1 and items[0]["actor"] == "human", items
+    # **エージェントが除外したら `agent` が残る**（actor は自己申告でも記録は残す）
+    svc.exclude(a_id=a, b_id=b, actor="agent")
+    assert svc.exclusions()["items"][0]["actor"] == "agent"
 
 
 # ---- 口（§3.1）----
@@ -333,4 +569,4 @@ def test_the_store_writes_bands_whenever_it_writes_a_phash(store: Store, tmp_pat
     put_phash(store, asset_id, "ffffffffffffffff")
     rows = store.con.execute("SELECT value FROM phash_band WHERE asset_id = ?",
                              (asset_id,)).fetchall()
-    assert {r["value"] for r in rows} == {"ff"}
+    assert {r["value"] for r in rows} == {"f"}

@@ -660,7 +660,7 @@ def test_v6_topps_up_a_database_that_was_made_before_the_columns(tmp_path: Path)
 
 
 def test_v6_check_constraints_reject_the_wrong_vocabulary(tmp_path: Path):
-    """**語彙は表でも守る**（家風）。`stage=4`・`(B,A)`・`band=8`・`allow_stage3=2` が入れられない。
+    """**語彙は表でも守る**（家風）。`stage=4`・`(B,A)`・`band=16`・`allow_stage3=2` が入れられない。
 
     **（P8-0 の監査 F-1）実在の `asset_id` を使う。** 前の版は `asset_id = 'a'`（存在しない）で
     `phash_band` に入れていたので、**外部キーが先に落ちて** `CHECK` の有無と無関係に緑だった
@@ -697,10 +697,14 @@ def test_v6_check_constraints_reject_the_wrong_vocabulary(tmp_path: Path):
             con.execute("INSERT INTO duplicate_exclusion(a_id, b_id, actor, at)"
                         " VALUES ('A', 'B', 'robot', 't')")
         # --- 帯の範囲（**実在の asset_id** なので FK では落ちない＝CHECK を見ている）---
+        # **（P8-1 の監査 B-1）4bit × 16 本**なので、16 が語彙外・15 が語彙内。
+        # 値も 16 進 1 文字だけ（`length(value) = 1`）
         with pytest.raises(sqlite3.IntegrityError):
-            con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 8, 'ff')")
+            con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 16, 'f')")
         with pytest.raises(sqlite3.IntegrityError):
-            con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', -1, 'ff')")
+            con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', -1, 'f')")
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 0, 'ff')")
         # --- 語彙（pending_delete_preview）---
         with pytest.raises(sqlite3.IntegrityError):
             con.execute("INSERT INTO pending_delete_preview"
@@ -718,7 +722,7 @@ def test_v6_check_constraints_reject_the_wrong_vocabulary(tmp_path: Path):
         con.execute("INSERT INTO duplicate_exclusion(a_id, b_id, actor, at)"
                     " VALUES ('A', 'B', 'human', 't')")
         con.execute("INSERT INTO deletion_log(id, stage, actor, at) VALUES ('ok', 3, 'agent', 't')")
-        con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 7, 'ff')")
+        con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 15, 'f')")
         con.execute("INSERT INTO delete_request(id, actor, stage, count, at)"
                     " VALUES ('rok', 'agent', 2, 1, 't')")
         con.execute("INSERT INTO pending_delete_preview"
@@ -750,9 +754,9 @@ def test_v6_foreign_keys_and_indexes_are_declared(tmp_path: Path):
         with pytest.raises(sqlite3.IntegrityError):
             con.execute("DELETE FROM delete_request WHERE id = 'r1'")
         # **`phash_band` の主キー（asset_id, band）**（同じ帯を 2 行入れられない）
-        con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 0, '00')")
+        con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 0, '0')")
         with pytest.raises(sqlite3.IntegrityError):
-            con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 0, 'ff')")
+            con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 0, 'f')")
         # **平の索引 4 本が `sqlite_master` にあり、`INDEXED BY` で引ける**
         # （`INDEXED BY` は**索引が無ければ SQLite がエラーにする**ので、存在と使えることの
         #  両方が分かる。行数が少ないと SQLite は全走査を選ぶので、計画任せでは守れない）
@@ -865,7 +869,7 @@ def test_v6_deleting_an_asset_takes_its_bands(tmp_path: Path):
     try:
         con.execute("INSERT INTO asset(id, sha256, kind, first_seen_at, last_seen_at)"
                     " VALUES ('a1', ?, 'generated', 't', 't')", ("a" * 64,))
-        con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 0, 'ff')")
+        con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 0, 'f')")
         con.execute("DELETE FROM asset WHERE id = 'a1'")
         assert con.execute("SELECT count(*) FROM phash_band").fetchone()[0] == 0
     finally:

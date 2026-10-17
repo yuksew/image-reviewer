@@ -494,7 +494,14 @@ CREATE INDEX IF NOT EXISTS ix_job_item_state ON job_item(job_id, state);
 #   **再送の一意性が守られない**。P8-0 で気づいて改名した）。
 # - **`duplicate_exclusion`**: 「別物として確定」した組。**`CHECK (a_id < b_id)` で順序を機械的に守る**
 #   （`(A,B)` と `(B,A)` を別行にしない。専門 C10）。
-# - **`phash_band`**: 準重複の候補を絞る帯索引（8bit × 8 本。専門 §2.2）。`asset` に `ON DELETE CASCADE`。
+# - **`phash_band`**: 準重複の候補を絞る帯索引（**4bit × 16 本**。専門 §2.2）。
+#   `asset` に `ON DELETE CASCADE`。
+#   **（P8-1 の監査 B-1）8bit × 8 本から作り直した。** 8bit × 8 本で「1 本は完全に一致する」のは
+#   **ハミング距離 ≤ 7** のときだけ（鳩の巣）で、`max_distance` を 64 まで受ける口とは両立しなかった
+#   （実測: ≤12 で 3 組・≤16 で 72 組を取りこぼす）。**4bit × 16 本なら保証は ≤15** になる
+#   （距離 ≤ 15 なら 16 本のうち 1 本は必ず一致する）。**16 以上は帯で絞らず総当たりに落とす**
+#   （`duplicates.candidate_pairs`。263 枚で 20 ms）。
+#   **実データの帯は 0 行だったので、作り直しは無料だった**（P8-0 の `CHECK` と同じ判断）。
 # - **`pending_delete_preview`**: 一括削除の凍結。**DB に持つ**（再起動をまたいでも「確認した一覧」が失われない）。
 #   **実行時に `scope` を評価し直さない**（見せていないファイルを消さないため。専門 §3.5）。
 #   `items_json` は **`path`（正規化した鍵）と `display_path`（人に見せる表記）の両方**を持つ（点検 D6）。
@@ -547,8 +554,9 @@ CREATE TABLE IF NOT EXISTS duplicate_exclusion (
 
 CREATE TABLE IF NOT EXISTS phash_band (
   asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
-  band     INTEGER NOT NULL CHECK (band BETWEEN 0 AND 7),
-  value    TEXT NOT NULL,
+  -- **（P8-1 の監査 B-1）4bit × 16 本**。距離 ≤ 15 なら 16 本のうち 1 本は必ず一致する
+  band     INTEGER NOT NULL CHECK (band BETWEEN 0 AND 15),
+  value    TEXT NOT NULL CHECK (length(value) = 1),
   PRIMARY KEY (asset_id, band)
 );
 CREATE INDEX IF NOT EXISTS ix_phash_band ON phash_band(band, value);
@@ -640,6 +648,15 @@ def _top_up_v6(con: sqlite3.Connection) -> None:
     なので、ここでも流して害が無い（`_migrate_v6` と二重でも同じ結果になる）。
     """
     con.executescript(V6_DELETE_DDL)
+    # **（P8-1 の監査 B-1）帯を 4bit × 16 本に作り直した。** 古い 8bit × 8 本の表を持っている DB は
+    # `CHECK (band BETWEEN 0 AND 7)` のせいで**新しい帯（8〜15）を入れられない**。`CREATE TABLE
+    # IF NOT EXISTS` は既存の表を変えないので、**帯だけ落として作り直す**（帯は `asset.phash` から
+    # いつでも引き直せる＝失う物が無い。実データは帯 0 行だったので無料だった）。
+    band_sql = con.execute("SELECT sql FROM sqlite_master WHERE type = 'table'"
+                           " AND name = 'phash_band'").fetchone()
+    if band_sql is not None and "BETWEEN 0 AND 15" not in (band_sql["sql"] or ""):
+        con.execute("DROP TABLE phash_band")
+        con.executescript(V6_DELETE_DDL)
     have_asset = {row["name"] for row in con.execute("PRAGMA table_info(asset)")}
     if have_asset and "deleted_at" not in have_asset:
         # 段 1（論理削除）。**NULL = 生きている**。列なので `CHECK` は付けられない
@@ -652,6 +669,22 @@ def _top_up_v6(con: sqlite3.Connection) -> None:
     if have_root and "allow_stage3" not in have_root:
         con.execute("ALTER TABLE root ADD COLUMN allow_stage3 INTEGER NOT NULL DEFAULT 0"
                     " CHECK (allow_stage3 IN (0, 1))")
+    # **（P8-1 の監査 C-1）中断の印を `job` 表に置く。** これまでは各サービスが**自分のメモリ**に
+    # 印を持っていたので、`POST /api/jobs/{id}/cancel`（`JobService`）で**ハッシュの背景ジョブ
+    # （`DuplicatesService`）が止まらなかった**（実測: cancel → 200 `running` → 1 秒後 `done 263/263`）。
+    # **DB に置けば両方が同じ印を見る**し、再起動をまたいでも残る（`recover_stale` と同じ流儀）。
+    have_job = {row["name"] for row in con.execute("PRAGMA table_info(job)")}
+    if have_job and "cancel_requested" not in have_job:
+        con.execute("ALTER TABLE job ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0"
+                    " CHECK (cancel_requested IN (0, 1))")
+    # **（P8-1 の監査 B-1）帯の中身も新しい形に揃える。** 版は 6 のままなので、表の形だけ直しても
+    # 古い 8bit の帯が残る（`phash_band` を落とした DB もここで埋まる）。何度呼んでも同じ。
+    # **落とした直後は 0 行**なので、**「本数が違う物」だけでなく「1 本も無い物」も埋める**
+    # （`fill_missing_bands`。これを忘れると帯が空のまま**重複が 1 群も出なくなる**——
+    # 静かに壊れて気づきにくい。合成 1 万枚の測定で実際に踏んだ）。
+    from .duplicates import fill_missing_bands, rebuild_stale_bands   # 循環 import を避けて局所で
+    rebuild_stale_bands(con)
+    fill_missing_bands(con)
 
 
 def _seed_settings(con: sqlite3.Connection) -> None:

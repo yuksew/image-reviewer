@@ -81,7 +81,6 @@ class JobService:
         self.poll = poll
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
-        self._cancelled: set[str] = set()
         self._notes: dict[str, list[str]] = {}
         if recover:
             self.recover_stale()
@@ -191,28 +190,35 @@ class JobService:
 
     def _start(self, job_id: str, targets: list[str], params: dict) -> None:
         with self._lock:
-            self._cancelled.discard(job_id)
             thread = threading.Thread(target=self._run, args=(job_id, targets, params),
                                       name=f"job-{job_id}", daemon=True)
             self._thread = thread
             thread.start()
 
     def cancel(self, job_id: str) -> dict:
-        """中断の印を立てる（§3.1）。**画像 1 枚ごとに見る**（すぐには止まらない）。"""
+        """中断の印を立てる（§3.1）。**画像 1 枚ごとに見る**（すぐには止まらない）。
+
+        **（P8-1 の監査 C-1）印は `job` 表に置く。** 前の版は**自分のメモリ**（`_cancelled`）に
+        持っていたので、**別のサービスが走らせている job**（`DuplicatesService` のハッシュ計算）に
+        この口から印を立てても**効かなかった**（実測: cancel → 200 `running` → 1 秒後 `done 263/263`）。
+        DB に置けば**どのサービスでも同じ印が見える**し、再起動をまたいでも残る。
+        """
         with self.store.transaction() as con:
             row = con.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
             if row is None:
                 raise ReviewError(404, "その job はありません", details={"job_id": job_id})
             if row["state"] not in ("queued", "running"):
                 return job_doc(con, row)                     # 終わっている job はそのまま返す
-            con.execute("UPDATE job SET message = ? WHERE id = ?", ("中断しています…", job_id))
-        with self._lock:
-            self._cancelled.add(job_id)
+            con.execute("UPDATE job SET message = ?, cancel_requested = 1 WHERE id = ?",
+                        ("中断しています…", job_id))
         return self.get(job_id)
 
     def _is_cancelled(self, job_id: str) -> bool:
-        with self._lock:
-            return job_id in self._cancelled
+        """**DB の印を見る**（監査 C-1。メモリの集合はもう使わない）。"""
+        with self.store.locked() as con:
+            row = con.execute("SELECT cancel_requested FROM job WHERE id = ?",
+                              (job_id,)).fetchone()
+        return bool(row and row["cancel_requested"])
 
     def _run(self, job_id: str, targets: list[str], params: dict) -> None:
         started = time.monotonic()

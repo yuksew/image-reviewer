@@ -60,6 +60,26 @@
 | **家風 403 / 422** | `Host: evil` 403 / `Content-Type: text/plain` 403 / `actor: robot` 422 / `stage: 4` 422 |
 | **実データが無傷** | 263 枚 / 判断 3 件 / 台帳 0 行 / **画像の署名（size・mtime_ns）が同じ** |
 
+### 実データが無傷であること（私の作業の間）
+
+```
+db.sqlite3:     1544192 バイト / mtime 2026-10-18 00:07:26（**私の最初のコマンドより前。作業中は不変**）
+db.sqlite3-wal: 4190072 バイト / mtime 2026-10-18 00:07:26
+asset 263 / deleted_at あり 0 / asset_location 263（missing_at あり 0）/ decision 3
+deletion_log 0 / delete_request 0 / pending_delete_preview 0 / duplicate_exclusion 0
+画像: 登録 263 か所 / 実体が無い 0 か所
+画像の署名: sha256 fa99ca126c393d5a… / 合計 292561491 バイト（263 枚）
+root: illust-authoring allow_stage3=1 / ComfyUI の置き場 0
+```
+
+- **親が 2026-10-18 02:01 に利用者のアプリ（8790）を再起動して P8-2 を載せた**。その再起動で
+  `_top_up_v6` が**実データにも新しい列を足した**（`pending_delete_preview` に
+  `executed_at` / `result_json` / `request_id`、`delete_request` に `payload_json`。WAL に入るので
+  `db.sqlite3` の size / mtime は変わらない）。**これが「古い v6 の実データでも一括削除が動く」ことの
+  実機での確認**になった（`GET /api/health` は `ok`・v6・263 枚・判断 3 件・台帳 0 のまま）。
+- `.data` の pHash は**私の作業の前（00:07）に既に 263 枚・帯 4208 行**だった（P8-1 の記録の「91 枚」から、
+  利用者のアプリのサムネイル生成で増えた分）。**私は `.data` に 1 バイトも書いていない**（`mode=ro` だけ）。
+
 ### 実機（uvicorn を 8791 で直起動・複製）での往復
 
 `POST /api/locations/delete`（段 3）→ `GET /api/pending-deletes` → **35 秒待つ** → もう一度 `GET` → `undo`:

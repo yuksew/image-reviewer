@@ -114,8 +114,11 @@ def deletions_ledger(request: Request, limit: int = 100):
 
 @router.get("/deletions/previews/{preview_id}")
 def deletions_preview(request: Request, preview_id: str):
-    """凍結した一覧（**実行時に `scope` を評価し直さない**ことの確認に使う）。**読むだけ**。"""
-    return deletions_of(request).preview_of(preview_id)
+    """凍結した一覧（**実行時に `scope` を評価し直さない**ことの確認に使う）。**読むだけ**。
+
+    **（D-5）`actor` を見る**（語彙外は 422。他の口と同じ検査を通す）。
+    """
+    return deletions_of(request).preview_of(preview_id, actor=actor_of(request))
 
 
 @router.get("/trash")

@@ -49,13 +49,21 @@ def _store(*, flush: bool = True):
 
 
 def cmd_scan(args) -> int:
+    from .deletions import DeletionService  # noqa: PLC0415  走査と削除を同じ錠で直列化する
+
     store = _store()
     try:
         roots = args.root or store.roots() or []
         if not roots:
             print("--root を指定してください（初回は必須）", file=sys.stderr)
             return 2
-        stats = scan(store, roots, on_progress=lambda s: print(f"  ... {s['images']} 枚", flush=True))
+        # P8-2（G-2・C-6）: サーバと同じ錠を取る（同じプロセスで走査と削除が重ならないように）。
+        # **プロセスをまたぐ錠ではない**ので、走査中に別プロセスのサーバが消すことは防げない
+        # （それは SQLite の取引が守る）
+        guard = DeletionService(store)
+        with guard.scan_guard():
+            stats = scan(store, roots,
+                         on_progress=lambda s: print(f"  ... {s['images']} 枚", flush=True))
         print(f"走査: 見た {stats['seen']} / 画像 {stats['images']} / 新規 {stats['created']} / "
               f"既知 {stats['known']} / 入れ替わり {stats['changed']} / 画像でない {stats['not_image']}")
         print(f"来歴あり {stats['with_provenance']} / 参照切れにした {stats['missing']}")

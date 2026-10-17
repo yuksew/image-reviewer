@@ -338,7 +338,11 @@ def create_app() -> FastAPI:
         roots = payload.get("roots") or store.roots() or []
         if not roots:
             raise HTTPException(400, "roots が空です")
-        return run_scan(store, roots)
+        # P8-2（G-2・C-6）: **走査の間は削除と取り消しを待たせる**。`scan` は job を持たないので
+        # 「走査中」を判定する材料が無い（設計の穴 5）が、同じ錠を取れば「走査中は消さない」も
+        # 「走査の最後の mark_missing が、戻したばかりの枚を参照切れにする」も止まる
+        with deletions_svc.scan_guard():
+            return run_scan(store, roots)
 
     @app.post("/api/capture")
     def do_capture(payload: dict = Body(default={})):

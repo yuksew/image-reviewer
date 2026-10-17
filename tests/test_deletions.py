@@ -9,9 +9,12 @@
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import json
 import os
+import shutil
+import stat
 import threading
 import time
 from pathlib import Path
@@ -22,8 +25,8 @@ from PIL import Image
 
 from image_reviewer import db, deletions
 from image_reviewer.deletions import (AGENT_MAX_BATCH, DEFAULT_UNDO_WINDOW_SEC, HOLD_DIR,
-                                      HOLD_PURGED, TRASH_DIR, DeletionService, free_name,
-                                      frees_for, move_no_clobber)
+                                      HOLD_PURGED, PREVIEW_KEEP_SEC, TRASH_DIR, DeletionService,
+                                      free_name, frees_for, move_no_clobber)
 from image_reviewer.review import ReviewError
 from image_reviewer.store import Store, normalize_path
 
@@ -135,6 +138,10 @@ def client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("IMAGE_REVIEWER_DATA", str(tmp_path / "app"))
     from image_reviewer.app import create_app
     app = create_app()
+    # **（D-17）タイマーの周期を 1 時間にする。** 既定の 30 秒のままだと、テストが数秒で
+    # 終わるので普通は当たらないが、遅い環境で当たると `remaining_sec` が理由もなく減る
+    # （`start()` は張る＝本番と同じ道を通す）
+    app.state.deletions.interval = 3600.0
     with TestClient(app, base_url="http://127.0.0.1") as got:
         yield got
 
@@ -363,29 +370,40 @@ def test_undo_never_overwrites_a_file_that_appeared_meanwhile(svc, store, librar
         "別名で戻したのに登録が古い名前を指している"
 
 
-def test_undo_is_only_for_my_own_deletions(svc, store, library):
-    """壊すと落ちる: **他人（人を含む）が消した物を戻せる**（§8.4 F9・§3.4）。
+def test_a_human_can_undo_anyones_deletion_and_an_agent_only_their_own(svc, store, library):
+    """壊すと落ちる: **人がエージェントの削除を戻せない**（C-1・§0.14 の帰結 e・設計 §8.4 F9）。
 
-    エージェントが消した物は、人が `undo` しても **403 `not_yours`**（自分が消した物だけ）。
-    エージェントは自分の分を戻せる。**`as_copy` は人だけ**（403 `human_only`）。
+    エージェントが消した物に人が気づいて戻せるのがこの段の安全網なので、**人には `not_yours` を
+    掛けない**。**エージェントは自分の分だけ**（他人の分は 403 `not_yours`）。
+    **`as_copy` は人だけ**（エージェントは 403 `human_only`）。
     """
     path = make_png(library / "h.png", seed=12)
     asset_id = add_asset(store, path)
     got = svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="agent",
                      confirm_last_copy=True)
+    # **エージェントは人の削除を戻せない**（`mine` の規則はエージェントにだけ掛かる）
+    human_made = make_png(library / "h2.png", seed=112)
+    human_id = add_asset(store, human_made)
+    by_human = svc.delete(asset_id=human_id, path=str(human_made), stage=3, actor="human",
+                          confirm_last_copy=True)
     with pytest.raises(ReviewError) as err:
-        svc.undo(got["deletion_id"], actor="human")
+        svc.undo(by_human["deletion_id"], actor="agent")
     assert err.value.status == 403 and err.value.code == "not_yours"
-    assert not path.exists(), "403 なのにファイルが戻っている"
+    assert not human_made.exists(), "403 なのにファイルが戻っている"
+    # **人は誰の削除でも戻せる**（エージェントが消した物も）
+    ok = svc.undo(got["deletion_id"], actor="human")
+    assert ok["restored"] is True and path.exists(), "人がエージェントの削除を戻せない（C-1）"
+    # **`as_copy` は人だけ**
     with pytest.raises(ReviewError) as err2:
-        svc.undo(got["deletion_id"], as_copy=True, actor="agent")
+        svc.undo(by_human["deletion_id"], as_copy=True, actor="agent")
     assert err2.value.status == 403 and err2.value.code == "human_only"
-    ok = svc.undo(got["deletion_id"], actor="agent")
-    assert ok["restored"] is True and path.exists(), "自分の削除を戻せない"
+    back = svc.undo(by_human["deletion_id"], actor="human")
+    assert back["restored"] is True and human_made.exists(), "人が自分の削除を戻せない"
 
 
 def test_the_pending_list_marks_who_deleted_it(svc, store, library):
-    """壊すと落ちる: `actor` を記録しない・返さない（Q2 の帰結 a・b。§8.1 の 28）。"""
+    """壊すと落ちる: `actor` を記録しない・返さない（Q2 の帰結 a・b。§8.1 の 28）・
+    人が他人の削除に「戻す」を押せない（C-1）。"""
     path = make_png(library / "i.png", seed=13)
     asset_id = add_asset(store, path)
     svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="agent",
@@ -393,8 +411,8 @@ def test_the_pending_list_marks_who_deleted_it(svc, store, library):
     mine = svc.pending(actor="agent")["items"][0]
     theirs = svc.pending(actor="human")["items"][0]
     assert mine["actor"] == "agent" and mine["mine"] is True and mine["undoable"] is True
-    assert theirs["mine"] is False and theirs["undoable"] is False, \
-        "画面が『他人の削除』に戻すボタンを出してしまう"
+    assert theirs["mine"] is False
+    assert theirs["undoable"] is True, "人が他人（エージェント）の削除を戻せない（C-1）"
 
 
 # ---- 安全規則（最後の 1 つ・置き場の印・別ボリューム・中身の変化）----
@@ -577,6 +595,27 @@ def test_the_hold_area_is_the_only_place_the_purge_touches(svc, store, tmp_path)
     assert outside.exists(), "保留領域の外のファイルを消した"
 
 
+def test_the_hold_area_itself_is_never_removed(svc, store):
+    """壊すと落ちる: `_remove_hold` に**保留領域そのもの**を渡すと丸ごと消える（D-1）。
+
+    `is_under(root, root)` は True なので、深さを見ないと `rmtree` が**他の保留を巻き込む**
+    （その後の `undo` が `restore_failed` になる）。深さ 1（`<削除ID>/`）と 2（中のファイル）
+    だけを許す。
+    """
+    root = store.data_dir / HOLD_DIR
+    one, two = root / "one", root / "two"
+    for directory, seed in ((one, 226), (two, 227)):
+        directory.mkdir(parents=True, exist_ok=True)
+        make_png(directory / "keep.png", seed=seed)
+    for bad in (str(root), str(root.parent), str(root / "one" / "deep" / "x.png")):
+        with pytest.raises(OSError):
+            svc._remove_hold(bad)
+    assert (one / "keep.png").exists() and (two / "keep.png").exists(), \
+        "保留領域そのものを渡されて他の保留を消した（D-1）"
+    svc._remove_hold(str(one / "keep.png"))                     # 深さ 2 は消せる
+    assert not (one / "keep.png").exists() and (two / "keep.png").exists()
+
+
 # ---- 一括（凍結 → 実行）----
 
 
@@ -585,13 +624,14 @@ def test_the_preview_freezes_the_list_and_only_that_list_is_deleted(svc, store, 
 
     **フォルダで選ぶ**（実行時に引き直すと、凍結の後で増えた枚が入ってしまう形）。
     凍結の後で同じフォルダに 1 枚足し、**それが消えない**ことを見る。
+    **段 3**（最後の 1 つは `confirm_last_copy` が要る。C-4）で回す。
     """
     ids = []
     for i in range(5):
         path = make_png(library / f"bulk{i}.png", seed=30 + i)
         ids.append(add_asset(store, path))
     scope = {"kind": "folder", "id": str(library)}
-    got = svc.bulk_preview(scope=scope, stage=2, actor="human")
+    got = svc.bulk_preview(scope=scope, stage=3, actor="human")
     assert got["count"] == 5 and got["bytes"] > 0 and got["last_copies"] == 5
     # **最後の 1 つになる枚があるので、確認が要る**（1 枚も消さない）
     with pytest.raises(ReviewError) as err:
@@ -895,7 +935,10 @@ def test_the_delete_endpoints_work_end_to_end(client, tmp_path):
 
 
 def test_the_bulk_endpoints_work_end_to_end(client, tmp_path):
-    """凍結 → 実行（口の往復）と、**失効したら何も消えない**こと。"""
+    """凍結 → 実行（口の往復）と、**段 3 だけが `confirm_last_copy` を要求する**こと（C-4）。
+
+    段 1・2 は内容が失われない（一覧から外す／ゴミ箱へ移す）ので、**重い確認は要求しない**。
+    """
     store = client.app.state.store
     library = tmp_path / "httplib2"
     library.mkdir(parents=True, exist_ok=True)
@@ -907,14 +950,9 @@ def test_the_bulk_endpoints_work_end_to_end(client, tmp_path):
     assert prev.status_code == 200, prev.text
     got = prev.json()
     assert got["count"] == 3 and got["bytes"] > 0 and got["last_copies"] == 3
-    # **最後の 1 つが 3 枚なので、確認なしでは 409**（1 枚も消さない。§3.4 の `last_copy`）
-    refused = client.post("/api/locations/bulk-delete", headers=HUMAN,
-                          json={"preview_id": got["preview_id"], "confirm": True})
-    assert refused.status_code == 409 and refused.json()["code"] == "last_copy"
-    assert all(p.exists() for p in paths)
+    # **（C-4）段 2 は内容が失われないので `confirm_last_copy` は要らない**
     done = client.post("/api/locations/bulk-delete", headers=HUMAN,
-                       json={"preview_id": got["preview_id"], "confirm": True,
-                             "confirm_last_copy": True})
+                       json={"preview_id": got["preview_id"], "confirm": True})
     assert done.status_code == 200, done.text
     assert done.json()["count"] == 3 and done.json()["skipped"] == []
     trash = client.get("/api/trash", headers=HUMAN).json()
@@ -926,6 +964,19 @@ def test_the_bulk_endpoints_work_end_to_end(client, tmp_path):
     assert first.status_code == 200 and first.json()["restored"] is True
     assert client.post("/api/trash/restore", headers=AGENT,
                        json={"deletion_id": deletion_ids[1]}).status_code == 403
+    # **段 3 は最後の 1 つに重い確認が要る**（無ければ 409・1 枚も消さない。C-4）
+    alive = [i for i in ids if where(store, i)["missing_at"] is None]
+    assert alive, "戻した 1 枚が生きている"
+    prev3 = client.post("/api/locations/bulk-delete/preview", headers=HUMAN,
+                        json={"scope": {"kind": "assets", "asset_ids": alive}, "stage": 3}).json()
+    refused = client.post("/api/locations/bulk-delete", headers=HUMAN,
+                          json={"preview_id": prev3["preview_id"], "confirm": True})
+    assert refused.status_code == 409 and refused.json()["code"] == "last_copy"
+    assert all(Path(i["display_path"]).exists() for i in prev3["items"]), "409 なのに動かした"
+    ok3 = client.post("/api/locations/bulk-delete", headers=HUMAN,
+                      json={"preview_id": prev3["preview_id"], "confirm": True,
+                            "confirm_last_copy": True})
+    assert ok3.status_code == 200 and ok3.json()["count"] == len(alive), ok3.text
     # **confirm が無ければ 422**（押し間違いを防ぐ）
     prev2 = client.post("/api/locations/bulk-delete/preview", headers=HUMAN,
                         json={"scope": {"kind": "assets", "asset_ids": [ids[1]]}, "stage": 2}).json()
@@ -1036,3 +1087,731 @@ def test_the_v6_columns_are_topped_up_on_an_old_database(tmp_path):
         db.integrity(con)
     finally:
         con.close()
+
+
+# ---- P8-2 の監査の指摘（B-1〜B-3。**失敗の道**。すべて「壊すと落ちる」形）----
+
+
+def test_the_ledger_row_is_written_before_the_file_moves(svc, store, library, monkeypatch):
+    """壊すと落ちる: **移動 → 台帳**の順（B-1）。順序を逆にすると、取引が失敗したときに
+    **ファイルだけが移って台帳にも要求にも残らない**迷子になる（一覧には「在る」と出続ける）。
+    """
+    path = make_png(library / "b1.png", seed=200)
+    asset_id = add_asset(store, path)
+    seen: dict = {}
+    real = deletions.move_no_clobber
+
+    def peek(src, dst):
+        row = store.con.execute("SELECT id, hold_path, to_path FROM deletion_log").fetchone()
+        seen["row"] = dict(row) if row is not None else None
+        seen["src_exists"] = Path(src).exists()
+        return real(src, dst)
+
+    monkeypatch.setattr(deletions, "move_no_clobber", peek)
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                     confirm_last_copy=True)
+    assert seen["row"] is not None, "**移動の前に台帳の行が無い**（B-1 の順序が逆）"
+    assert seen["row"]["hold_path"] == got["hold_path"], seen["row"]
+    assert seen["row"]["to_path"] is None and seen["src_exists"] is True
+
+
+def test_a_failed_move_leaves_no_ledger_row_and_no_moved_file(svc, store, library, monkeypatch):
+    """壊すと落ちる: 動かせなかったのに**台帳の行を残す**（B-1。「保留に在る」ことになる）。
+
+    動かせなければ行を消し、作った移動先も片づける。ファイルは元の場所のまま・登録も無傷。
+    """
+    path = make_png(library / "b1b.png", seed=201)
+    asset_id = add_asset(store, path)
+
+    def boom(src, dst):
+        raise ReviewError(409, "ファイルを移動できません: 試験", code="move_failed")
+
+    monkeypatch.setattr(deletions, "move_no_clobber", boom)
+    for stage in (2, 3):
+        with pytest.raises(ReviewError) as err:
+            svc.delete(asset_id=asset_id, path=str(path), stage=stage, actor="human",
+                       confirm_last_copy=True)
+        assert err.value.code == "move_failed", err.value.code
+    assert path.exists(), "動かせないのにファイルが消えた"
+    assert store.con.execute("SELECT count(*) AS n FROM deletion_log").fetchone()["n"] == 0, \
+        "動かせなかったのに台帳の行が残っている（迷子の元。B-1）"
+    assert store.con.execute("SELECT count(*) AS n FROM delete_request").fetchone()["n"] == 0, \
+        "断った要求の行が残っている"
+    assert where(store, asset_id)["missing_at"] is None, "動いていないのに参照切れにした"
+    for folder in (HOLD_DIR, TRASH_DIR):
+        got = store.data_dir / folder
+        assert not got.exists() or not any(got.rglob("*")), f"{folder} に空の入れ物が残った"
+
+
+def test_a_row_whose_move_never_happened_is_recovered_not_purged(svc, store, library, clock):
+    """壊すと落ちる: 「移動の前に落ちた行」を、窓切れで**黙って消す**（B-1 の後始末）。
+
+    台帳を先に書く順にしたので、`rename` の前にプロセスが落ちると「台帳は在る・ファイルは
+    元の場所」の行が残る。窓が切れても**ファイルも登録も消さない**（戻したことにする）。
+    """
+    path = make_png(library / "b1c.png", seed=202)
+    asset_id = add_asset(store, path)
+    hold = store.data_dir / HOLD_DIR / "never-moved" / path.name
+    hold.parent.mkdir(parents=True, exist_ok=True)          # フォルダだけ作られた形
+    with store.transaction() as con:
+        con.execute(
+            "INSERT INTO deletion_log(id, asset_id, path, stage, hold_path, remaining_sec,"
+            " purge_at, size, actor, at) VALUES ('never-moved', ?, ?, 3, ?, 0,"
+            " '2000-01-01T00:00:00Z', ?, 'human', 't')",
+            (asset_id, normalize_path(path), str(hold), path.stat().st_size))
+    svc.tick()
+    svc.tick()                                              # 2 周期目で期限切れを片づける
+    assert path.exists(), "ファイルは元の場所に在るのに消した（B-1 の順序で増えた道）"
+    assert where(store, asset_id)["missing_at"] is None, "削除は起きていないのに登録を消した"
+    row = store.con.execute("SELECT restored_at FROM deletion_log WHERE id = 'never-moved'"
+                            ).fetchone()
+    assert row["restored_at"], "戻したことにしていない（『取り消せる』に出続ける）"
+    # **戻す操作でも同じ**（409 にしない。ファイルは元のまま）
+    assert svc.pending(actor="human")["count"] == 0
+
+
+def test_a_failed_undo_is_not_purged_when_the_window_runs_out(svc, store, library, clock):
+    """壊すと落ちる: `move_failed` の行の `purge_at` を残す（B-2・専門 §3.4）。
+
+    元のフォルダが消えた（別プロセスが掴んでいる等）で取り消しが失敗したら、`purge_at` を
+    NULL にして自動削除から外す。**窓が尽きても消えない**（利用者は「戻せませんでした」を
+    見ているのに、画面は「あと N 分」のまま実体が消える、を防ぐ）。
+    """
+    nested = library / "sub"
+    path = make_png(nested / "b2.png", seed=203)
+    asset_id = add_asset(store, path)
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                     confirm_last_copy=True)
+    nested.rmdir()                                          # **元のフォルダが無くなった**
+    with pytest.raises(ReviewError) as err:
+        svc.undo(got["deletion_id"], actor="human")
+    assert err.value.status == 409 and err.value.code == "move_failed", err.value.code
+    row = store.con.execute("SELECT purge_at, restored_at FROM deletion_log WHERE id = ?",
+                            (got["deletion_id"],)).fetchone()
+    assert row["purge_at"] is None, "失敗したのに purge_at が残っている（窓が尽きると黙って消える）"
+    assert row["restored_at"] is None
+    assert svc.ledger(actor="human")["items"][0]["state"] == "stuck"
+    with store.transaction() as con:                        # 窓を尽きさせる
+        con.execute("UPDATE deletion_log SET remaining_sec = 0 WHERE id = ?",
+                    (got["deletion_id"],))
+    clock.advance(mono=60)
+    svc.tick()
+    svc.tick()
+    assert Path(got["hold_path"]).exists(), "窓が尽きて黙って消えた（B-2）"
+
+
+def test_the_timer_and_undo_never_lose_the_registration(svc, store, library, clock):
+    """壊すと落ちる: `tick` が錠を取らない（B-3。窓の最後の周期の取り消しで登録が消える）。
+
+    実削除の直前で止めた `tick` の間に `undo` を走らせる。**「ファイルは元の場所に在るのに
+    `asset_location` の行が無い」**が最悪の形（監査が Event で決定的に再現した）。
+    """
+    path = make_png(library / "b3.png", seed=204)
+    asset_id = add_asset(store, path)
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                     confirm_last_copy=True)
+    with store.transaction() as con:
+        con.execute("UPDATE deletion_log SET remaining_sec = 0 WHERE id = ?",
+                    (got["deletion_id"],))
+    real = svc._remove_hold
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(hold_path):
+        entered.set()
+        release.wait(timeout=10)
+        return real(hold_path)
+
+    svc._remove_hold = slow                                 # **実削除の直前で止める**
+    svc.tick()                                              # 1 周期目（実削除はまだ走らない）
+    out: list[dict] = []
+    errors: list[BaseException] = []
+
+    def undo_it():
+        try:
+            out.append(svc.undo(got["deletion_id"], actor="human"))
+        except BaseException as exc:                        # noqa: BLE001
+            errors.append(exc)
+
+    ticker = threading.Thread(target=svc.tick)
+    ticker.start()
+    assert entered.wait(timeout=10), "実削除の直前まで進まなかった"
+    undoer = threading.Thread(target=undo_it)
+    undoer.start()
+    undoer.join(timeout=1.0)
+    assert undoer.is_alive(), "錠を取らずに取り消しが走った（B-3）"
+    release.set()
+    ticker.join(timeout=10)
+    undoer.join(timeout=10)
+    at_original = path.exists()
+    left = store.con.execute("SELECT count(*) AS n FROM asset_location WHERE asset_id = ?",
+                             (asset_id,)).fetchone()["n"]
+    assert not (at_original and left == 0), "ファイルは元の場所に在るのに登録が消えた（B-3）"
+    if out and out[0].get("restored"):
+        assert at_original and left == 1, "戻したと言いながら実体か登録が無い"
+    else:
+        assert not at_original and left == 0, "実削除が中途半端（ファイルだけ消えた等）"
+        # 実削除が先に済んだので、取り消しは 409 で断る（`already_purged` / `restore_failed`）
+        assert errors and getattr(errors[0], "code", None) in ("already_purged",
+                                                              "restore_failed"), errors
+
+
+def test_undo_waits_for_the_service_lock(svc, store, library):
+    """壊すと落ちる: `undo` の錠を外す（§8.4 X8）。走査（`scan_guard`）と**同じ錠**なので、
+    走査が歩いている間に戻ると、走査の最後の `mark_missing` がその枚を参照切れにする（C-6）。
+    """
+    path = make_png(library / "x8.png", seed=205)
+    asset_id = add_asset(store, path)
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                     confirm_last_copy=True)
+    entered, release = threading.Event(), threading.Event()
+
+    def walk():
+        with svc.scan_guard():                              # **走査のつもり**で錠を握る
+            entered.set()
+            release.wait(timeout=10)
+
+    out: list[dict] = []
+    walker = threading.Thread(target=walk)
+    walker.start()
+    assert entered.wait(timeout=10)
+    undoer = threading.Thread(target=lambda: out.append(svc.undo(got["deletion_id"],
+                                                                 actor="human")))
+    undoer.start()
+    undoer.join(timeout=1.0)
+    assert undoer.is_alive(), "走査中に取り消しが走った（錠を取っていない）"
+    release.set()
+    walker.join(timeout=10)
+    undoer.join(timeout=10)
+    assert out and out[0]["restored"] is True and path.exists()
+
+
+# ---- P8-2 の監査の指摘（C-2〜C-5。安全規則の穴）----
+
+
+def test_a_read_only_file_in_the_hold_area_is_still_purged(svc, store, library, clock):
+    """壊すと落ちる: `unlink` の前に `S_IWRITE` を立てない（C-2）。
+
+    他のツールが付けた読み取り専用の属性（配布物・バックアップからの復元）があると、
+    Windows の `unlink` は `WinError 5` で失敗し、**30 秒ごとにやり直し続ける**。
+    """
+    path = make_png(library / "c2.png", seed=206)
+    asset_id = add_asset(store, path)
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                     confirm_last_copy=True)
+    hold = Path(got["hold_path"])
+    os.chmod(hold, stat.S_IREAD)                            # 読み取り専用の属性
+    with store.transaction() as con:
+        con.execute("UPDATE deletion_log SET remaining_sec = 0 WHERE id = ?",
+                    (got["deletion_id"],))
+    svc.tick()
+    svc.tick()
+    assert not hold.exists(), "読み取り専用の属性のせいで実削除できない（C-2）"
+    assert store.con.execute("SELECT hold_path FROM deletion_log WHERE id = ?",
+                             (got["deletion_id"],)).fetchone()["hold_path"] == HOLD_PURGED
+
+
+def test_the_purge_endpoint_says_409_when_it_cannot_delete(svc, store, library, monkeypatch):
+    """壊すと落ちる: `purge_now` の `OSError` をそのまま上げる（C-2。口なら 500 になる）。"""
+    path = make_png(library / "c2b.png", seed=207)
+    asset_id = add_asset(store, path)
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                     confirm_last_copy=True)
+
+    def boom(hold_path):
+        raise PermissionError("他のプロセスが掴んでいます")
+
+    monkeypatch.setattr(svc, "_remove_hold", boom)
+    with pytest.raises(ReviewError) as err:
+        svc.purge_now(got["deletion_id"], confirm=True, actor="human")
+    assert err.value.status == 409 and err.value.code == "purge_failed"
+    assert Path(got["hold_path"]).exists(), "消せないのに消したと言っている"
+
+
+def test_a_second_live_location_keeps_the_asset_visible(svc, store, library, clock):
+    """壊すと落ちる: 場所が 2 つある画像の片方を消しただけで一覧から外す（C-3・G-7）。
+
+    削除は**場所**の単位、`asset.deleted_at` は**資産**の単位。生きている複製が残っている間は
+    一覧に出す（実削除の後も同じ）。
+    """
+    first = make_png(library / "c3a.png", seed=208)
+    asset_id = add_asset(store, first)
+    second = library / "c3b.png"
+    shutil.copy2(first, second)
+    with store.transaction() as con:                        # 同じ `asset` の 2 か所目
+        con.execute("INSERT INTO asset_location(path, display_path, asset_id, size, mtime_ns,"
+                    " is_primary, missing_at, last_seen_at) VALUES (?,?,?,?,?,0,NULL,'t')",
+                    (normalize_path(second), str(second), asset_id, second.stat().st_size,
+                     second.stat().st_mtime_ns))
+    first_got = svc.delete(asset_id=asset_id, path=str(first), stage=3, actor="human")
+    assert first_got["stage"] == 3
+    assert store.con.execute("SELECT deleted_at FROM asset WHERE id = ?",
+                             (asset_id,)).fetchone()["deleted_at"] is None, \
+        "生きている複製が在るのに一覧から外した（C-3）"
+    # **実削除の後も**（窓が尽きても、生きている方が在れば出る）
+    clock.advance(mono=DEFAULT_UNDO_WINDOW_SEC + 1)
+    svc.tick()
+    svc.tick()
+    assert not Path(first_got["hold_path"]).exists()
+    assert store.con.execute("SELECT deleted_at FROM asset WHERE id = ?",
+                             (asset_id,)).fetchone()["deleted_at"] is None, \
+        "実削除の後で一覧から外した（C-3）"
+    # **最後の 1 つ**を消すと外れる（元の規則は生きている）
+    last = svc.delete(asset_id=asset_id, path=str(second), stage=3, actor="human",
+                      confirm_last_copy=True)
+    assert last["stage"] == 3
+    assert store.con.execute("SELECT deleted_at FROM asset WHERE id = ?",
+                             (asset_id,)).fetchone()["deleted_at"], "最後の 1 つを消しても外れない"
+
+
+def test_bulk_stage1_and_stage2_do_not_need_the_last_copy_confirmation(svc, store, library):
+    """壊すと落ちる: 段を見ずに `last_copy` を要求する（C-4）。
+
+    段 1（カタログから外す）と段 2（ゴミ箱）は**内容が失われない**ので重い確認は要らない。
+    実データは全枚が最後の 1 つなので、段 1 の一括まで毎回 409 になっていた。
+    **段 3 は要る**（消すと内容そのものが失われる）。
+    """
+    for stage in (1, 2):
+        path = make_png(library / f"c4-{stage}.png", seed=210 + stage)
+        asset_id = add_asset(store, path)
+        got = svc.bulk_preview(scope={"kind": "assets", "asset_ids": [asset_id]}, stage=stage,
+                               actor="human")
+        assert got["last_copies"] == 1, got
+        done = svc.bulk_delete(preview_id=got["preview_id"], confirm=True, actor="human")
+        assert done["count"] == 1 and not done["skipped"], (stage, done)
+    path = make_png(library / "c4-3.png", seed=213)
+    asset_id = add_asset(store, path)
+    got = svc.bulk_preview(scope={"kind": "assets", "asset_ids": [asset_id]}, stage=3,
+                           actor="human")
+    with pytest.raises(ReviewError) as err:
+        svc.bulk_delete(preview_id=got["preview_id"], confirm=True, actor="human")
+    assert err.value.status == 409 and err.value.code == "last_copy"
+    assert path.exists(), "409 なのに消した"
+
+
+def test_the_frozen_size_and_mtime_are_compared_at_execution(svc, store, library):
+    """壊すと落ちる: 凍結した `(size, mtime_ns)` を実行時に見ない（C-5・§0.7）。
+
+    走査が同じ内容の `touch` を取り込んだ後（DB の登録と実ファイルは一致）でも、
+    **凍結した値と違えば `skipped: changed`** にする（凍結の値を使わないなら入れる意味が無い）。
+    """
+    path = make_png(library / "c5.png", seed=214)
+    asset_id = add_asset(store, path)
+    got = svc.bulk_preview(scope={"kind": "assets", "asset_ids": [asset_id]}, stage=2,
+                           actor="human")
+    frozen = got["items"][0]
+    after = path.stat()
+    os.utime(path, ns=(after.st_atime_ns, after.st_mtime_ns + 1_000_000))
+    now = path.stat()
+    with store.transaction() as con:                        # 走査が取り込んだのと同じ形
+        con.execute("UPDATE asset_location SET mtime_ns = ?, size = ? WHERE path = ?",
+                    (now.st_mtime_ns, now.st_size, normalize_path(path)))
+    assert (now.st_size, now.st_mtime_ns) != (frozen["size"], frozen["mtime_ns"])
+    done = svc.bulk_delete(preview_id=got["preview_id"], confirm=True, actor="human")
+    assert [s["reason"] for s in done["skipped"]] == ["changed"], done
+    assert done["count"] == 0 and path.exists(), "凍結した値と違うのに消した（C-5）"
+
+
+# ---- P8-2 の監査の指摘（D の残りと F の穴）----
+
+
+def test_a_stuck_row_is_never_purged_automatically(svc, store, library, clock):
+    """壊すと落ちる: `purge_at IS NULL`（stuck）の行も自動で消す（§8.4 X1・専門 §3.4）。
+
+    **25 周期回しても**実体は動かない（**人が「いま消す」を選ぶまで触らない**）。
+    """
+    path = make_png(library / "stuck.png", seed=220)
+    asset_id = add_asset(store, path)
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                     confirm_last_copy=True)
+    with store.transaction() as con:
+        con.execute("UPDATE deletion_log SET purge_at = NULL, remaining_sec = 0 WHERE id = ?",
+                    (got["deletion_id"],))
+    for _ in range(25):
+        clock.advance(mono=30)
+        svc.tick()
+    assert Path(got["hold_path"]).exists(), "戻せない行を黙って消した（専門 §3.4）"
+    assert svc.ledger(actor="human")["items"][0]["state"] == "stuck"
+    assert svc.pending(actor="human")["count"] == 1, "『取り消せる』から消えた（戻す導線が消える）"
+    done = svc.purge_now(got["deletion_id"], confirm=True, actor="human")
+    assert done["purged"] is True and not Path(got["hold_path"]).exists(), \
+        "人が「いま消す」を選んでも消せない"
+
+
+def test_the_window_is_charged_by_the_shorter_elapsed_time(svc, store, library, clock):
+    """壊すと落ちる: 決定 7 の上限を外す（§8.4 X2）・端数を捨てる（D-11）。
+
+    引くのは **min(前回の周期からの経過, その行が生まれてからの経過)**。消した直後の周期で
+    「消す前の時間」まで引かれない（実機で 35 秒に 60 秒ぶん引かれた形）。
+    端数は次の周期に繰り越す（切り捨ては**窓が延びる側**に倒れる）。
+    """
+    clock.advance(mono=25)                                  # 周期の途中（前回の周期から 25 秒）
+    path = make_png(library / "win.png", seed=221)
+    asset_id = add_asset(store, path)
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                     confirm_last_copy=True)
+
+    def left() -> int:
+        return store.con.execute("SELECT remaining_sec FROM deletion_log WHERE id = ?",
+                                 (got["deletion_id"],)).fetchone()["remaining_sec"]
+
+    clock.advance(mono=10)                                  # 前回から 35 秒・生まれてから 10 秒
+    tick = svc.tick()
+    assert tick["delta"] == 35, tick
+    assert left() == 290, f"生まれる前の 25 秒ぶんまで引いた（{left()}。設計の字義なら 265）"
+    clock.advance(mono=0.9)                                 # **端数**（1 秒に満たない）
+    svc.tick()
+    assert left() == 290, f"1 秒未満の経過で窓が減った（{left()}）"
+    clock.advance(mono=0.2)                                 # 0.9 + 0.2 = 1.1 秒
+    svc.tick()
+    assert left() == 289, f"端数を捨てて窓が延びる（{left()}。D-11）"
+
+
+def test_the_last_copies_are_counted_as_a_bundle(svc, store, library):
+    """壊すと落ちる: `last_copies` を 1 枚ずつ数える（§8.4 X3・設計の穴 10）。
+
+    同じ画像の 2 か所が両方凍結に入ると**内容は失われる**ので 2 と数える
+    （1 枚ずつ見ると「もう 1 か所が残る」ので 0 に見える）。
+    """
+    first = make_png(library / "x3a.png", seed=222)
+    asset_id = add_asset(store, first)
+    second = library / "x3b.png"
+    shutil.copy2(first, second)
+    with store.transaction() as con:
+        con.execute("INSERT INTO asset_location(path, display_path, asset_id, size, mtime_ns,"
+                    " is_primary, missing_at, last_seen_at) VALUES (?,?,?,?,?,0,NULL,'t')",
+                    (normalize_path(second), str(second), asset_id, second.stat().st_size,
+                     second.stat().st_mtime_ns))
+    got = svc.bulk_preview(scope={"kind": "folder", "id": str(library)}, stage=2, actor="human")
+    assert got["count"] == 2 and got["last_copies"] == 2, got["last_copies"]
+
+
+def test_the_same_asset_id_twice_in_the_scope_is_one_item(svc, store, library):
+    """壊すと落ちる: 同じ `asset_id` を畳まない（§8.4 X4。同じファイルを 2 回消しにいく）。"""
+    path = make_png(library / "x4.png", seed=223)
+    asset_id = add_asset(store, path)
+    got = svc.bulk_preview(scope={"kind": "assets",
+                                  "asset_ids": [asset_id, asset_id, asset_id]},
+                           stage=2, actor="human")
+    assert got["count"] == 1 and got["bytes"] == path.stat().st_size, got
+
+
+def test_as_copy_avoids_names_that_the_catalog_already_uses(svc, store, library):
+    """壊すと落ちる: `as_copy` の別名を**ファイルだけ**で選ぶ（§8.4 X5。`path` は主キー）。
+
+    実体が無くても `asset_location` の行が同じ鍵を持っていれば、その名前は使えない
+    （使うと登録の付け替えで UNIQUE に当たる）。
+    """
+    path = make_png(library / "x5.png", seed=224)
+    asset_id = add_asset(store, path)
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                     confirm_last_copy=True)
+    path.write_bytes(b"occupied")
+    ghost = path.with_name("x5.1.png")                      # **行だけが先に在る**名前
+    with store.transaction() as con:
+        con.execute("INSERT INTO asset_location(path, display_path, asset_id, size, mtime_ns,"
+                    " is_primary, missing_at, last_seen_at) VALUES (?,?,?,0,0,0,'t','t')",
+                    (normalize_path(ghost), str(ghost), asset_id))
+    back = svc.undo(got["deletion_id"], as_copy=True, actor="human")
+    assert Path(back["display_path"]).name == "x5.2.png", back["display_path"]
+    assert path.read_bytes() == b"occupied", "元の場所の別のファイルを壊した"
+    row = store.con.execute("SELECT path FROM asset_location WHERE display_path = ?",
+                            (str(Path(back["display_path"])),)).fetchone()
+    assert row is not None and row["path"] == normalize_path(back["display_path"])
+
+
+def test_the_confirmation_flags_do_not_accept_the_string_false(client, tmp_path):
+    """壊すと落ちる: `_flag` を `bool()` にする（§8.4 X6。`"false"` が真になる＝確認を飛ばせる）。"""
+    store, path, asset_id = register(client, tmp_path, "flag.png")
+    refused = client.post("/api/locations/delete", headers=HUMAN,
+                          json={"asset_id": asset_id, "path": str(path), "stage": 3,
+                                "confirm_last_copy": "false"})
+    assert refused.status_code == 409 and refused.json()["code"] == "last_copy", refused.text
+    assert path.exists()
+    prev = client.post("/api/locations/bulk-delete/preview", headers=HUMAN,
+                       json={"scope": {"kind": "assets", "asset_ids": [asset_id]},
+                             "stage": 2}).json()
+    bad = client.post("/api/locations/bulk-delete", headers=HUMAN,
+                      json={"preview_id": prev["preview_id"], "confirm": "false"})
+    assert bad.status_code == 422 and bad.json()["code"] == "confirm_required", bad.text
+    ok = client.post("/api/locations/delete", headers=HUMAN,
+                     json={"asset_id": asset_id, "path": str(path), "stage": 3,
+                           "confirm_last_copy": "true"})
+    assert ok.status_code == 200, "`\"true\"` は通る（安全側に倒すだけ）"
+
+
+def test_start_does_not_delete_and_the_first_tick_after_it_waits(svc, store, clock):
+    """壊すと落ちる: `start()` で期限切れを消す（§8.4 X25）。
+
+    前は「起動時に消さない」の試験が `DeletionService()` を**作るだけ**で `start()` を
+    呼んでいなかったので、この穴が隠れていた（`init` ではなく `start` が見られる）。
+    """
+    hold = store.data_dir / HOLD_DIR / "old2"
+    hold.mkdir(parents=True, exist_ok=True)
+    kept = make_png(hold / "kept2.png", seed=225)
+    stage3_row(store, "old2", str(kept), remaining=0, purge_at="2000-01-01T00:00:00Z")
+    fresh = DeletionService(store, clock=clock, interval=3600.0)
+    fresh.start()                                           # **起動**
+    try:
+        assert kept.exists(), "start() で消している（§0.6-3）"
+        fresh.tick()                                        # 1 周期目も消さない
+        assert kept.exists(), "起動直後の 1 回で消している"
+        clock.advance(mono=30)
+        assert fresh.tick()["purged"] == 1 and not kept.exists(), "2 周期目でも消えていない"
+    finally:
+        fresh.stop()
+
+
+def test_old_expired_previews_are_swept_but_fresh_ones_are_kept(svc, store, library, clock):
+    """壊すと落ちる: `PREVIEW_KEEP_SEC` を使わない（G-5・D-10。1 件 1 行が永久に残る）。
+
+    失効して**すぐは消さない**（線 8 の「10 分後に実行 → 409 `preview_expired`」を守る）が、
+    1 日過ぎた未実行の行は片づける。**実行済みは残す**（`result_json` を返すため。§4.3）。
+    """
+    def previews() -> int:
+        return store.con.execute("SELECT count(*) AS n FROM pending_delete_preview"
+                                 ).fetchone()["n"]
+
+    a = make_png(library / "d10a.png", seed=234)
+    a_id = add_asset(store, a)
+    old = svc.bulk_preview(scope={"kind": "assets", "asset_ids": [a_id]}, stage=1, actor="human")
+    b = make_png(library / "d10b.png", seed=235)
+    b_id = add_asset(store, b)
+    done = svc.bulk_preview(scope={"kind": "assets", "asset_ids": [b_id]}, stage=1, actor="human")
+    svc.bulk_delete(preview_id=done["preview_id"], confirm=True, actor="human")
+    clock.advance(sec=601)                                  # 失効（10 分）
+    svc.tick()
+    assert previews() == 2, "失効しただけで消した（409 が 404 になり、線 8 を確かめられない）"
+    clock.advance(sec=PREVIEW_KEEP_SEC + 1)                 # 1 日過ぎた
+    svc.tick()
+    assert previews() == 1, "1 日過ぎた未実行の凍結を掃除していない（G-5）"
+    assert store.con.execute("SELECT 1 FROM pending_delete_preview WHERE id = ?",
+                             (done["preview_id"],)).fetchone() is not None, \
+        "実行済みの凍結を消した（同じ `preview_id` の再送が 404 になる）"
+    assert store.con.execute("SELECT 1 FROM pending_delete_preview WHERE id = ?",
+                             (old["preview_id"],)).fetchone() is None
+
+
+def test_the_trash_folder_uses_the_local_day(svc, store, library):
+    """壊すと落ちる: ゴミ箱の日付を UTC で取る（D-3。JST 02:30 の削除が前日に入る）。"""
+    wall = float(calendar.timegm(time.strptime("2026-10-17T17:30:00", "%Y-%m-%dT%H:%M:%S")))
+    jst = DeletionService(store, clock=FakeClock(wall=wall))
+    path = make_png(library / "d3.png", seed=236)
+    asset_id = add_asset(store, path)
+    got = jst.delete(asset_id=asset_id, path=str(path), stage=2, actor="human")
+    assert str(got["to_path"]).startswith(str(store.data_dir / TRASH_DIR))
+    assert "20261018" in Path(got["to_path"]).parts, got["to_path"]
+    assert jst.trash()["days"][0]["date"] == "20261018", jst.trash()["days"][0]["date"]
+
+
+def test_the_ledger_shows_the_display_path(svc, store, library):
+    """壊すと落ちる: 台帳の `display_path` に正規化した鍵（小文字）を出す（D-4）。"""
+    path = make_png(library / "D4Case" / "D4.PNG", seed=237)
+    asset_id = add_asset(store, path)
+    svc.delete(asset_id=asset_id, path=str(path), stage=1, actor="human")
+    row = svc.ledger(actor="human")["items"][0]
+    assert row["display_path"] == str(path), row["display_path"]
+    assert row["path"] == normalize_path(path) and row["path"] != row["display_path"]
+
+
+def test_the_preview_endpoint_checks_the_actor(client, tmp_path):
+    """壊すと落ちる: `GET /api/deletions/previews/{id}` が `actor` を見ない（D-5。`robot` で 200）。"""
+    store, path, asset_id = register(client, tmp_path, "d5.png")
+    prev = client.post("/api/locations/bulk-delete/preview", headers=HUMAN,
+                       json={"scope": {"kind": "assets", "asset_ids": [asset_id]},
+                             "stage": 1}).json()
+    got = client.get(f"/api/deletions/previews/{prev['preview_id']}",
+                     headers={"X-Image-Reviewer-Actor": "robot"})
+    assert got.status_code == 422, got.text
+    assert client.get(f"/api/deletions/previews/{prev['preview_id']}",
+                      headers=HUMAN).status_code == 200
+
+
+def test_the_stage_must_be_one_of_the_three_numbers(client, tmp_path):
+    """壊すと落ちる: `stage: true` を段 1 として通す（D-6。`int(True)` は 1・`int(3.9)` は 3）。"""
+    store, path, asset_id = register(client, tmp_path, "d6.png")
+    for bad in (True, 3.9, "x", 0, 4, None):
+        got = client.post("/api/locations/delete", headers=HUMAN,
+                          json={"asset_id": asset_id, "path": str(path), "stage": bad})
+        assert got.status_code == 422 and got.json()["code"] == "bad_stage", (bad, got.text)
+    assert path.exists() and store.con.execute("SELECT count(*) AS n FROM deletion_log"
+                                               ).fetchone()["n"] == 0
+
+
+def test_a_refused_volume_leaves_no_empty_folder(svc, store, library, monkeypatch):
+    """壊すと落ちる: ボリュームを確かめる**前に**フォルダを作る（D-7。空の `<id>/` が残る）。"""
+    path = make_png(library / "d7.png", seed=238)
+    asset_id = add_asset(store, path)
+    real = deletions.st_dev_of
+    monkeypatch.setattr(deletions, "st_dev_of",
+                        lambda p: 2 if (HOLD_DIR in str(p) or TRASH_DIR in str(p)) else real(p))
+    for stage in (2, 3):
+        with pytest.raises(ReviewError) as err:
+            svc.delete(asset_id=asset_id, path=str(path), stage=stage, actor="human",
+                       confirm_last_copy=True)
+        assert err.value.code == "cross_volume", err.value.code
+    assert path.exists()
+    assert not (store.data_dir / HOLD_DIR).exists(), "断ったのに空の保留領域が残った（D-7）"
+    assert not (store.data_dir / TRASH_DIR).exists(), "断ったのに空のゴミ箱が残った（D-7）"
+
+
+def test_a_stale_in_progress_token_can_be_resent(svc, store, library):
+    """壊すと落ちる: `result_json` の無い行を永久に `in_progress` にする（D-8。落ちた要求）。
+
+    古ければ巻き取って再送を許し、**新しければ**（同時に走っている 1 本を踏まないように）
+    409 `client_token_in_progress` で断る。
+    """
+    path = make_png(library / "d8.png", seed=239)
+    asset_id = add_asset(store, path)
+    payload = {"kind": "asset", "asset_id": asset_id, "path": normalize_path(path), "stage": 1}
+    with store.transaction() as con:                        # **落ちた要求**（結果が無いまま古い）
+        con.execute("INSERT INTO delete_request(id, client_token, actor, stage, count,"
+                    " payload_json, at) VALUES ('dead', 'tok-dead', 'human', 1, 1, ?,"
+                    " '2000-01-01T00:00:00Z')", (json.dumps(payload),))
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=1, actor="human",
+                     client_token="tok-dead")
+    assert got["replayed"] is False and got["stage"] == 1
+    assert store.con.execute("SELECT count(*) AS n FROM delete_request WHERE client_token ="
+                             " 'tok-dead'").fetchone()["n"] == 1
+    # **新しい要求は「進行中」で断る**
+    other = make_png(library / "d8b.png", seed=240)
+    other_id = add_asset(store, other)
+    live = {"kind": "asset", "asset_id": other_id, "path": normalize_path(other), "stage": 1}
+    svc._open_request(actor="human", stage=1, count=1, client_token="tok-live", payload=live)
+    with pytest.raises(ReviewError) as err:
+        svc.delete(asset_id=other_id, path=str(other), stage=1, actor="human",
+                   client_token="tok-live")
+    assert err.value.status == 409 and err.value.code == "client_token_in_progress"
+
+
+def test_the_stage3_preview_does_not_promise_the_free_time(svc, store, library):
+    """壊すと落ちる: 段 3 の preview の `frees.at` に凍結の失効時刻を出す（D-9）。
+
+    いつ空くかは**実行してから**決まる（凍結の失効は「5 分の窓が過ぎた時点」ではない）。
+    """
+    path = make_png(library / "d9.png", seed=241)
+    asset_id = add_asset(store, path)
+    got = svc.bulk_preview(scope={"kind": "assets", "asset_ids": [asset_id]}, stage=3,
+                           actor="human")
+    assert got["frees"]["at"] is None, "実行前なのに『いつ空くか』を約束している（D-9）"
+    assert "5 分" in got["frees"]["note"]
+    assert svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                      confirm_last_copy=True)["frees"]["at"] is not None, \
+        "実行したら窓の後の時刻を出す（段 3 の意味）"
+
+
+def test_the_stage3_preview_shows_the_items_the_flag_does_not_allow(svc, store, tmp_path):
+    """壊すと落ちる: 段 3 の preview が印の無い置き場を数えない（D-2）。
+
+    「2 枚消えます」と見せて実行で 1 枚 `stage_not_allowed` になる形を防ぐ。
+    """
+    plain = tmp_path / "noflag-d2"
+    plain.mkdir(parents=True, exist_ok=True)
+    store.set_roots([str(plain)])                           # 印は立てない（既定 0）
+    path = make_png(plain / "d2.png", seed=242)
+    asset_id = add_asset(store, path)
+    got = svc.bulk_preview(scope={"kind": "assets", "asset_ids": [asset_id]}, stage=3,
+                           actor="human")
+    assert got["count"] == 1 and got["not_allowed_count"] == 1, got
+    assert got["not_allowed"][0]["asset_id"] == asset_id
+    done = svc.bulk_delete(preview_id=got["preview_id"], confirm=True, actor="human",
+                           confirm_last_copy=True)
+    assert [s["reason"] for s in done["skipped"]] == ["stage_not_allowed"] and path.exists()
+
+
+def test_a_folder_outside_the_registered_roots_cannot_be_frozen(svc, store, library, tmp_path):
+    """壊すと落ちる: `folder` の `scope` に置き場の制限を掛けない（D-14）。
+
+    `C:\\` のような指定で**管理下でない物まで凍結の一覧に入る**（人に上限が無いので、
+    preview が現実的な歯止めになる）。
+    """
+    outside = tmp_path / "outside-d14"
+    path = make_png(outside / "d14.png", seed=243)
+    add_asset(store, path)
+    with pytest.raises(ReviewError) as err:
+        svc.bulk_preview(scope={"kind": "folder", "id": str(outside)}, stage=1, actor="human")
+    assert err.value.status == 422 and err.value.code == "bad_scope"
+    inside = svc.bulk_preview(scope={"kind": "folder", "id": str(library)}, stage=1, actor="human")
+    assert inside["count"] == 0                             # 置き場の中は通る（空でも 200）
+
+
+def test_deleting_the_same_place_twice_is_one_row_and_one_undo(svc, store, library):
+    """壊すと落ちる: 段 1 を 2 回で行が 2 つになり、1 回戻しても隠れたまま（D-12）。"""
+    path = make_png(library / "d12.png", seed=244)
+    asset_id = add_asset(store, path)
+    first = svc.delete(asset_id=asset_id, path=str(path), stage=1, actor="human")
+    again = svc.delete(asset_id=asset_id, path=str(path), stage=1, actor="human")
+    assert again["replayed"] is True and again["deletion_id"] == first["deletion_id"]
+    assert store.con.execute("SELECT count(*) AS n FROM deletion_log").fetchone()["n"] == 1, \
+        "同じ場所を 2 回外して行が 2 つになった（D-12）"
+    svc.undo(first["deletion_id"], actor="human")
+    assert store.con.execute("SELECT deleted_at FROM asset WHERE id = ?",
+                             (asset_id,)).fetchone()["deleted_at"] is None, \
+        "1 回戻したのに一覧から出てこない（D-12）"
+
+
+def test_a_missing_path_is_422_not_409(client, tmp_path):
+    """壊すと落ちる: `path` の欠落を `not_registered`（409）にする（D-13。入力の不足は 422）。"""
+    store, path, asset_id = register(client, tmp_path, "d13.png")
+    for empty in ("", "   ", None):
+        got = client.post("/api/locations/delete", headers=HUMAN,
+                          json={"asset_id": asset_id, "path": empty, "stage": 1})
+        assert got.status_code == 422 and got.json()["code"] == "bad_path", (empty, got.text)
+
+
+def test_the_http_gets_never_write_with_a_live_window(client, tmp_path):
+    """壊すと落ちる: `GET /api/pending-deletes` で `remaining_sec` を減らす（§8.1 の 18・D-17）。
+
+    サービス直呼びだけでなく**口から**も見る（`remaining_sec` の在る状態で比べる）。
+    """
+    store, path, asset_id = register(client, tmp_path, "d17.png")
+    got = client.post("/api/locations/delete", headers=HUMAN,
+                      json={"asset_id": asset_id, "path": str(path), "stage": 3,
+                            "confirm_last_copy": True}).json()
+    prev = client.post("/api/locations/bulk-delete/preview", headers=HUMAN,
+                       json={"scope": {"kind": "assets", "asset_ids": [asset_id]},
+                             "stage": 1}).json()
+    tables = [r["name"] for r in store.con.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
+
+    def snapshot():
+        counts = tuple(store.con.execute(f"SELECT count(*) AS n FROM {t}").fetchone()["n"]
+                       for t in tables)
+        cells = tuple(store.con.execute("SELECT id, remaining_sec, purge_at, restored_at,"
+                                        " hold_path FROM deletion_log ORDER BY id").fetchall())
+        files = tuple(sorted((str(p.relative_to(store.data_dir)), p.stat().st_size,
+                              p.stat().st_mtime_ns)
+                             for p in store.data_dir.rglob("*") if p.is_file()))
+        return counts, tuple(tuple(c) for c in cells), files
+
+    before = snapshot()
+    for url in ("/api/pending-deletes", "/api/deletions", "/api/trash", "/api/deletions/trash",
+                f"/api/deletions/previews/{prev['preview_id']}"):
+        assert client.get(url, headers=HUMAN).status_code == 200, url
+    assert snapshot() == before, "GET が書いている（D-17）"
+    assert store.con.execute("SELECT remaining_sec FROM deletion_log WHERE id = ?",
+                             (got["deletion_id"],)).fetchone()["remaining_sec"] == 300, \
+        "GET で残り時間が減った"
+
+
+def test_the_hold_area_reports_what_the_ledger_does_not_know(svc, store, library):
+    """壊すと落ちる: 台帳に無い保留領域の中身を**黙って残す**（G-4 の「拾い物」）。
+
+    起動時に警告に出し、`GET /api/pending-deletes` の `found` に出す。**消しも動かしもしない。**
+    """
+    orphan = store.data_dir / HOLD_DIR / "orphan" / "lost.png"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    make_png(orphan, seed=245)
+    known = make_png(library / "known.png", seed=246)
+    asset_id = add_asset(store, known)
+    got = svc.delete(asset_id=asset_id, path=str(known), stage=3, actor="human",
+                     confirm_last_copy=True)
+    svc.start()                                             # **起動**（拾い物を出す）
+    try:
+        showed = svc.pending(actor="human")
+        assert showed["found_count"] == 1, showed["found"]
+        assert showed["found"][0]["path"] == str(orphan)
+        assert orphan.exists(), "拾い物を消した（人が決めるまで触らない）"
+        assert Path(got["hold_path"]).exists()
+        assert svc.found_in_hold()["count"] == 1, "台帳に在る物を拾い物に数えている"
+    finally:
+        svc.stop()

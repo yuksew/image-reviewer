@@ -24,12 +24,14 @@ from .annotations import AnnotationService
 # （`_Feature` オブジェクト）を拾ってしまう。**モジュールを名指しで**取る
 from .api.annotations import router as annotations_router
 from .api import compare as compare_api
+from .api import duplicates as duplicates_api
 from .api import export as export_api
 from .api import groups as groups_api
 from .api import requests as requests_api
 from .api import reviews as reviews_api
 from .api import tags as tags_api
 from .api import review_error_handler
+from .duplicates import DuplicatesService
 from .export import ExportService
 from .gloss import GlossService
 from .jobs import JobService
@@ -73,6 +75,9 @@ def create_app() -> FastAPI:
     jobs_svc = JobService(store)
     # P4-2: 語釈（日本語）。**模型は呼んだときだけ**回す（既定は「語釈の無い語だけ」）
     gloss_svc = GlossService(store)
+    # P8-1: 重複の検出と整理。**pHash は `GET` では計算しない**（背景ジョブだけが計算する）。
+    # 起動時に、前のプロセスが落ちて `running` のまま残ったハッシュの job を `failed` にする
+    duplicates_svc = DuplicatesService(store)
     exporter.flush_dirty()
 
     @asynccontextmanager
@@ -103,6 +108,7 @@ def create_app() -> FastAPI:
     app.state.annotations = annotations_svc
     app.state.jobs = jobs_svc
     app.state.gloss = gloss_svc
+    app.state.duplicates = duplicates_svc
     app.add_exception_handler(ReviewError, review_error_handler)
 
     @app.middleware("http")
@@ -132,6 +138,7 @@ def create_app() -> FastAPI:
     # P6-2: 注記（`/api/assets/{id}/annotations` と `/api/annotations/...`）。同じく守りは middleware
     app.include_router(annotations_router)
     app.include_router(tags_api.router)
+    app.include_router(duplicates_api.router)
 
     def _asset_or_404(asset_id: str) -> dict:
         asset = store.asset(asset_id)

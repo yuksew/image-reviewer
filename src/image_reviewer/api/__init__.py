@@ -55,8 +55,21 @@ def gloss_of(request: Request):
     return request.app.state.gloss
 
 
+def duplicates_of(request: Request):
+    """重複の検出と整理（P8-1）。`app.state` から取る（閉包で掴まない）。"""
+    return request.app.state.duplicates
 
 
+def require_human(actor: str, *, what: str = "この操作") -> str:
+    """**人が要る口の検査を 1 か所に置く**（家風。P4 の §0.14 Q3 から続く流儀）。
+
+    `actor` を返すので、そのまま `actor` 欄に使える。エージェントには **403 `human_only`**。
+    設計 §3.1 は「計算と除外は人だけ」（**重い計算を投げる口と、候補を消す口**）。
+    """
+    if actor != "human":
+        raise ReviewError(403, f"{what}は人だけができます", details={"actor": actor},
+                          code="human_only")
+    return actor
 
 
 def actor_of(request: Request) -> str:

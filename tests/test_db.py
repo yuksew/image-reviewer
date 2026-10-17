@@ -660,31 +660,157 @@ def test_v6_topps_up_a_database_that_was_made_before_the_columns(tmp_path: Path)
 
 
 def test_v6_check_constraints_reject_the_wrong_vocabulary(tmp_path: Path):
-    """**語彙は表でも守る**（家風）。`stage=4`・`(B,A)`・`allow_stage3=2` が入れられない。"""
+    """**語彙は表でも守る**（家風）。`stage=4`・`(B,A)`・`band=8`・`allow_stage3=2` が入れられない。
+
+    **（P8-0 の監査 F-1）実在の `asset_id` を使う。** 前の版は `asset_id = 'a'`（存在しない）で
+    `phash_band` に入れていたので、**外部キーが先に落ちて** `CHECK` の有無と無関係に緑だった
+    （**壊しても落ちないテスト**）。ここでは `asset` を 1 行入れてから、その id を使う。
+    `delete_request` の `stage` / `actor`・`duplicate_exclusion` と `pending_delete_preview` の
+    `actor` も**同じテストで見る**（監査で「未試験」と指摘された分）。
+    """
     con = db.open_db(tmp_path)
     try:
+        con.execute("INSERT INTO asset(id, sha256, kind, first_seen_at, last_seen_at)"
+                    " VALUES ('a1', ?, 'generated', 't', 't')", ("a" * 64,))
+        # --- 語彙（deletion_log）---
         with pytest.raises(sqlite3.IntegrityError):
             con.execute("INSERT INTO deletion_log(id, stage, actor, at)"
                         " VALUES ('x', 4, 'human', 't')")
         with pytest.raises(sqlite3.IntegrityError):
             con.execute("INSERT INTO deletion_log(id, stage, actor, at)"
                         " VALUES ('x', 1, 'robot', 't')")
+        # --- 語彙（delete_request。監査 F-1 で未試験だった）---
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO delete_request(id, actor, stage, count, at)"
+                        " VALUES ('r1', 'human', 4, 1, 't')")
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO delete_request(id, actor, stage, count, at)"
+                        " VALUES ('r1', 'robot', 1, 1, 't')")
+        # --- 順序と語彙（duplicate_exclusion）---
         with pytest.raises(sqlite3.IntegrityError):
             con.execute("INSERT INTO duplicate_exclusion(a_id, b_id, actor, at)"
                         " VALUES ('B', 'A', 'human', 't')")
         with pytest.raises(sqlite3.IntegrityError):
-            con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a', 8, 'ff')")
+            con.execute("INSERT INTO duplicate_exclusion(a_id, b_id, actor, at)"
+                        " VALUES ('A', 'A', 'human', 't')")
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO duplicate_exclusion(a_id, b_id, actor, at)"
+                        " VALUES ('A', 'B', 'robot', 't')")
+        # --- 帯の範囲（**実在の asset_id** なので FK では落ちない＝CHECK を見ている）---
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 8, 'ff')")
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', -1, 'ff')")
+        # --- 語彙（pending_delete_preview）---
         with pytest.raises(sqlite3.IntegrityError):
             con.execute("INSERT INTO pending_delete_preview"
                         "(id, stage, scope_json, items_json, count, bytes, actor,"
                         " created_at, expires_at) VALUES ('p', 0, '{}', '[]', 0, 0, 'human', 't', 't')")
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO pending_delete_preview"
+                        "(id, stage, scope_json, items_json, count, bytes, actor,"
+                        " created_at, expires_at) VALUES ('p', 1, '{}', '[]', 0, 0, 'robot', 't', 't')")
+        # --- 語彙（root.allow_stage3）---
         con.execute("INSERT INTO root(path, display_path, added_at) VALUES ('p', 'P', 't')")
         with pytest.raises(sqlite3.IntegrityError):
             con.execute("UPDATE root SET allow_stage3 = 2")
-        # 正しい値は通る
+        # --- 正しい値は通る ---
         con.execute("INSERT INTO duplicate_exclusion(a_id, b_id, actor, at)"
                     " VALUES ('A', 'B', 'human', 't')")
         con.execute("INSERT INTO deletion_log(id, stage, actor, at) VALUES ('ok', 3, 'agent', 't')")
+        con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 7, 'ff')")
+        con.execute("INSERT INTO delete_request(id, actor, stage, count, at)"
+                    " VALUES ('rok', 'agent', 2, 1, 't')")
+        con.execute("INSERT INTO pending_delete_preview"
+                    "(id, stage, scope_json, items_json, count, bytes, actor,"
+                    " created_at, expires_at) VALUES ('pok', 1, '{}', '[]', 0, 0, 'agent', 't', 't')")
+    finally:
+        con.close()
+
+
+def test_v6_foreign_keys_and_indexes_are_declared(tmp_path: Path):
+    """**（P8-0 の監査 F-2）外部キー・主キー・平の索引を守る。**
+
+    前の版は v5 の道と新規の道の `sqlite_master` を比べるだけだったので、**両方から同じ物を
+    落とすと気づけなかった**。ここでは **1 つずつ外すと落ちる**形で固定する。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        con.execute("INSERT INTO asset(id, sha256, kind, first_seen_at, last_seen_at)"
+                    " VALUES ('a1', ?, 'generated', 't', 't')", ("a" * 64,))
+        # **`deletion_log.request_id` の外部キー**（知らない要求を指せない）
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO deletion_log(id, request_id, stage, actor, at)"
+                        " VALUES ('d1', 'nope', 1, 'human', 't')")
+        # 参照のある `delete_request` は消せない（既定の RESTRICT）
+        con.execute("INSERT INTO delete_request(id, actor, stage, count, at)"
+                    " VALUES ('r1', 'human', 1, 1, 't')")
+        con.execute("INSERT INTO deletion_log(id, request_id, stage, actor, at)"
+                    " VALUES ('d2', 'r1', 1, 'human', 't')")
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("DELETE FROM delete_request WHERE id = 'r1'")
+        # **`phash_band` の主キー（asset_id, band）**（同じ帯を 2 行入れられない）
+        con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 0, '00')")
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO phash_band(asset_id, band, value) VALUES ('a1', 0, 'ff')")
+        # **平の索引 4 本が `sqlite_master` にあり、`INDEXED BY` で引ける**
+        # （`INDEXED BY` は**索引が無ければ SQLite がエラーにする**ので、存在と使えることの
+        #  両方が分かる。行数が少ないと SQLite は全走査を選ぶので、計画任せでは守れない）
+        names = {row[0] for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'")}
+        for want in ("ix_deletion_asset", "ix_deletion_request", "ix_phash_band", "ix_preview_expiry"):
+            assert want in names, f"{want} が無い（索引を外すと気づかない）"
+        for i in range(20):
+            con.execute("INSERT INTO deletion_log(id, asset_id, request_id, stage, actor, at)"
+                        " VALUES (?, 'a1', 'r1', 1, 'human', 't')", (f"x{i}",))
+            con.execute("INSERT INTO pending_delete_preview"
+                        "(id, stage, scope_json, items_json, count, bytes, actor, created_at,"
+                        " expires_at) VALUES (?, 1, '{}', '[]', 0, 0, 'human', 't', ?)",
+                        (f"p{i}", f"2026-01-01T00:00:{i:02d}Z"))
+        plans = {label: " ".join(str(r[3]) for r in con.execute("EXPLAIN QUERY PLAN " + sql))
+                 for label, sql in (
+                     ("ix_deletion_asset",
+                      "SELECT * FROM deletion_log INDEXED BY ix_deletion_asset WHERE asset_id = 'a1'"),
+                     ("ix_deletion_request",
+                      "SELECT * FROM deletion_log INDEXED BY ix_deletion_request"
+                      " WHERE request_id = 'r1'"),
+                     ("ix_phash_band",
+                      "SELECT * FROM phash_band INDEXED BY ix_phash_band WHERE band = 0"),
+                     ("ix_preview_expiry",
+                      "SELECT * FROM pending_delete_preview INDEXED BY ix_preview_expiry"
+                      " WHERE expires_at < '2026-01-02'"),
+                 )}
+        for label, plan in plans.items():
+            assert label in plan, f"{label} が引かれない: {plan}"
+    finally:
+        con.close()
+
+
+def test_v6_tables_are_added_to_a_p7_style_v6_database(tmp_path: Path):
+    """**（P8-0 の監査 C-1）P7 が `user_version = 6` を付けた DB でも P8 の表が入る。**
+
+    P7 の v6 は**別の 6 表**（`recipe_*`）だった。版だけ 6 の DB は `migrate()` の早期 return に
+    当たって `_migrate_v6` を通らないので、**P8 の 5 表を一生持たない**（版は 6 と答えるので
+    `health` も通り、P8-1 以降で `no such table: deletion_log` になる）。
+    ここでは「P7 の v6」を合成して、`migrate()` で表が入ることを固定する。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        # P7 の v6 を真似る: 版だけ 6 にして、P8 の 5 表を落とす
+        for table in ("delete_request", "deletion_log", "duplicate_exclusion",
+                      "phash_band", "pending_delete_preview"):
+            con.execute(f"DROP TABLE {table}")
+        con.execute("PRAGMA user_version = 6")
+        assert not con.execute("SELECT 1 FROM sqlite_master WHERE name = 'deletion_log'").fetchone()
+        assert db.migrate(con) == 6
+        names = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        for table in ("delete_request", "deletion_log", "duplicate_exclusion",
+                      "phash_band", "pending_delete_preview"):
+            assert table in names, f"{table} が入っていない（P7 の v6 の道が穴）"
+        # **何度呼んでも同じ**（表も索引も増えない）
+        before = con.execute("SELECT count(*) FROM sqlite_master").fetchone()[0]
+        db.migrate(con)
+        assert con.execute("SELECT count(*) FROM sqlite_master").fetchone()[0] == before
     finally:
         con.close()
 

@@ -627,12 +627,19 @@ def _migrate_v6(con: sqlite3.Connection) -> None:
 
 
 def _top_up_v6(con: sqlite3.Connection) -> None:
-    """v6 で**版を上げずに足した列**を補う（P4-1 の監査 A-1 と同じ流儀）。
+    """v6 で**版を上げずに足した物**を補う（P4-1 の監査 A-1 と同じ流儀）。
 
     `ALTER TABLE ADD COLUMN` は `IF NOT EXISTS` を持たないので、**列を見てから足す**。
     **何度呼んでも安全**（`migrate()` の early return 側からも呼ぶ）。
     新しい列には `CHECK` を付けられる（P7 の `fetched` で実績）ので、`allow_stage3` には付ける。
+
+    **（P8-0 の監査 C-1）表そのものもここで作る。** P7 が `user_version = 6` を付けた DB
+    （控えの `.backup/pre-p7-*` が該当）は `current >= SCHEMA_VERSION` の**早期 return** に当たって
+    `_migrate_v6` を通らないので、**P8 の 5 表を一生持たない**（版は 6 と答えるので気づきにくく、
+    P8-1 以降で `no such table: deletion_log` になる）。`V6_DELETE_DDL` は**全部 `IF NOT EXISTS`**
+    なので、ここでも流して害が無い（`_migrate_v6` と二重でも同じ結果になる）。
     """
+    con.executescript(V6_DELETE_DDL)
     have_asset = {row["name"] for row in con.execute("PRAGMA table_info(asset)")}
     if have_asset and "deleted_at" not in have_asset:
         # 段 1（論理削除）。**NULL = 生きている**。列なので `CHECK` は付けられない

@@ -383,6 +383,11 @@ class Store:
                 raise KeyError(f"asset が無い: {asset_id}")
             self._con.execute("UPDATE asset SET phash = ?, dhash = ? WHERE id = ?",
                               (phash, dhash, asset_id))
+            # **（P8-1。設計 §0.5）帯も一緒に入れ直す。** 帯は「近い pHash を引く」ための索引で、
+            # `asset.phash` と食い違うと**嘘の候補**（または取りこぼし）になる。
+            # 書き手を 1 つにして、pHash を書く所は必ず帯も書く（`write_bands` が DELETE → INSERT）。
+            from .duplicates import write_bands
+            write_bands(self._con, asset_id, phash)
 
     def set_review_state(self, asset_id: str, state: str, reason_code_id: str | None = None,
                          actor: str = "human", at: str | None = None) -> None:

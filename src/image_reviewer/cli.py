@@ -112,9 +112,16 @@ def cmd_capture(args) -> int:
 
 
 def cmd_serve(args) -> int:
+    """サーバを起動する。
+
+    **（P8-4 の監査 G-8）`--factory` で作る。** `image_reviewer.app` を import した
+    だけで実データを開かないようにしたので（モジュールの `__getattr__`）、
+    `create_app` を名指しで渡す方が意図がはっきりする。
+    """
     import uvicorn
 
-    uvicorn.run("image_reviewer.app:app", host=args.host, port=args.port, log_level="info")
+    uvicorn.run("image_reviewer.app:create_app", factory=True,
+                host=args.host, port=args.port, log_level="info")
     return 0
 
 
@@ -163,6 +170,11 @@ def cmd_backup(args) -> int:
     print(f"  画像 {counts['assets']} 枚 / 判断 {counts['decisions']} 件 / "
           f"まとまり {counts['groups']} / 注記 {counts['annotations']} / 語 {counts['tags']}")
     print(f"  DB {manifest['db_bytes'] / 1024:.1f} KB（{manifest['db_sha256'][:19]}…）")
+    check = got.get("db_check") or {}
+    if check:
+        stages = check.get("stages") or {}
+        print(f"  写しの検査: {check.get('stage')}（quick_check="
+              f"{(stages.get('quick_check') or {}).get('detail')}）")
     files = got["files"]
     print(f"  sidecar / export: 写した {files['copied']} / 前と同じで共有した {files['linked']} "
           f"/ 設定 {got['settings']} 件")
@@ -200,9 +212,19 @@ def cmd_restore(args) -> int:
         print(f"  作った時刻 {manifest['created_at']} / 版 {manifest['app_version']}")
         print(f"  画像 {counts['assets']} 枚 / 判断 {counts['decisions']} 件 / "
               f"まとまり {counts['groups']} / 注記 {counts['annotations']} / 語 {counts['tags']}")
+    # **（C-1）写しの中身が manifest と一致したか**（1 バイトでも違えば戻さない）
+    sha = got.get("sha256") or {}
+    if sha.get("expected") is None:
+        print("  sha256: manifest に無いので照合していません")
+    elif sha.get("ok"):
+        print(f"  sha256 一致: {sha['actual'][:19]}…")
+    else:
+        print(f"  注意: sha256 が manifest と違います（--force で進みました）: "
+              f"期待 {str(sha.get('expected'))[:19]}… / 実際 {str(sha.get('actual'))[:19]}…")
     print(f"  戻す前の quick_check: {got['before']['detail']}")
     if got["setaside"]:
-        print(f"  元の DB を退避しました: {got['setaside']}")
+        print(f"  元の DB を退避しました: {got['setaside']}"
+              "（**バックアップのフォルダの隣**。`--backup-dir` は無いので）")
     print(f"  戻しました: {got['data_dir']}\\db.sqlite3"
           f"（integrity_check: {got['after']['detail']}）")
     for name, stat in got["copied"].items():

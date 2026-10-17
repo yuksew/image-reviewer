@@ -12,6 +12,7 @@ SQLite の接続を開いたままのテストでは Windows がファイルを�
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import uuid
@@ -31,8 +32,18 @@ def pytest_configure(config) -> None:
     実機の線は `tools/probe_p4.py` が受け持つ。**`pyproject.toml` を触らない**のは、
     利用者のサーバが `image-reviewer.exe` を握っていると `uv run` の再インストールが
     失敗するため（実際に踏んだ）。
+
+    **（P8-4 の監査 G-8）データ置き場とバックアップの置き場を、収集の前にテストの中へ向ける。**
+    `IMAGE_REVIEWER_DATA` を忘れた瞬間に**実データ**を開く入口が残っていると
+    （plugin・`python -c` の import・`conftest` 自身の import）、`migrate()` や
+    `_top_up_v6` が実データに当たる。実際に、並行の作業の plugin が `image_reviewer.app` を
+    import しただけで**実データに `deletion_log.stuck_reason` の列が足された**。
+    ここで `setdefault` しておけば、どのテスト・どの plugin から見てもテストの中になる
+    （テスト自身の `monkeypatch.setenv` は後から上書きするので影響しない）。
     """
     config.addinivalue_line("markers", "comfyui: 実際に ComfyUI を呼ぶ（既定では走らせない）")
+    os.environ.setdefault("IMAGE_REVIEWER_DATA", str(BASE / "_proto_app"))
+    os.environ.setdefault("IMAGE_REVIEWER_BACKUP_DIR", str(BASE / "_backups"))
 
 
 def _close_prototype_app() -> None:
@@ -116,6 +127,11 @@ def _backup_dir_inside_the_tests(monkeypatch):
 
 @pytest.fixture(scope="session", autouse=True)
 def _no_leftover_backup_dir():
-    """テストが作ったバックアップの置き場を消す（**利用者のホームには作らない**）。"""
+    """テストが作ったバックアップの置き場を消す（**利用者のホームには作らない**）。
+
+    **（P8-4 の監査 G-8）** `pytest_configure` が向けた既定のデータ置き場（`_proto_app`）も
+    ここで消す（`image_reviewer.app` を import しただけのテストが作る物）。
+    """
     yield
     shutil.rmtree(BASE / "_backups", ignore_errors=True)
+    shutil.rmtree(BASE / "_proto_app", ignore_errors=True)

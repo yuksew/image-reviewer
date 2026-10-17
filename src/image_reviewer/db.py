@@ -671,6 +671,10 @@ def _top_up_v6(con: sqlite3.Connection) -> None:
     **（P8-2）`pending_delete_preview` の `executed_at` / `result_json` / `request_id` と
     `delete_request.payload_json` もここで足す**（実データの v6 はこの列が無い形で先に作ってある）。
     `CREATE TABLE IF NOT EXISTS` は既存の表に列を足さないので、**列を見てから `ALTER`**。
+
+    **（P8-4 の監査 D-2 / G-5）列の一覧は `TOP_UP_COLUMNS` が正。** ここはその表を回すだけに
+    して、`missing_top_ups()`（控えを取る判断）と**同じ物を見る**ようにした
+    （2 か所に書くと、片方だけ足したときに控え無しで形が変わる）。
     """
     con.executescript(V6_DELETE_DDL)
     # **（P8-1 の監査 B-1）帯を 4bit × 16 本に作り直した。** 古い 8bit × 8 本の表を持っている DB は
@@ -679,51 +683,18 @@ def _top_up_v6(con: sqlite3.Connection) -> None:
     # いつでも引き直せる＝失う物が無い。実データは帯 0 行だったので無料だった）。
     band_sql = con.execute("SELECT sql FROM sqlite_master WHERE type = 'table'"
                            " AND name = 'phash_band'").fetchone()
-    if band_sql is not None and "BETWEEN 0 AND 15" not in (band_sql["sql"] or ""):
+    if band_sql is not None and "BETWEEN 0 AND 15" not in (band_sql[0] or ""):
         con.execute("DROP TABLE phash_band")
         con.executescript(V6_DELETE_DDL)
-    have_asset = {row["name"] for row in con.execute("PRAGMA table_info(asset)")}
-    if have_asset and "deleted_at" not in have_asset:
-        # 段 1（論理削除）。**NULL = 生きている**。列なので `CHECK` は付けられない
-        con.execute("ALTER TABLE asset ADD COLUMN deleted_at TEXT")
-    if have_asset:
-        # 「消えた物だけ」を引く（生きている 263 枚の索引を太らせない）
+    for table, column, ddl in TOP_UP_COLUMNS:
+        have = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+        if have and column not in have:
+            con.execute(ddl)
+    # 「消えた物だけ」を引く（生きている 263 枚の索引を太らせない）
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table'"
+                   " AND name = 'asset'").fetchone() is not None:
         con.execute("CREATE INDEX IF NOT EXISTS ix_asset_del"
                     " ON asset(deleted_at) WHERE deleted_at IS NOT NULL")
-    have_root = {row["name"] for row in con.execute("PRAGMA table_info(root)")}
-    if have_root and "allow_stage3" not in have_root:
-        con.execute("ALTER TABLE root ADD COLUMN allow_stage3 INTEGER NOT NULL DEFAULT 0"
-                    " CHECK (allow_stage3 IN (0, 1))")
-    # **（P8-1 の監査 C-1）中断の印を `job` 表に置く。** これまでは各サービスが**自分のメモリ**に
-    # 印を持っていたので、`POST /api/jobs/{id}/cancel`（`JobService`）で**ハッシュの背景ジョブ
-    # （`DuplicatesService`）が止まらなかった**（実測: cancel → 200 `running` → 1 秒後 `done 263/263`）。
-    # **DB に置けば両方が同じ印を見る**し、再起動をまたいでも残る（`recover_stale` と同じ流儀）。
-    have_job = {row["name"] for row in con.execute("PRAGMA table_info(job)")}
-    if have_job and "cancel_requested" not in have_job:
-        con.execute("ALTER TABLE job ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0"
-                    " CHECK (cancel_requested IN (0, 1))")
-    # **（P8-2。設計 §0.16 A2 / §4.3）凍結した一覧は実行後も消さない。** 実データの v6 は
-    # この 3 列が無い形で先に作ってあるので、`PRAGMA table_info` を見てから足す（家風。
-    # 「同じ版番号で形が違う DB」を塞ぐ）。**無いまま実行すると `no such column: executed_at`
-    # で落ちる**（＝一括削除が丸ごと動かない）。
-    have_preview = {row["name"] for row in con.execute("PRAGMA table_info(pending_delete_preview)")}
-    if have_preview:
-        for name in ("executed_at", "result_json", "request_id"):
-            if name not in have_preview:
-                con.execute(f"ALTER TABLE pending_delete_preview ADD COLUMN {name} TEXT")
-    # **（P8-2）要求の内容**（同じ `client_token` で違う内容が来たことに気づくため）
-    have_req = {row["name"] for row in con.execute("PRAGMA table_info(delete_request)")}
-    if have_req and "payload_json" not in have_req:
-        con.execute("ALTER TABLE delete_request ADD COLUMN payload_json TEXT")
-    # **（P8-3 の監査 G-3）「戻せなかった理由」を台帳に残す。** これが無いと `stuck` の行の
-    # 文言が 1 通りになり、`target_exists`（元の場所が埋まっている）でも
-    # 「保留していたファイルが見つかりません」と出る（実データの v6 はこの列が無い形で
-    # 先に作ってあるので、`PRAGMA table_info` を見てから足す。`CHECK` は DDL と同じ物を付ける
-    # ＝新規の DB と ALTER で足した DB の形が揃う）
-    have_log = {row["name"] for row in con.execute("PRAGMA table_info(deletion_log)")}
-    if have_log and "stuck_reason" not in have_log:
-        con.execute("ALTER TABLE deletion_log ADD COLUMN stuck_reason TEXT"
-                    " CHECK (stuck_reason IN ('target_exists', 'move_failed', 'different', 'missing'))")
     # **（P8-1 の監査 B-1）帯の中身も新しい形に揃える。** 版は 6 のままなので、表の形だけ直しても
     # 古い 8bit の帯が残る（`phash_band` を落とした DB もここで埋まる）。何度呼んでも同じ。
     # **落とした直後は 0 行**なので、**「本数が違う物」だけでなく「1 本も無い物」も埋める**
@@ -732,6 +703,56 @@ def _top_up_v6(con: sqlite3.Connection) -> None:
     from .duplicates import fill_missing_bands, rebuild_stale_bands   # 循環 import を避けて局所で
     rebuild_stale_bands(con)
     fill_missing_bands(con)
+
+
+#: **版を上げずに足す列**（表, 列, `ALTER` の SQL）。`_top_up_v6` と `missing_top_ups` が
+#: **同じ物を見る**ための 1 か所（P8-4 の監査 D-2 / G-5）。**足す物を増やすときはここに足す**
+#: （`pre-topup-*` の控えが自動で付く）。
+TOP_UP_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    # 段 1（論理削除）。**NULL = 生きている**。列なので `CHECK` は付けられない
+    ("asset", "deleted_at", "ALTER TABLE asset ADD COLUMN deleted_at TEXT"),
+    # その置き場で実ファイルの削除を許すか（**既定 0**。P8-0）
+    ("root", "allow_stage3", "ALTER TABLE root ADD COLUMN allow_stage3 INTEGER NOT NULL"
+                             " DEFAULT 0 CHECK (allow_stage3 IN (0, 1))"),
+    # **（P8-1 の監査 C-1）中断の印**（`JobService` と `DuplicatesService` が同じ印を見る）
+    ("job", "cancel_requested", "ALTER TABLE job ADD COLUMN cancel_requested INTEGER NOT NULL"
+                                " DEFAULT 0 CHECK (cancel_requested IN (0, 1))"),
+    # **（P8-2）凍結した一覧は実行後も消さない**
+    ("pending_delete_preview", "executed_at",
+     "ALTER TABLE pending_delete_preview ADD COLUMN executed_at TEXT"),
+    ("pending_delete_preview", "result_json",
+     "ALTER TABLE pending_delete_preview ADD COLUMN result_json TEXT"),
+    ("pending_delete_preview", "request_id",
+     "ALTER TABLE pending_delete_preview ADD COLUMN request_id TEXT"),
+    # **（P8-2）要求の内容**（同じ `client_token` で違う内容が来たことに気づくため）
+    ("delete_request", "payload_json", "ALTER TABLE delete_request ADD COLUMN payload_json TEXT"),
+    # **（P8-3 の監査 G-3）「戻せなかった理由」を台帳に残す**
+    ("deletion_log", "stuck_reason",
+     "ALTER TABLE deletion_log ADD COLUMN stuck_reason TEXT"
+     " CHECK (stuck_reason IN ('target_exists', 'move_failed', 'different', 'missing'))"),
+)
+
+
+def missing_top_ups(con: sqlite3.Connection) -> list[str]:
+    """**版を上げずに足す物のうち、まだ足りていない物**（P8-4 の監査 D-2 / G-5）。
+
+    `Store` が開く前にこれを見て、空でなければ `pre-topup-*` の控えを取る
+    （実データで `deletion_log.stuck_reason` が**控え無しで**足された。
+    版は 6 のままなので `pre-migrate-*` の道を通らない）。
+
+    **表そのものが無い DB は「足りていない」に数えない**（新規の DB は `migrate()` が
+    `CREATE TABLE` から作るので、控えを取る意味が無い）。帯の形（8bit × 8 本）も見る。
+    """
+    out: list[str] = []
+    for table, column, _ddl in TOP_UP_COLUMNS:
+        have = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+        if have and column not in have:
+            out.append(f"{table}.{column}")
+    band = con.execute("SELECT sql FROM sqlite_master WHERE type = 'table'"
+                       " AND name = 'phash_band'").fetchone()
+    if band is not None and "BETWEEN 0 AND 15" not in (band[0] or ""):
+        out.append("phash_band.band(0..15)")
+    return out
 
 
 def _seed_settings(con: sqlite3.Connection) -> None:

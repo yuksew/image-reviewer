@@ -22,9 +22,17 @@
 7. **原子性**: 一時フォルダ（`<backup_dir>/.tmp-<名前>`）に作ってから `os.replace` で差し替える
    （書きかけのスナップショットを置かない。家風）。
 8. **復元**: 元の DB を**先に退避**してから置き換え、**戻す前に `quick_check`**、
-   **戻した後に `integrity_check`**（通らなければ元に戻す）。
+   **戻した後に `integrity_check`**（通らなければ元に戻す）。**写しは一時名に置いてから
+   `os.replace`**（掴まれていても `<data>` を壊さず 409 の 1 行で返す。C-2）。
+   **manifest の `db_sha256` を照合**してから採用する（C-1）。
 9. **壊れた DB の判定**: `quick_check` の**例外も「壊れている」に数える**（点検 B3）。
    行が `ok` 1 行でない場合も壊れている（実測: 300 ページ目を潰すと例外ではなくエラー行が返る）。
+10. **（P8-4 の監査 B-1）写した後に写しを開いて `quick_check` と `integrity_check`**。
+   通らない写しは**世代として採用しない**（一時フォルダを捨て、`last_error` に残し、
+   古い世代を掃除しない）。走ったまま元の DB が壊れたときは `tick` が**読み取り専用に
+   切り替えて**断る（G-1）。
+11. **（D-2 / G-5）版を上げずに表の形を変える前**にも控えを取る（`pre-topup-*`）。
+    `_top_up_v6` の `ALTER` は `pre-migrate-*` の道を通らない（実データで実際に起きた）。
 """
 
 from __future__ import annotations
@@ -37,6 +45,7 @@ import re
 import shutil
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -79,6 +88,10 @@ RESTORE_KEEP_PREFIX = "pre-restore-"
 #: **版を上げる前に取る控え**の名前（設計 §0.12-6・専門 §5.4）。**掃除の対象にしない**
 #: （版が上がるのは稀で、1 つ 1 つが「その版の最後の姿」なので残す）
 PRE_MIGRATE_PREFIX = "pre-migrate-"
+#: **版を上げずに表の形を変える前に取る控え**の名前（P8-4 の監査 D-2 / G-5）。
+#: `_top_up_v6` の `ALTER` は版を上げないので `pre-migrate-*` の道を通らない。
+#: **掃除の対象にしない**（`pre-migrate-*` と同じ理由）
+PRE_TOPUP_PREFIX = "pre-topup-"
 
 #: 復元の案内（`GET /api/health/db` と CLI が同じ文言を使う）
 RESTORE_HINT = "image-reviewer restore <バックアップのフォルダ>"
@@ -125,15 +138,37 @@ def check_backup_dir(target, data_dir) -> Path:
 
     理由: `<data>` を消したときに備える対策を `<data>` の中に置くと論理が閉じない
     （専門 §5.1 の注記）。**実データの隣に作らない**という指示書の鉄則もこれで守る。
+
+    **（P8-4 の監査 D-11）形も見る。** 相対パス・ファイル・無いドライブを受けると、
+    200 を返してから次の周期で `last_error` になるだけだった（人がその場で気づけない）。
     """
     from .store import is_under                     # 循環 import を避けて局所で
 
-    path = Path(target)
+    path = check_backup_target(target)
     if is_under(str(path), str(data_dir)) or is_under(str(data_dir), str(path)):
         raise ReviewError(
             422, "バックアップの置き場はデータ置き場（<data>）の外にしてください",
             code="bad_backup_dir",
             details={"backup_dir": str(path), "data_dir": str(data_dir)})
+    return path
+
+
+def check_backup_target(target) -> Path:
+    """置き場の**形**だけを見る（絶対パス・フォルダ・ドライブがある。D-11）。
+
+    `<data>` の中かどうかは `check_backup_dir` が見る（**検査を 2 か所に散らさない**）。
+    """
+    path = Path(target)
+    if not path.is_absolute():
+        raise ReviewError(422, "バックアップの置き場は絶対パスで指定してください",
+                          code="bad_backup_dir", details={"backup_dir": str(path)})
+    if path.exists() and not path.is_dir():
+        raise ReviewError(422, "バックアップの置き場がフォルダではありません",
+                          code="bad_backup_dir", details={"backup_dir": str(path)})
+    anchor = Path(path.anchor) if path.anchor else None
+    if anchor is not None and not anchor.exists():
+        raise ReviewError(422, f"バックアップの置き場のドライブがありません: {path.anchor}",
+                          code="bad_backup_dir", details={"backup_dir": str(path)})
     return path
 
 
@@ -198,6 +233,24 @@ def free_dir_name(parent: Path, name: str) -> Path:
             return candidate
     raise ReviewError(409, "空いている名前が見つかりません", code="target_exists",
                       details={"dir": str(parent), "name": name})
+
+
+def replace_dir(tmp: Path, final: Path, *, attempts: int = 5, delay: float = 0.05) -> None:
+    """一時フォルダを本名に付け替える（**Windows の一時的な掴みに耐える**）。
+
+    ウイルス対策や索引が新しいファイルを走査している間、フォルダの `os.replace` が
+    `PermissionError`（WinError 5）で落ちることがある（実測: 2.3 MB の写しの直後で 1 回。
+    同じテストが単独では 6 回とも通った）。**少し待って数回だけ試す**。
+    それでも通らなければ例外を上げる（**黙って諦めない**）。
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(tmp, final)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
 
 
 # ---- manifest（契約 `schemas/backup-manifest.schema.json`）----
@@ -297,6 +350,10 @@ def snapshot_info(directory: Path) -> dict:
         "bytes": total,
         "ok": payload is not None,
         "error": error,
+        # **（P8-4 の監査 D-6）掃除の対象になる形か。** 名前が自分の形でも
+        # `manifest.json` が無い物は消さない（人が置いた物・書きかけを消さないため）ので、
+        # 「一覧に出るのに消えない」理由を画面で言えるようにする
+        "prunable": bool(payload is not None and SNAPSHOT_RE.match(directory.name)),
     }
     if payload is not None:
         out.update(created_at=payload["created_at"], counts=payload["counts"],
@@ -305,9 +362,11 @@ def snapshot_info(directory: Path) -> dict:
 
 
 def kind_of_snapshot(name: str) -> str:
-    """名前から種類を言う（`daily` / `manual` / `pre-migrate` / `other`）。"""
+    """名前から種類を言う（`daily` / `manual` / `pre-migrate` / `pre-topup` / `other`）。"""
     if name.startswith(PRE_MIGRATE_PREFIX):
         return "pre-migrate"
+    if name.startswith(PRE_TOPUP_PREFIX):
+        return "pre-topup"
     if SNAPSHOT_RE.match(name):
         return "manual" if "-" in name else "daily"
     return "other"
@@ -315,7 +374,8 @@ def kind_of_snapshot(name: str) -> str:
 
 def is_our_snapshot(name: str) -> bool:
     """**自分が作った形の名前か**（一覧と掃除の対象を決める 1 か所）。"""
-    return bool(SNAPSHOT_RE.match(name)) or name.startswith(PRE_MIGRATE_PREFIX)
+    return bool(SNAPSHOT_RE.match(name)) or name.startswith(PRE_MIGRATE_PREFIX) \
+        or name.startswith(PRE_TOPUP_PREFIX)
 
 
 def list_snapshots(root) -> list[dict]:
@@ -354,6 +414,57 @@ def prune_snapshots(root, keep: int = KEEP_SNAPSHOTS, *, protect=None) -> list[s
     return removed
 
 
+def _write_db_only(con: sqlite3.Connection, data_dir: Path, root, *, prefix: str, stamp: str,
+                   extra: dict | None = None) -> dict:
+    """**DB だけの控え**を 1 つ作る（`pre-migrate-*` と `pre-topup-*` が共有する形）。
+
+    一時フォルダに作って `os.replace`。**写しを開いて検査してから**採用する
+    （`_write_snapshot` と同じ物差し。P8-4 の監査 B-1）。
+    """
+    root = check_backup_dir(root, data_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    final = free_dir_name(root, f"{prefix}{local_day(stamp)}-{local_hhmmss(stamp)}")
+    tmp = root / f".tmp-{final.name}"
+    if tmp.exists():
+        shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    try:
+        out = tmp / "db.sqlite3"
+        dst = sqlite3.connect(str(out))
+        try:
+            con.backup(dst)                          # **online backup API**（WAL を畳む）
+            dst.execute("PRAGMA journal_mode = DELETE")
+        finally:
+            dst.close()
+        for suffix in ("-wal", "-shm"):
+            (tmp / f"db.sqlite3{suffix}").unlink(missing_ok=True)
+        health = check_snapshot_db(out)              # **控えを開いて検査する**
+        if not health["ok"]:
+            raise ReviewError(
+                409, f"控えの DB が検査に通りません（採用しません）: "
+                     f"{health['stage']}: {health['detail']}",
+                code="bad_snapshot",
+                details={"stage": health["stage"], "detail": health["detail"]})
+        counts = counts_of(out)
+        manifest = {
+            "schema": SCHEMA_ID, "abi": ABI,
+            "app_version": current_app_version(), "created_at": stamp,
+            "data_dir": str(data_dir),
+            "includes": {"db": True, "sidecar": False, "export": False, "library": False},
+            "counts": counts, "db_sha256": "sha256:" + sha256_file(out),
+            "db_bytes": int(out.stat().st_size),
+        }
+        validate_manifest(manifest)
+        (tmp / MANIFEST_NAME).write_text(json.dumps(manifest, ensure_ascii=False, indent=1),
+                                         encoding="utf-8")
+        replace_dir(tmp, final)                      # 名前の付け替え（Windows の一時的な掴みに耐える）
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return {"dir": str(final), "name": final.name, "manifest": manifest, "counts": counts,
+            "db_check": health, **(extra or {})}
+
+
 def backup_before_migrate(data_dir, *, backup_dir=None, clock=None,
                           expected_version: int | None = None) -> dict | None:
     """**版を上げる前に控えを取る**（設計 §0.12-6・専門 §5.4）。
@@ -381,39 +492,49 @@ def backup_before_migrate(data_dir, *, backup_dir=None, clock=None,
         if raw is None:
             got = setting_of(con, SETTING_BACKUP_DIR)
             raw = Path(got) if got and str(got).strip() else default_backup_dir()
-        root = check_backup_dir(backup_dir if backup_dir is not None else raw, data_dir)
-        root.mkdir(parents=True, exist_ok=True)
-        stamp = clock.now()
-        final = free_dir_name(root, f"{PRE_MIGRATE_PREFIX}{local_day(stamp)}-"
-                                    f"{local_hhmmss(stamp)}")
-        tmp = root / f".tmp-{final.name}"
-        if tmp.exists():
-            shutil.rmtree(tmp, ignore_errors=True)
-        tmp.mkdir(parents=True)
-        out = tmp / "db.sqlite3"
-        dst = sqlite3.connect(str(out))
-        try:
-            con.backup(dst)                          # **online backup API**（WAL を畳む）
-            dst.execute("PRAGMA journal_mode = DELETE")
-        finally:
-            dst.close()
-        for suffix in ("-wal", "-shm"):
-            (tmp / f"db.sqlite3{suffix}").unlink(missing_ok=True)
-        counts = counts_of(out)
-        manifest = {
-            "schema": SCHEMA_ID, "abi": ABI,
-            "app_version": current_app_version(), "created_at": stamp,
-            "data_dir": str(data_dir),
-            "includes": {"db": True, "sidecar": False, "export": False, "library": False},
-            "counts": counts, "db_sha256": "sha256:" + sha256_file(out),
-            "db_bytes": int(out.stat().st_size),
-        }
-        validate_manifest(manifest)
-        (tmp / MANIFEST_NAME).write_text(json.dumps(manifest, ensure_ascii=False, indent=1),
-                                         encoding="utf-8")
-        os.replace(tmp, final)
-        return {"dir": str(final), "name": final.name, "from_version": current,
-                "to_version": expected, "manifest": manifest, "counts": counts}
+        out = _write_db_only(con, data_dir, backup_dir if backup_dir is not None else raw,
+                             prefix=PRE_MIGRATE_PREFIX, stamp=clock.now(),
+                             extra={"from_version": current, "to_version": expected})
+        return out
+    finally:
+        con.close()
+
+
+def backup_before_shape_change(data_dir, *, backup_dir=None, clock=None) -> dict | None:
+    """**版を上げずに表の形を変える前に控えを取る**（P8-4 の監査 D-2 / G-5）。
+
+    `_top_up_v6` の `ALTER`（`deletion_log.stuck_reason` など）は**版を上げない**ので、
+    `pre-migrate-*` の道を通らない。実データで `stuck_reason` の列が**控え無しで**
+    足された（P8-4 の監査の事故 2 件目）。ここで `pre-topup-*` を取ってから通す。
+
+    - 版がバイナリより**古い**ときは何もしない（`pre-migrate-*` が受け持つ）
+    - 足りていない物が**無ければ**何もしない（`None`）
+    - 控えの名前は `pre-topup-<YYYYMMDD>-<HHMMSS>/`（**掃除の対象にしない**）
+    """
+    clock = clock_of(clock)
+    data_dir = Path(data_dir)
+    path = data_dir / "db.sqlite3"
+    if not path.is_file():
+        return None
+    con = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=15.0)
+    con.row_factory = sqlite3.Row
+    try:
+        version = con.execute("PRAGMA user_version").fetchone()[0]
+        if version < db.SCHEMA_VERSION:
+            return None
+        missing = db.missing_top_ups(con)
+        if not missing:
+            return None
+        raw = env_backup_dir()
+        if raw is None:
+            got = setting_of(con, SETTING_BACKUP_DIR)
+            raw = Path(got) if got and str(got).strip() else default_backup_dir()
+        out = _write_db_only(con, data_dir, backup_dir if backup_dir is not None else raw,
+                             prefix=PRE_TOPUP_PREFIX, stamp=clock.now(),
+                             extra={"missing": missing, "version": version})
+        log.warning("表の形を変える前に控えを取りました（%s）: %s",
+                    ", ".join(missing), out["dir"])
+        return out
     finally:
         con.close()
 
@@ -590,6 +711,24 @@ def check_db_file(path, *, full: bool = False) -> dict:
         con.close()
 
 
+def check_snapshot_db(path) -> dict:
+    """**写しの健全性**（設計 §0.12-5 の日次の `integrity_check`。P8-4 の監査 B-1）。
+
+    `quick_check` → 通れば `integrity_check`。**写しを実際に開いて**見る
+    （元の接続は自分のページキャッシュ越しに読むので、走ったまま壊れたページを
+    見落としうる。監査の K9 が実測している）。
+
+    戻り値は `check_db_file` と同じ形に `stage`（どちらの検査で落ちたか）と
+    `stages`（両方の結果）を足した物。**通らなければその写しは世代として採用しない。**
+    """
+    quick = check_db_file(path)
+    if not quick["ok"]:
+        return {**quick, "stage": "quick_check", "stages": {"quick_check": quick}}
+    full = check_db_file(path, full=True)
+    return {**full, "stage": "integrity_check" if not full["ok"] else "ok",
+            "stages": {"quick_check": quick, "integrity_check": full}}
+
+
 def _count(con: sqlite3.Connection, table: str) -> int:
     """表の行数（**無い表は 0**。契約は 5 つの数を要求する）。"""
     try:
@@ -708,6 +847,9 @@ class BackupService:
 
         同じ日なら何もしない（設計 §0.12-1）。「いま取る」は `snapshot(manual=True)` で、
         こちらは**同じ日でも必ず新しく取る**（点検 B2）。
+
+        **（P8-4 の監査 G-1）走ったまま壊れた DB の入口。** 元の接続にも `quick_check` を
+        掛け、落ちたら**読み取り専用に切り替えて**断る（壊れた DB に書き続けない）。
         """
         with self._lock:
             self._ticks += 1
@@ -717,9 +859,11 @@ class BackupService:
             try:
                 root = self.backup_dir()
                 day = local_day(self.clock.now())
-            except ReviewError as exc:                # 置き場の設定が壊れている
+                self._refuse_if_broken()              # G-1（走ったまま壊れた）
+            except ReviewError as exc:                # 置き場の設定が壊れている / DB が壊れた
                 return self._failed(exc, ticks=self._ticks)
             if (root / day).is_dir():
+                self._clear_error_if_fixed(root)      # D-5（失敗が直っていれば消す）
                 return {"ticks": self._ticks, "skipped": "already", "day": day,
                         "taken": None, "error": None}
             try:
@@ -736,6 +880,37 @@ class BackupService:
         log.warning("バックアップに失敗しました: %s", message)
         return {"ticks": ticks, "skipped": "failed", "taken": None, "error": message}
 
+    # ---- 壊れた DB の入口（P8-4 の監査 G-1）----
+
+    def _refuse_if_broken(self) -> None:
+        """**走ったまま壊れた DB** なら読み取り専用に切り替えて断る（G-1）。
+
+        起動時の `inspect_db`（`app.py`）は「開く前」の検査なので、**走っている間に
+        壊れた**場合はここでしか気づけない。写しの検査（B-1）だけでも世代は守れるが、
+        壊れた DB に書き続けないためにも入口を 1 つ置く。
+        """
+        if self.store.read_only:
+            return
+        with self.store.locked() as con:
+            got = db.quick_check(con)
+        if got["ok"]:
+            return
+        message = f"DB が壊れています（quick_check: {got['detail']}）"
+        self._mark_broken(message)
+        raise ReviewError(
+            503, "DB が壊れているのでバックアップを取れません"
+                 "（バックアップから戻してください: " + RESTORE_HINT + "）",
+            code="read_only", details={"quick_check": got["detail"]})
+
+    def _mark_broken(self, message: str) -> None:
+        """記録してから**読み取り専用に切り替える**（G-1）。
+
+        記録が先（`read_only` にすると `transaction()` が 503 になり、書けなくなる）。
+        """
+        self._record_error(message)
+        self.store.read_only = True
+        log.warning("バックアップ: %s", message)
+
     # ---- 取る ----
 
     def snapshot(self, *, manual: bool = False, out=None, include_library: bool = False) -> dict:
@@ -745,11 +920,15 @@ class BackupService:
         - 「いま取る」: `<backup_dir>/<YYYYMMDD>-<HHMMSS>/`（**必ず新しい**。点検 B2）
         - `out` を渡すとそこへ取る（CLI の `--out`）。**`<data>` の中は断る。**
         - **一時フォルダに作って `os.replace`**（書きかけを置かない）
+        - **（P8-4 の監査 B-1）写しを開いて検査し、通らなければ採用しない**
+        - **（D-6）`out` を指定した置き場では古い世代の掃除をしない**
+          （一時の置き場で「直近 7 個」を当てると、そこにある物を消してしまう）
         """
         with self._lock:
             if self.store.read_only:
                 raise ReviewError(503, "DB が壊れているのでバックアップを取れません",
                                   code="read_only")
+            self._refuse_if_broken()                  # G-1（走ったまま壊れた）
             target = check_backup_dir(out if out is not None else self.backup_dir(),
                                       self.data_dir)
             target.mkdir(parents=True, exist_ok=True)
@@ -764,17 +943,26 @@ class BackupService:
             try:
                 got = self._write_snapshot(tmp, stamp=stamp, manual=manual,
                                            include_library=include_library, previous=previous)
-                os.replace(tmp, final)               # 名前の付け替え（一瞬。書きかけを見せない）
-            except BaseException:
+                replace_dir(tmp, final)              # 一瞬で本名に（書きかけを見せない）
+            except BaseException as exc:
                 shutil.rmtree(tmp, ignore_errors=True)
+                if isinstance(exc, Exception):       # **黙って捨てない**（Ctrl-C は残さない）
+                    self._record_failure(exc)
                 raise
-            pruned = prune_snapshots(target, KEEP_SNAPSHOTS, protect=final.name)
+            # **D-6**: 一時の置き場（`--out`）では掃除しない。自分の置き場のときだけ
+            pruned = (prune_snapshots(target, KEEP_SNAPSHOTS, protect=final.name)
+                      if out is None else [])
             self._clear_error()
             self._remember_ok(stamp)
             got.update(dir=str(final), name=final.name, manual=manual, pruned=pruned,
                        backup_dir=str(target))
             self._last = got
             return got
+
+    def _record_failure(self, exc: BaseException) -> None:
+        """失敗の文言を残す（`ReviewError` は `detail`、それ以外は例外の文）。"""
+        message = exc.detail if isinstance(exc, ReviewError) else str(exc)
+        self._record_error(message)
 
     def _previous_snapshot(self, target: Path, *, skip: Path) -> Path | None:
         """増分の相手（**いちばん新しい、今作っている物以外**）。
@@ -834,6 +1022,19 @@ class BackupService:
             includes["library"] = library["files"] > 0
 
         counts = counts_of(db_out)
+        # **（P8-4 の監査 B-1）作った写しを開いて検査する。** 設計 §0.12-5 の「日次で
+        # `integrity_check`」がここ。元の接続は自分のページキャッシュ越しに読むので、
+        # 走ったまま壊れたページを見落としうる（監査の K9 が実測）。**通らない写しは
+        # 世代として採用しない**（`snapshot()` が一時フォルダを捨て、`prune` を呼ばない）。
+        # 検査は**中身を作り終えた後**（`manifest` を書く前）に 1 回だけ回す。
+        health = check_snapshot_db(db_out)
+        if not health["ok"]:
+            raise ReviewError(
+                409, f"写しの DB が検査に通りません（この世代は採用しません）: "
+                     f"{health['stage']}: {health['detail']}",
+                code="bad_snapshot",
+                details={"stage": health["stage"], "detail": health["detail"],
+                         "dir": str(tmp)})
         manifest = {
             "schema": SCHEMA_ID,
             "abi": ABI,
@@ -850,7 +1051,7 @@ class BackupService:
             json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
         return {"created_at": stamp, "manifest": manifest, "counts": counts,
                 "files": files, "library": library, "settings": len(settings),
-                "db_bytes": int(db_bytes), "db_sha256": db_digest}
+                "db_bytes": int(db_bytes), "db_sha256": db_digest, "db_check": health}
 
     def _settings_rows(self) -> dict:
         with self.store.locked() as con:
@@ -896,8 +1097,16 @@ class BackupService:
     # ---- 失敗の記録（黙って捨てない）----
 
     def _record_error(self, message: str) -> None:
+        """失敗を残す（**黙って捨てない**。設計 §0.12 の 6）。
+
+        **（P8-4 の監査 D-4）同じ文言なら書き直さない。** 30 秒の周期ごとに
+        `last_error_at` を更新すると、失敗が続く間ずっと WAL に 1 行ずつ積む
+        （置き場が書けないだけで DB を太らせる）。時刻は「最初に失敗した時刻」になる。
+        """
         try:
             with self.store.transaction() as con:
+                if setting_of(con, SETTING_LAST_ERROR) == message:
+                    return
                 self._put(con, SETTING_LAST_ERROR, message)
                 self._put(con, SETTING_LAST_ERROR_AT, self.clock.now())
         except Exception:                                        # noqa: BLE001
@@ -910,6 +1119,41 @@ class BackupService:
                             (SETTING_LAST_ERROR, SETTING_LAST_ERROR_AT))
         except Exception:                                        # noqa: BLE001
             log.exception("バックアップの失敗の記録を消せませんでした")
+
+    def _has_error(self) -> bool:
+        """いま失敗が残っているか（**読むだけ**）。"""
+        try:
+            with self.store.locked() as con:
+                return setting_of(con, SETTING_LAST_ERROR) is not None
+        except Exception:                                        # noqa: BLE001
+            return False
+
+    def _clear_error_if_fixed(self, root: Path) -> None:
+        """**今日の分が既にある日でも、失敗が直っていれば消す**（P8-4 の監査 D-5）。
+
+        消す前に**置き場に実際に書いてみる**（書けないのに「直った」と消さない。
+        監査 K6f は、置き場を直しても翌日まで古い失敗が画面に出続けるのを見ている）。
+        """
+        if not self._has_error():
+            return
+        if not self._dir_is_writable(root):
+            return
+        self._clear_error()
+
+    def _dir_is_writable(self, root: Path) -> bool:
+        """置き場に書けるか（**小さな一時ファイルで試す**。作った物は必ず消す）。"""
+        probe = Path(root) / f".tmp-write-probe-{os.getpid()}"
+        try:
+            Path(root).mkdir(parents=True, exist_ok=True)
+            probe.write_bytes(b"")
+            return True
+        except OSError:
+            return False
+        finally:
+            try:
+                probe.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _remember_ok(self, stamp: str) -> None:
         try:
@@ -926,42 +1170,47 @@ class BackupService:
     # ---- 状態（`GET /api/backup`）----
 
     def state(self) -> dict:
-        """置き場・一覧・最後に取った時刻・次に取る予定・最後の失敗（§3.3）。**読むだけ**。"""
-        with self._lock:
-            root = self.backup_dir()
-            snaps = list_snapshots(root)
-            last = snaps[0] if snaps else None
-            stamp = self.clock.now()
-            day = local_day(stamp)
-            with self.store.locked() as con:
-                last_error = setting_of(con, SETTING_LAST_ERROR)
-                last_error_at = setting_of(con, SETTING_LAST_ERROR_AT)
-                last_ok_at = setting_of(con, SETTING_LAST_OK_AT)
-            if last is not None and last["created_at"]:
-                last_ok_at = last["created_at"]
-            today_done = (root / day).is_dir()
-            return {
-                "backup_dir": str(root),
-                "backup_dir_source": self.backup_dir_source(),
-                "default_backup_dir": str(default_backup_dir()),
-                "keep": KEEP_SNAPSHOTS,
-                "interval_sec": self.interval,
-                "snapshots": snaps,
-                "count": len(snaps),
-                "last": last,
-                "last_at": last_ok_at,
-                "today_done": today_done,
-                "next_run_at": next_local_midnight(stamp) if today_done
-                else plus_seconds(stamp, int(self.interval)),
-                "next_run_note": ("今日の分は取りました（次は日付が変わったとき）" if today_done
-                                  else "今日の分はまだです（30 秒ごとに見ています）"),
-                "last_error": last_error,
-                "last_error_at": last_error_at,
-                "read_only": self.store.read_only,
-                "running": bool(self._thread is not None and self._thread.is_alive()),
-                "ticks": self._ticks,
-                "last_result": self._last,
-            }
+        """置き場・一覧・最後に取った時刻・次に取る予定・最後の失敗（§3.3）。**読むだけ**。
+
+        **（P8-4 の監査 D-12）`self._lock` を取らない。** `--include-library` の写しは
+        数百 MB になりうるので、その間 `GET /api/backup` が待たされる（実データは 292 MB）。
+        書きかけの一時フォルダは名前が `SNAPSHOT_RE` に当たらないので一覧に出ないし、
+        差し替えは `os.replace` なので、**出来上がった物だけが見える**。
+        """
+        root = self.backup_dir()
+        snaps = list_snapshots(root)
+        last = snaps[0] if snaps else None
+        stamp = self.clock.now()
+        day = local_day(stamp)
+        with self.store.locked() as con:
+            last_error = setting_of(con, SETTING_LAST_ERROR)
+            last_error_at = setting_of(con, SETTING_LAST_ERROR_AT)
+            last_ok_at = setting_of(con, SETTING_LAST_OK_AT)
+        if last is not None and last["created_at"]:
+            last_ok_at = last["created_at"]
+        today_done = (root / day).is_dir()
+        return {
+            "backup_dir": str(root),
+            "backup_dir_source": self.backup_dir_source(),
+            "default_backup_dir": str(default_backup_dir()),
+            "keep": KEEP_SNAPSHOTS,
+            "interval_sec": self.interval,
+            "snapshots": snaps,
+            "count": len(snaps),
+            "last": last,
+            "last_at": last_ok_at,
+            "today_done": today_done,
+            "next_run_at": next_local_midnight(stamp) if today_done
+            else plus_seconds(stamp, int(self.interval)),
+            "next_run_note": ("今日の分は取りました（次は日付が変わったとき）" if today_done
+                              else "今日の分はまだです（30 秒ごとに見ています）"),
+            "last_error": last_error,
+            "last_error_at": last_error_at,
+            "read_only": self.store.read_only,
+            "running": bool(self._thread is not None and self._thread.is_alive()),
+            "ticks": self._ticks,
+            "last_result": self._last,
+        }
 
 
 # ---- 復元（CLI が主。設計 §0.15 の 2・点検 G8）----
@@ -974,14 +1223,19 @@ def restore(data_dir, snapshot_dir, *, force: bool = False, clock=None,
     順序（**この順でしか戻さない**）:
 
     1. `manifest.json` を読んで**契約を確かめ、版と件数を出す**
-    2. **戻す前に `quick_check`**（写しの DB が壊れていたら採用しない）
-    3. **いまの DB を退避**（`<backup_dir>/pre-restore-<時刻>/`。**`<data>` の外**）
-    4. 置き換え（`-wal` / `-shm` は消す。**写しはそのまま残す**）
-    5. **`integrity_check`**（通らなければ**元に戻す**）
-    6. `sidecar/` と `export/` を戻す
+    2. **（C-1）写しの `db_sha256` を manifest と照合**（中身だけ変わった写しを採用しない）
+    3. **戻す前に `quick_check`**（写しの DB が壊れていたら採用しない）
+    4. **いまの DB を退避**（`<backup_dir>/pre-restore-<時刻>/`。**`<data>` の外**）
+    5. 置き換え（**一時名に写して `os.replace`。その後に `-wal` / `-shm` を消す**。C-2）
+    6. **`integrity_check`**（通らなければ**元に戻す**）
+    7. `sidecar/` と `export/` を戻す
 
-    `force=True` は「manifest が読めない」「写しの DB が `quick_check` に通らない」を
-    **承知の上で進む**（既定は断る。危ない側の既定にしない）。
+    `force=True` は「manifest が読めない」「写しの `db_sha256` が違う」「写しの DB が
+    `quick_check` に通らない」を**承知の上で進む**（既定は断る。危ない側の既定にしない）。
+
+    退避の置き場は `backup_dir` を渡したときはそこ、渡さないときは**スナップショットの
+    隣**（`snapshot_dir` の親）。CLI は渡さないので、USB の写しから戻すと退避も USB に出来る
+    （P8-4 の監査 D-3。記録と食い違っていたので実装に合わせて書き直した）。
     """
     clock = clock_of(clock)
     data_dir = Path(data_dir)
@@ -1003,7 +1257,20 @@ def restore(data_dir, snapshot_dir, *, force: bool = False, clock=None,
         raise ReviewError(409, f"バックアップに db.sqlite3 がありません: {snap}",
                           code="bad_backup", details={"dir": str(snap)})
 
-    before = check_db_file(src_db)                     # 2. 戻す前の quick_check
+    # **（C-1）manifest の `db_sha256` を照合する。** 契約は「控えた DB の中身のハッシュ」と
+    # 決めているのに、`restore` は形だけ見て `quick_check` に進んでいた。`quick_check` /
+    # `integrity_check` は**構造しか見ない**ので、中身だけ変わった写し（ビット化け・別の写しと
+    # の混同）は素通りする（監査の K10k が実測）。
+    digest = "sha256:" + sha256_file(src_db)
+    expected = (manifest or {}).get("db_sha256")
+    sha_ok = expected is None or digest == expected
+    if not sha_ok and not force:
+        raise ReviewError(
+            409, "バックアップの DB が manifest の db_sha256 と違います（--force で続けます）",
+            code="bad_backup",
+            details={"dir": str(snap), "expected": expected, "actual": digest})
+
+    before = check_db_file(src_db)                     # 3. 戻す前の quick_check
     if not before["ok"] and not force:
         raise ReviewError(409, "バックアップの DB が壊れています（--force で続けます）",
                           code="bad_backup",
@@ -1012,7 +1279,7 @@ def restore(data_dir, snapshot_dir, *, force: bool = False, clock=None,
     stamp = clock.now()
     setaside = None
     target_db = data_dir / "db.sqlite3"
-    if target_db.exists():                             # 3. 元の DB を退避
+    if target_db.exists():                             # 4. 元の DB を退避
         root = Path(backup_dir) if backup_dir else snap.parent
         root.mkdir(parents=True, exist_ok=True)
         setaside = free_dir_name(root, f"{RESTORE_KEEP_PREFIX}{local_day(stamp)}-"
@@ -1023,27 +1290,55 @@ def restore(data_dir, snapshot_dir, *, force: bool = False, clock=None,
             if old.exists():
                 shutil.copy2(old, setaside / old.name)
 
-    for suffix in ("-wal", "-shm"):                    # 4. 置き換え（古い WAL を残さない）
-        stale = data_dir / f"db.sqlite3{suffix}"
-        if stale.exists():
-            stale.unlink()
+    # 5. 置き換え。**（C-2）順序を直した。** 以前は `-wal` / `-shm` を**先に** `unlink` して
+    # いたので、アプリが掴んでいると（Windows は `FILE_SHARE_DELETE` 無しで開く）
+    # **`unlink` の `WinError 32` がトレースバックで落ち**、「アプリを止めて」の 1 行は
+    # 出なかった（監査の s6_run）。写しを一時名に置いてから `os.replace` すれば、
+    # 掴まれている場合は**何も壊さずに** 409 の 1 行で返せる（`os.replace` は
+    # 掴まれていれば `PermissionError`。実測: `open()` で掴んだだけでも WinError 5）。
     data_dir.mkdir(parents=True, exist_ok=True)
+    tmp_db = data_dir / f".tmp-restore-db-{os.getpid()}.sqlite3"
     try:
-        shutil.copy2(src_db, target_db)                # 写しはそのまま残す（読むだけ）
+        shutil.copy2(src_db, tmp_db)                   # 写しはそのまま残す（読むだけ）
+        os.replace(tmp_db, target_db)                  # 一瞬で入れ替える（書きかけを見せない）
     except OSError as exc:
         # **アプリが動いていると Windows は置き換えさせない**（掴んでいる）。
         # 500 にせず、人が読める 1 行で返す（設計 §3.4 の流儀）
+        tmp_db.unlink(missing_ok=True)
         raise ReviewError(409, "DB を置き換えられません（アプリを止めてから戻してください）: "
                               f"{exc}", code="restore_failed",
-                          details={"data_dir": str(data_dir), "from": str(src_db)}) from exc
+                          details={"data_dir": str(data_dir), "from": str(src_db),
+                                   "setaside": str(setaside) if setaside else None}) from exc
+    for suffix in ("-wal", "-shm"):                    # 古い WAL は**置き換えた後**に消す
+        stale = data_dir / f"db.sqlite3{suffix}"
+        if not stale.exists():
+            continue
+        try:
+            stale.unlink()
+        except OSError as exc:
+            raise ReviewError(
+                409, "DB は戻しましたが古い WAL を消せません"
+                     "（アプリを止めてから、もう一度戻してください）: " + f"{exc}",
+                code="restore_failed",
+                details={"data_dir": str(data_dir), "file": str(stale),
+                         "setaside": str(setaside) if setaside else None}) from exc
 
-    after = check_db_file(target_db, full=True)        # 5. 戻した後の integrity_check
+    after = check_db_file(target_db, full=True)        # 6. 戻した後の integrity_check
     if not after["ok"]:
         if setaside is not None:                       # 元に戻す
+            rollback = data_dir / f".tmp-rollback-db-{os.getpid()}.sqlite3"
             for suffix in ("", "-wal", "-shm"):
                 old = setaside / f"db.sqlite3{suffix}"
                 if old.exists():
-                    shutil.copy2(old, data_dir / old.name)
+                    if suffix == "":
+                        try:
+                            shutil.copy2(old, rollback)
+                            os.replace(rollback, data_dir / old.name)
+                        except OSError:
+                            rollback.unlink(missing_ok=True)
+                            raise
+                    else:
+                        shutil.copy2(old, data_dir / old.name)
         else:
             target_db.unlink(missing_ok=True)
         raise ReviewError(409, "戻した DB が integrity_check を通りません（元に戻しました）",
@@ -1052,7 +1347,7 @@ def restore(data_dir, snapshot_dir, *, force: bool = False, clock=None,
                                    "setaside": str(setaside) if setaside else None})
 
     copied: dict[str, dict] = {}
-    for sub in COPY_DIRS:                              # 6. sidecar / export を戻す
+    for sub in COPY_DIRS:                              # 7. sidecar / export を戻す
         src = snap / sub
         if src.is_dir():
             copied[sub] = copy_incremental(src, data_dir / sub)
@@ -1067,6 +1362,8 @@ def restore(data_dir, snapshot_dir, *, force: bool = False, clock=None,
         "manifest": manifest,
         "manifest_error": man_error,
         "forced": bool(force),
+        # **（C-1）照合の結果**（CLI が 1 行で出す。`--force` で進んだときも残す）
+        "sha256": {"ok": sha_ok, "expected": expected, "actual": digest},
         "counts": (manifest or {}).get("counts") or counts_of(target_db),
         "before": before,
         "after": after,
@@ -1246,6 +1543,9 @@ def set_backup_dir(store, value, *, actor: str = "human") -> dict:
 
     **設計 §3.3 は「既存の口（`PATCH /api/settings`）に足す」と書いているが、
     その口は実装に無かった**（P8-4 で作った。記録の「設計の穴」1）。
+
+    **（P8-4 の監査 D-11）形もその場で見る**（相対パス・ファイル・無いドライブは 422）。
+    前は 200 を返してから次の周期で `last_error` になるだけだった（人が気づけない）。
     """
     if actor != "human":
         raise ReviewError(403, "バックアップの置き場の変更は人だけができます",
@@ -1264,13 +1564,15 @@ def set_backup_dir(store, value, *, actor: str = "human") -> dict:
 __all__ = [
     "ABI", "BackupService", "COPY_DIRS", "DEFAULT_BACKUP_DIRNAME", "ENV_BACKUP_DIR",
     "JST_OFFSET_SEC", "KEEP_SNAPSHOTS", "LIBRARY_DIR", "MANIFEST_NAME",
-    "PRE_MIGRATE_PREFIX", "RESTORE_HINT", "RESTORE_KEEP_PREFIX", "SCHEMA_ID",
-    "SETTINGS_NAME", "TICK_INTERVAL_SEC", "backup_before_migrate", "check_backup_dir",
-    "check_db_file", "copy_incremental", "counts_of", "current_app_version",
-    "default_backup_dir", "dir_size", "env_backup_dir", "free_dir_name", "guidance_for",
-    "inspect_db", "is_our_snapshot", "kind_of_snapshot", "list_snapshots", "local_day",
-    "local_hhmmss", "next_local_midnight", "plus_seconds", "prune_snapshots",
-    "read_manifest", "read_manifest_lenient", "rebuild_metadata", "resolve_backup_dir",
-    "restore", "set_backup_dir", "setting_of", "settings_state", "sha256_file",
-    "snapshot_info", "validate_manifest",
+    "PRE_MIGRATE_PREFIX", "PRE_TOPUP_PREFIX", "RESTORE_HINT", "RESTORE_KEEP_PREFIX",
+    "SCHEMA_ID", "SETTINGS_NAME", "TICK_INTERVAL_SEC", "backup_before_migrate",
+    "backup_before_shape_change", "check_backup_dir", "check_backup_target",
+    "check_db_file", "check_snapshot_db", "copy_incremental", "counts_of",
+    "current_app_version", "default_backup_dir", "dir_size", "env_backup_dir",
+    "free_dir_name", "guidance_for", "inspect_db", "is_our_snapshot", "kind_of_snapshot",
+    "list_snapshots", "local_day", "local_hhmmss", "next_local_midnight", "plus_seconds",
+    "prune_snapshots", "read_manifest", "read_manifest_lenient", "rebuild_metadata",
+    "replace_dir", "resolve_backup_dir", "restore", "set_backup_dir", "setting_of",
+    "settings_state",
+    "sha256_file", "snapshot_info", "validate_manifest",
 ]

@@ -237,17 +237,36 @@
    `sqlite3.Connection.backup()` で DB を取り、**`sidecar/` と `export/` も同じスナップショットに入れる**
    （**`sidecar/` は PNG から取り直せない唯一のもの**。実データに **1 ファイル**あった）。
    **画像とサムネイルは入れない**（参照モードでは画像は利用者の資産。`thumbs` は 297 ファイルあるが再生成できる）。
+   **（P8-4 の監査 D-9）出来るのは 5 つ**（`db.sqlite3`・`sidecar/`・`export/`・`settings.json`・`manifest.json`）。
+   `settings.json` は**契約の `includes` に欄が無い**（`additionalProperties: false`）ので manifest では宣言しない。
 2. **置き場の既定は `<data>` の外**: `%USERPROFILE%\image-reviewer-backups\<YYYYMMDD>\`
    （設定 `backup_dir`・環境変数 `IMAGE_REVIEWER_BACKUP_DIR`）。
    **理由**: `<data>` を消したときに備える対策を `<data>` の中に置くと**論理が閉じない**（専門 §5.1 の注記）。
+   **（P8-4 の監査 D-11）置き場の値はその場で形を見る**（相対パス・ファイル・無いドライブは **422 `bad_backup_dir`**。
+   次の周期の `last_error` 任せにしない）。**`--out` で指定した一時の置き場では古い世代を掃除しない**（D-6）。
 3. **直近 7 個を残す**。`manifest.json` に**版・件数・作った時刻・含めた範囲**を書く。
+   **掃除の対象は「自分の名前で `manifest.json` を持つ物」だけ**（`list_snapshots` は `prunable` でそれを言う。D-6）。
 4. **CLI**: `image-reviewer backup --out <dir> [--include-library]` / `image-reviewer restore <dir> [--force]` /
    **`image-reviewer rebuild-metadata`**（PNG と sidecar から来歴を組み直す。**既存の `capture.py` の
    `write_sidecar` の形を使う**）。**`rebuild-metadata` は P8 で作る**（専門 §5.2 の 4 の約束）。
+   **（P8-4 の監査 C-1）`restore` は取り出す前に manifest の `db_sha256` を照合する**（違えば **409 `bad_backup`**、
+   `--force` で進む）。**（C-2）置き換えは「一時名に写して `os.replace` → その後に `-wal` / `-shm` を消す」**。
+   **掴まれていれば何も壊さずに** 409 `restore_failed` の 1 行（トレースバックを出さない）。
+   **（D-3）退避（`pre-restore-*`）は `backup_dir` を渡したときはそこ、渡さなければスナップショットの隣**
+   （CLI は渡さない＝USB の写しから戻すと退避も USB）。
 5. **健全性**: 起動時 `PRAGMA quick_check`（失敗したら**読み取り専用で起動**して復元を案内）／
-   日次で `integrity_check`／復元後 `integrity_check`（**通らなければ元に戻す**）。
+   **日次は「写しを作り終えた後に、写しを開いて `quick_check` → `integrity_check`」**
+   （**（P8-4 の監査 B-1）通らない写しは世代として採用しない**——一時フォルダを捨て、`last_error` に残し、
+   `prune` を呼ばない。元の接続の `quick_check` も見て、走ったまま壊れていれば**読み取り専用に切り替える**）／
+   復元後 `integrity_check`（**通らなければ元に戻す**）。
    **`-wal` / `-shm` を単独でコピーしない**（**必ず online backup API**）。
-6. **版が上がるとき**: **上げる前に自動バックアップ**。**DB の版 > バイナリの版なら起動を拒否**（前方のみ）。
+6. **版が上がるとき**: **上げる前に自動バックアップ**（取れなければ**上げない**）。
+   **（E-2・P8-4 の監査）DB の版 > バイナリの版なら「起動を拒否」ではなく「読み取り専用で起動して案内」**
+   （§10-13）。
+   **（P8-4 の監査 D-2 / G-5）版を上げずに表の形を変えるとき（`_top_up_v6` の `ALTER`）も、
+   変える前に控えを取る**（`pre-topup-<YYYYMMDD>-<HHMMSS>/`。`pre-migrate-*` と同じく**掃除の対象にしない**）。
+   実データで `deletion_log.stuck_reason` が**控え無しで**足された（監査の事故 2 件目）ための規律。
+   **足す物の一覧は `db.TOP_UP_COLUMNS` が正**（`_top_up_v6` と `missing_top_ups()` が同じ物を見る）。
 
 ### 0.13 規律（前の段で踏んだ穴を最初から塞ぐ）
 
@@ -261,7 +280,8 @@
 | **取引の外で外部を待つ** | ファイル操作（**`os.rename`**・`unlink`）は**取引の外**。取引は**台帳の 1 行**だけ。**（監査 B-1）台帳の行を先に書いてから動かし、動かせなければ行を消す** |
 | **実削除は錠の下** | **（監査 B-3）`tick` と `_purge_expired` は `self._lock` を取る**（窓の最後の周期の `undo` と競合させない）。**消す直前に行をもう一度読み、取引の中でも `restored_at IS NULL` を見る** |
 | **迷子を作らない** | **（監査 B-1・G-4）** 台帳を先に書く順で「移動の前に落ちた行」が残りうるので、**実体が無い行は元の場所を見て戻すか後始末を完了する**。**台帳に無い `pending-delete/` の中身は「拾い物」として出す**（消さない） |
-| **原子性** | sidecar・スナップショット・`manifest.json` は**一時ファイル → `os.replace`** |
+| **原子性** | sidecar・スナップショット・`manifest.json` は**一時ファイル → `os.replace`**。**（P8-4 の監査 B-1）採用する前に開いて検査する**（日次と「いま取る」は `quick_check` → `integrity_check`。復元は `db_sha256` の照合 → `quick_check`） |
+| **控えは形を変える前にも取る** | **（P8-4 の監査 D-2 / G-5）** 版を上げる道（`pre-migrate-*`）だけでなく、**版を上げずに表を変える道**（`_top_up_v6` の `ALTER`）でも `pre-topup-*` を取る。**足す物は `db.TOP_UP_COLUMNS` に 1 か所で書く** |
 | **`CHECK` は `ALTER` で足せない** | 新表は**最初から `CHECK` を付ける**。既存の表に足す値は**サービス層で検査**（`asset.deleted_at`・`review_group.kind`） |
 | **数を黙って捨てない** | 一括削除の `skipped`・重複の `unhashed`・バックアップの件数を**応答と画面に出す** |
 | **壊す操作への入口は既定で何も選ばない** | **（P8-3 の監査）** `#/duplicates` の「削除へ回す」は**開いた直後 1 枚も選ばない**（「全部選ぶ」は置く）。既定で全部に印が付いていると、押し間違いが**全群の削除**に化ける（監査の複製で 56 枚が掛かった） |
@@ -433,6 +453,26 @@
 
 **仕分けは [`p8-3-audit-triage.md`](p8-3-audit-triage.md) に 1 行ずつ。**
 
+### 0.20 P8-4 の監査で確定したこと（**2026-10-18。判定は「合格（条件つき）」→ 全部反映**）
+
+**条件は 1 つで、それが一番危ない穴だった**（線 10〜12 は実データの複製で通っていた。
+足りないのは「**壊れた物を採用しない**」という安全側の検査である）。
+
+| # | 論点 | 決めたこと | 反映先 |
+| --- | --- | --- | --- |
+| **B-1**（G-1） | **日次が写しの健全性を見ず、壊れた写しで健全な 7 世代を押し出す**（`last_error` も出ない） | **写しを作り終えた後に、写しを開いて `quick_check` → `integrity_check`**。通らなければ**採用しない**（一時フォルダを捨て、`last_error` に残し、**`prune` を呼ばない**）。**元の接続の `quick_check` も見て、走ったまま壊れていれば読み取り専用に切り替える**（書き込みを止める） | §0.12-5・§1.2 の線 10・§3.4・§8.1（72・73） |
+| **C-1**（G-2） | **`restore` が manifest の `db_sha256` を読まない**（中身だけ変わった写しが黙って採用される） | **取り出す前に照合**（違えば **409 `bad_backup`**、`--force` で進む。CLI は 1 行で出す） | §0.12-4・§3.4・§6.2・§8.1（76） |
+| **C-2**（G-4） | **アプリが掴んでいる間の `restore` がトレースバックで落ちる**（`-wal` の `unlink` が先。決めた点 22 と逆） | **順序を「一時名へ `copy2` → `os.replace` → `-wal` / `-shm` を消す」**に直し、**全部の `OSError` を 409 の 1 行**に写す（掴まれていれば `<data>` は 1 バイトも変わらない） | §0.12-4・§3.4・§8.1（77・78） |
+| **C-3**（G-3） | **読み取り専用で `GET /api/groups` / `/api/reviews` が 503・台帳 3 本が 500** | **読む 3 本（`group_state` / `list_groups` / `list_decisions`）を `locked()` に**。**`sqlite3.DatabaseError` を 503 `read_only`（`details.reason: malformed`）に写す handler を 1 つ**足す | §3.4・§8.1（79・80） |
+| **D-1〜D-13** | 1 行ずつ（**画面が 503・版を上げない形の変更に控えが無い・`create_app()` が import 時に走る・退避先の記録ずれ・毎周期の書き直し・直っても消えない失敗・一覧と掃除のずれ・錠の外の読みと毎回の `integrity_check`・WAL のチェックポイント・線 10 の「4 つ」・`PATCH` の検査・`--include-library` の間の錠**） | **D-8（WAL のチェックポイント）は設計の文を直す方を採った**（実装すると「素の `copy2` では判断が抜ける」という検査の前提が壊れる）。**D-9・D-10 は本文と報告で言う**。残りは直した | §0.12-1/2/4/5・§1.2 の線 10・§3.3・§8.1（74・75・81〜84） |
+| **D-2・G-5** | **版を上げない形の変更に控えが無い**（実データに `deletion_log.stuck_reason` が控え無しで足された） | **`pre-topup-<日時>/` を `ALTER` の前に取る**（`db.TOP_UP_COLUMNS` を `_top_up_v6` と `missing_top_ups()` が共有）。**控えが取れなくても開く**が、`settings` の `backup.last_error` に残す | §0.12-6・§8.1（85） |
+| **D-13・G-8** | **`image_reviewer.app` の import が実データを書き込み可で開く**（事故は実データで起きた） | **モジュールの `app` を遅延**（PEP 562 の `__getattr__`）にし、`serve` は `--factory` で `create_app` を渡す。**pytest は収集の前に `IMAGE_REVIEWER_DATA` をテストの中へ向ける**（`setdefault`） | §0.12-6・§8.1（86） |
+| **G-9** | 実データの `stuck_reason` の列（事故 2 件目） | **消さない**（作業木の DDL と同じ形）。**`.backup/pre-p8-4-20261017-232148/` を `backup()` で取った**（263 枚・判断 3 件・`integrity_check ok`）ので、8790 の立て直しで困っても戻せる | 報告（この段の記録） |
+| **G-6・G-7** | 画面を 503 にしない・`last_error` の扱い | **`_db_gate` は `/api/` の下だけ止める**。**同じ文言は書かない**・**書けるようになれば `already` でも消す**（実際に置き場へ書いて確かめる） | §3.3・§8.1（74・75・81） |
+| **F** | 守れていない 5 つ（日次の検査・`db_sha256`・`unlink` の錠・読み取り専用の読み・`GET` が書かないの見方） | **全部試験を足した**（§8.1 の 72〜87）。**壊し試験は 18/18 が落ちる**（`.tmp-audit-redo/p84-fix/mutants.py`） | §8.1・§8.4 |
+
+**仕分けは [`p8-4-audit-triage.md`](p8-4-audit-triage.md) に 1 行ずつ。**
+
 ---
 
 ## 1. 何を作るか（範囲）と合格の線
@@ -458,9 +498,9 @@
 | **7** | **窓はアプリが動いていた時間** | 時計を注入し、`remaining_sec` を 299 → 0 に減らす。**`purge_at` を過去にしても消えない**。**プロセスを再起動しても残り時間が続く**（起動時に消さない） | 再起動後も**取り消せる**。`purge_at` 過去でも**消えない** |
 | **8** | **一括削除の凍結** | `preview` で 5 件凍結 → **1 件を別の内容に差し替える** → 実行 → 差し替えた 1 件だけ `skipped`、**残り 4 件は消える**。`preview_id` を 10 分後に実行 → **`409`。何も消えない** | `skipped` 1・削除 4。失効後は**1 件も消えない** |
 | **9** | **再リンク** | 1 枚を別の場所へ移し、走査 → `missing_at` が立つ。**近くを探す**で見つかり、`sha256` を確かめて繋がる。**中身の違うファイルを指定すると繋がらない**（`409`） | 繋がる／**中身が違えば断る** |
-| **10** | **日次バックアップ**（**（点検 B2・G6）判定は窓のタイマーと同じ周期・「いま取る」は必ず新しく取る**） | `POST /api/backup` → `<backup_dir>/<YYYYMMDD>/` に `db.sqlite3`・`sidecar/`・`export/`・`manifest.json`。**自動**は同じ日なら増えない（**起動時だけでなく 30 秒ごとに「今日のフォルダが無ければ取る」**）。**「いま取る」は同じ日でも必ず新しく取る**（`<YYYYMMDD>/` を一時に作って `os.replace` で差し替え） | 4 つできる。**自動は 2 回目で増えない**。**「いま取る」は増える**。`manifest.json` が契約を通る |
-| **11** | **`<data>` を消しても戻せる** | 複製の `<data>` を**丸ごと別名に退避** → `image-reviewer restore <backup>` → 263 枚・判断 3 件が戻る → `rebuild-metadata` で**sidecar から英訳が戻る** | 263 枚・**判断 3 件**・**英訳 1 件**が戻る。`integrity_check` が通る |
-| **12** | **壊れた DB で書き込まない**（**（点検 B3）先頭 4 KB では開けないので 2 ページ目を潰す**） | DB の**2 ページ目（4096〜8191 バイト）を 0 で潰した**複製で起動 → **読み取り専用で起動**し、復元を案内（**書き込まない**）。**先頭を壊した場合は「起動はするが `/api/health/db` が 503＋復元の案内、他の口も 503」**を別の線にする | 起動する。**書き込みの口が 503**。`quick_check` の**結果が出る**（**例外も「壊れている」に数える**。`fetchall()` の中身で判定すると壊れた DB ほど 500 になる） |
+| **10** | **日次バックアップ**（**（点検 B2・G6）判定は窓のタイマーと同じ周期・「いま取る」は必ず新しく取る**） | `POST /api/backup` → `<backup_dir>/<YYYYMMDD>/` に `db.sqlite3`・`sidecar/`・`export/`・`settings.json`・`manifest.json`（**（監査 D-9）出来るのは 5 つ**）。**自動**は同じ日なら増えない（**起動時だけでなく 30 秒ごとに「今日のフォルダが無ければ取る」**）。**「いま取る」は同じ日でも必ず新しく取る**（**（監査 E-7）`<YYYYMMDD>-<HHMMSS>/`**。一時フォルダに作って `os.replace` で差し替える） | 5 つできる。**自動は 2 回目で増えない**。**「いま取る」は増える**。`manifest.json` が契約を通る。**（監査 B-1）写しを開いた検査（`quick_check` → `integrity_check`）が通らなければ、その世代を採用しない**（古い世代を掃除しない） |
+| **11** | **`<data>` を消しても戻せる** | 複製の `<data>` を**丸ごと別名に退避** → `image-reviewer restore <backup>` → 263 枚・判断 3 件が戻る → `rebuild-metadata` で**sidecar から英訳が戻る**。**（監査 C-1）manifest の `db_sha256` を照合してから**・**（C-2）掴まれていれば 409 の 1 行** | 263 枚・**判断 3 件**・**英訳 1 件**が戻る。`integrity_check` が通る。**中身を 1 バイト変えた写しは 409 で断る** |
+| **12** | **壊れた DB で書き込まない**（**（点検 B3）先頭 4 KB では開けないので 2 ページ目を潰す**） | DB の**2 ページ目（4096〜8191 バイト）を 0 で潰した**複製で起動 → **読み取り専用で起動**し、復元を案内（**書き込まない**）。**先頭を壊した場合は「起動はするが `/api/health/db` が 503＋復元の案内、他の API も 503」**を別の線にする（**（監査 D-1）画面そのもの（`/` と静的ファイル）は通す**——案内を読めなくしない） | 起動する。**書き込みの口が 503**。`quick_check` の**結果が出る**（**例外も「壊れている」に数える**。`fetchall()` の中身で判定すると壊れた DB ほど 500 になる）。**（監査 C-3）読める口は読める**（`GET /api/groups` / `/api/reviews` が 200。壊れたページを触った口は **503 `read_only`** で、500 にしない） |
 | **13** | **画面（P8-5）** | 重複の一覧・最近の削除（残り時間）・ゴミ箱・バックアップの状態を**本物の Chrome** で開き、**はみ出し 0**・**script 要素 0**・**入口がスクロール無しで見える** | 4 画面とも ok。`gui_smoke` と `gui_layout` に検査を足す |
 
 ### 1.3 現物で確かめたこと（**この設計を書く前に実行した**）
@@ -628,8 +668,8 @@ CREATE INDEX IF NOT EXISTS ix_preview_expiry ON pending_delete_preview(expires_a
 | --- | --- | --- |
 | `POST /api/backup` | **人だけ** | いま 1 回取る（`{include_library:false, out?}`）。**「いま取る」は必ず新しく取る**（`<YYYYMMDD>-<HHMMSS>/`。**点検 B2**。自動の日次は同じ日なら取らない） |
 | `GET /api/backup` | 人・エージェント | 直近のスナップショットの一覧と**最後に取った時刻**・置き場・次に取る予定 |
-| `GET /api/health/db` | 人・エージェント | `quick_check` / `integrity_check` の結果と**読み取り専用かどうか**。**例外も「壊れている」に数える**（**点検 B3**） |
-| `PATCH /api/settings`（既存の口に `backup_dir` を足す） | **人だけ** | **バックアップの置き場を変える**（`design.md:733`。`%USERPROFILE%\image-reviewer-backups\` が既定。**別ドライブも指定可**。**点検 E**） |
+| `GET /api/health/db` | 人・エージェント | `quick_check` / `integrity_check` の結果と**読み取り専用かどうか**。**例外も「壊れている」に数える**（**点検 B3**）。**（P8-4 の監査 D-7）読みは `store.locked()` の下**で回し、**`?full=0` で `integrity_check` を省ける**（画面が 30 秒ごとに見る用。既定は今までどおり `full=1`。語彙外は 422） |
+| `PATCH /api/settings`（既存の口に `backup_dir` を足す） | **人だけ** | **バックアップの置き場を変える**（`design.md:733`。`%USERPROFILE%\image-reviewer-backups\` が既定。**別ドライブも指定可**。**点検 E**）。**（P8-4 の監査 D-11）その場で形を見る**（相対パス・ファイル・無いドライブは **422 `bad_backup_dir`**） |
 | `POST /api/roots/{id}/allow-stage3` | **人だけ** | **その置き場で段 3 を許す印を付ける**（`{allow: true}`。**Q8**。既定は印なし。**実データの `illust-authoring` の置き場に付ける**） |
 
 - **（監査 G-3）`allow-stage3` の口は P8-4 のまま。** ただし **`scan` で新しく増えた `root` は印なしで入る**
@@ -637,6 +677,8 @@ CREATE INDEX IF NOT EXISTS ix_preview_expiry ON pending_delete_preview(expires_a
 - **（点検 G8）`POST /api/backup/restore` は作らない**（**復元は CLI**。危険な操作を画面の口に置かない）。
   `schemas/deletion-ledger.schema.json`（`deletions.json`）も**作らない**（**人が読む台帳は `review.json` と `deletion_log` で足りる**）。
   → **§6.2 の「新しく足す契約は 2 つ」は「1 つ」（`backup-manifest` だけ）に直した**。
+- **（P8-4 の監査）`restore` は `manifest.db_sha256` を**必ず**照合する**（C-1）。`abi` は `0.1` のまま
+  （欄は足していない。**照合するのは前から書いてあった 1 欄**）。
 
 ### 3.4 エラーの形（前の段と同じ）
 
@@ -660,6 +702,10 @@ CREATE INDEX IF NOT EXISTS ix_preview_expiry ON pending_delete_preview(expires_a
 | エージェントが**除外・復元・バックアップ・`as_copy`** を呼んだ（**削除と自分の `undo` は許す**。Q2・点検 G2） | **403** | `human_only` |
 | `stage` の語彙外・`actor` の語彙外 | **422** | `bad_stage` / `bad_actor` |
 | DB が壊れていて書き込みを止めている | **503** | `read_only` |
+| **（P8-4 の監査 C-3）壊れたページを触った `GET`**（`quick_check` は通る壊れ方） | **503** | `read_only`（本文の `details.reason` は `malformed`）。**500 にしない** |
+| **（P8-4 の監査 B-1）写しを作り終えた後の検査に通らない**（日次・「いま取る」） | **409** | `bad_snapshot`（**その世代を採用しない**。古い世代を掃除しない。`last_error` に残る） |
+| **（P8-4 の監査 C-1）写しの中身が manifest の `db_sha256` と違う**（`restore`） | **409** | `bad_backup`（`--force` で進む。`details.expected` / `actual`） |
+| **（P8-4 の監査 C-2）アプリが掴んでいて置き換えられない**（`restore`） | **409** | `restore_failed`（**人が読める 1 行**。`<data>` は変わらない） |
 
 ---
 
@@ -791,8 +837,8 @@ CREATE INDEX IF NOT EXISTS ix_preview_expiry ON pending_delete_preview(expires_a
 | 準重複の検出（1 万枚） | **未計測**（**（点検 B6）「2 秒」は書かない**） | **（点検 B6 / 監査 C-2）合成 1 万枚の実測: SQL の自己結合 7.56 秒・Python の辞書 1.13 秒・int の総当たり 7.8 秒**（**≤6 で 67,705 組が一致**。**合成データなので実測ではない**）。**（P8-1 の監査 B-1 で帯は 4bit × 16 本・帯ごとの照会に変わったので、この数字は旧版の物**。**いまの実装での 1 万枚は未計測**——**仮想 1 万枚は帯の候補が数百万組になり、合成データでは測り切れなかった**）。**263 枚では 50 ms で困らない**ので、**辞書方式に替えるかは 1 万枚が現実になったときに決める**（G-2-(b)） |
 | 段 3 の移動（`os.rename`） | ファイルサイズに依存しない | **（点検 B4）実測: 1 GB の疎ファイルでも 0.24 ms**（密な 256 MB は 0.19 ms）＝**大きさに依らない** |
 | 一括削除の再照合 | 1,000 件で 1 秒以内 | `os.stat` 1 回/件。**未計測** |
-| 日次バックアップ | 5 秒以内 | DB 1.0 MB ＋ `sidecar` 1 ファイル ＋ `export` 1 ファイル（実データ）。**未計測**（P8-4 で測る） |
-| 復元 | 10 秒以内 | DB のコピーと `quick_check`。**未計測** |
+| 日次バックアップ | 5 秒以内 | DB 1.0 MB ＋ `sidecar` 1 ファイル ＋ `export` 1 ファイル（実データ）。**（P8-4 の監査の実測）実データの複製・温まった状態・5 回の中央値で 37 ms**（35〜46。2 回目以降は増分）。**（B-1 の直しで「写しを開く検査」が 1 回増えた**が、同じ 1.5 MB の写しに対する `quick_check` ＋ `integrity_check` は**この値に埋もれる**（監査の写しの検査は数十 ms） |
+| 復元 | 10 秒以内 | DB のコピーと `quick_check`。**（P8-4 の監査の実測）11 ms**（11〜13。`<data>` を丸ごと消した状態から 263 枚・判断 3 件）。**（C-1 の直しで `sha256` が 1 回増えた**が、1.5 MB で数 ms） |
 
 - **計測は別々の入力で、測り方（何回の中央値か）を書く**（P4・P6 の教訓）。
   **`execution_cached` のような「キャッシュに当たった値」を実測と呼ばない**（P4 の教訓）。
@@ -919,7 +965,6 @@ CREATE INDEX IF NOT EXISTS ix_preview_expiry ON pending_delete_preview(expires_a
   落ちない 2 つは **B-3 の錠を片方だけ外した物**で、**もう片方が守る**ため＝二重の錠が効いている）。
 
 #### P8-3 の監査で足した試験（**4 件。§8.1 の表の続き**）
-
 | # | 足すテスト | 何を壊すと落ちるか |
 | --- | --- | --- |
 | **68** | `test_the_pending_list_shows_the_stage1_and_stage2_rows_too` | `GET /api/pending-deletes` を**段 3 だけ**に戻す（**監査 C-2**）。段 1 の行が画面から消え、戻す押し先が無くなる。**戻したのに一覧から消えない**も見る |
@@ -933,6 +978,33 @@ CREATE INDEX IF NOT EXISTS ix_preview_expiry ON pending_delete_preview(expires_a
 - **壊すと落ちるのを確かめた**: 実装中に `app.js` のテンプレート文字列へ**バッククォートを 1 つ**混ぜた所、
   `gui_smoke` は緑のまま **`gui_layout --screen library` だけが落ちた**（`frames=0`）。
   `gui_smoke` は `app.js` を読み込まないので、**この検査が無いと「画面が真っ白」を見逃す**。
+
+#### P8-4 の監査で足した試験（**新規 15 件＋書き換え 1 件。§8.1 の表の続き**）
+
+| # | 足すテスト | 何を壊すと落ちるか |
+| --- | --- | --- |
+| **72** | `test_a_snapshot_whose_copy_is_broken_is_not_adopted` | **（監査 B-1）**写しの検査（`check_snapshot_db`）を外す。壊れた写しが世代として採用され、`prune` が健全な 7 世代を押し出す（**監査の K9 の芯**） |
+| **73** | `test_a_broken_source_does_not_replace_the_seven_healthy_snapshots` | **（B-1・G-1）**走ったまま 300 ページ目を潰し、7 回 `tick` する。検査を外すと**健全な 7 世代が壊れた 7 世代に置き換わる**（`last_error` も出ない）。元の接続の `quick_check` を外すと `read_only` に切り替わらない |
+| **74** | `test_the_same_failure_is_not_written_again` | **（D-4）**`_record_error` の「同じ文言なら書かない」を外す（30 秒ごとに `settings` を書き直し、WAL に 1 行ずつ積む） |
+| **75** | `test_a_stale_error_is_cleared_when_the_dir_is_writable_again` | **（D-5）**`already` の道で `_clear_error_if_fixed` を呼ばない（古い失敗が翌日まで画面に出続ける）。**書けないうちは消さない**ことも見る |
+| **76** | `test_restore_refuses_a_snapshot_whose_bytes_changed` | **（C-1）**`sha256` の照合を外す。**構造は壊れていないが中身が変わった写し**が黙って採用される（監査の K10k）。CLI も `--force` の 1 行を出す |
+| **77** | `test_a_locked_db_is_reported_not_crashed`（**書き換え**） | **（C-2）**本物の錠（`open()`）で `os.replace` を止める。直接 `copy2` で上書きする形に戻すと、**掴まれたまま置き換わってしまう**（409 にならない） |
+| **78** | `test_the_stale_wal_is_removed_only_after_the_db_is_in_place` | **（C-2）**`-wal` / `-shm` の `unlink` を置き換えより先に戻す。**掴まれているときに `<data>` の `-wal` だけが消える**（置き換えが失敗しても戻せない） |
+| **79** | `test_the_read_endpoints_still_read_when_the_db_is_broken` | **（C-3）**`group_state` / `list_groups` / `list_decisions` を `transaction()` に戻す。読み取り専用で **`/api/groups` と `/api/reviews` が 503**（復元の前に何が残っているか見えない） |
+| **80** | `test_a_broken_ledger_page_says_503_not_500` | **（C-3）**`sqlite3.DatabaseError` の写しを外す。台帳の根ページを潰すと **500**（`database disk image is malformed`）で、番号から理由が分からない |
+| **81** | `test_the_gui_is_served_even_when_the_db_cannot_be_opened` | **（D-1）**`_db_gate` が `/api/` 以外も止める。先頭 4 KB を潰した形で **`/` が 503 の JSON** になり、案内を画面で読めない |
+| **82** | `test_the_health_endpoint_can_skip_the_integrity_check` | **（D-7）**`?full=0` を無視する（毎回 `integrity_check`。1 万枚では GET 1 回が秒単位） |
+| **83** | `test_the_out_dir_is_not_pruned_and_says_why` | **（D-6）**`out`（一時の置き場）でも掃除する。`prunable` を出さない（一覧に出るのに消えない理由が言えない） |
+| **84** | `test_the_backup_dir_shape_is_checked_on_the_spot` | **（D-11）**置き場の形を見ない（相対パス・ファイルが 200 で通り、失敗は次の周期の `last_error` だけ） |
+| **85** | `test_the_shape_change_takes_a_pre_topup_backup` | **（D-2・G-5）**`pre-topup-*` の控えを外す。**版を上げずに `ALTER` が当たる**（実データで実際に起きた） |
+| **86** | `test_importing_the_app_module_does_not_open_the_data_dir` | **（D-13・G-8）**モジュールの末尾で `app = create_app()` を走らせる。**`import` だけで実データを書き込み可で開く**（`migrate()` / `_top_up_v6` が走る） |
+| **87** | `test_the_state_does_not_wait_for_a_running_snapshot` | **（D-12）**`state()` が `self._lock` を取る（`--include-library` の 292 MB の間、`GET /api/backup` が固まる） |
+
+- **壊し方は `pytest` の外から**: `.tmp-audit-redo/p84-fix/mutants.py` が**ソースを一時的に書き換えて**
+  選んだテストを回し、**必ず元に戻す**（復元は `finally` と読み直しで確認）。
+  **18 通り中 18 通りで落ちた**（うち C-3 は 4 通り＝`group_state` / `list_groups` / `list_decisions` / 写し）。
+- **`test_get_endpoints_write_nothing` を強くした**（**監査 F(e)**）: 行数と size / mtime だけでなく、
+  **全表の中身と全ファイルの中身の `sha256`** を前後で比べる（同じ大きさのまま値を書き換える実装を見逃さない）。
 
 ---
 
@@ -984,9 +1056,12 @@ CREATE INDEX IF NOT EXISTS ix_preview_expiry ON pending_delete_preview(expires_a
 12. **（点検 B3・C8。**先に潰す**）`quick_check` が失敗したときの「読み取り専用で起動」**の実装（`Store` を読み取り専用で開く道が要る）。
     **点検の実測**: **先頭 4 KB を壊すと開けない**（接続はできるが最初の SQL で `sqlite3.DatabaseError`）。
     **2 ページ目（4096〜8191 バイト）を 0 で潰すと `quick_check` は行を返さず例外**（`database disk image is malformed`）だが、
-    `asset` / `decision` / `settings` の `SELECT` は通る。**300 ページ目なら `quick_check` は `ok`**。
-    → **`quick_check` は `try/except sqlite3.DatabaseError` で受け、例外も「壊れている」に数える**。
-    **線 12 は「2 ページ目を潰す」に変える**（先頭を壊した場合は別の線＝起動はするが `/api/health/db` が 503＋復元の案内）。
+    `asset` / `decision` / `settings` の `SELECT` は通る。
+    **（P8-4 の実装と監査で確定）「300 ページ目なら `quick_check` は `ok`」は成り立たない**——
+    P8-1 の `phash_band` の索引がそのページに載るため、**例外ではなくエラー行が返る**（行 2 本）。
+    → **`quick_check` は `try/except sqlite3.DatabaseError` で受け、例外も「`ok` 1 行でない」も
+    「壊れている」に数える**。**線 12 は「2 ページ目を潰す」**（先頭を壊した場合は別の線＝起動はするが
+    `/api/health/db` が 503＋復元の案内。**（監査 C-3）その形でも読める口は読める**）。
 13. **（点検 C8）DB の版 > バイナリの版のときの起動**。§0.12-6 の「起動を拒否」は**今の `migrate()` と逆**で、
     **P7 の廃止直後に実際にその状況があった**（v6 の DB で v5 のコードが起動していた）。
     → **拒否ではなく「読み取り専用で起動して案内」**（§10-12 と同じ道）にし、**`migrate()` の変更はテストに固定**する。

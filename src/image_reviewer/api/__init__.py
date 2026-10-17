@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
@@ -104,4 +106,32 @@ def review_error_handler(request: Request, exc: ReviewError) -> JSONResponse:
     if exc.details:
         body["details"] = exc.details
     return JSONResponse(body, status_code=exc.status)
+
+
+def sqlite_error_handler(request: Request, exc: sqlite3.DatabaseError) -> JSONResponse:
+    """**壊れたページを触った `GET` を 500 にしない**（P8-4 の監査 C-3）。
+
+    `quick_check` が通る壊れ方（2 ページ目を潰した形）でも、**そのページに載っている表**を
+    触る口は素の `sqlite3.DatabaseError`（`database disk image is malformed`）で 500 に
+    なっていた（監査の実測: 台帳 3 本）。読み取り専用で起動しているなら、番号は
+    **503 `read_only`**（本文に `mode` / `reason` / 案内）にして、画面がそのまま案内できる形にする。
+
+    読み取り専用でない（走ったまま壊れた）ときは `code` を `db_error` にして、
+    **DB そのものが壊れている**ことを伝える（どちらも 503。500 にしない）。
+    """
+    store = getattr(getattr(request.app, "state", None), "store", None)
+    state = getattr(getattr(request.app, "state", None), "db_state", None) or {}
+    read_only = bool(getattr(store, "read_only", False))
+    body: dict = {
+        "detail": ("DB が壊れているので読めません（読み取り専用で起動しています）。"
+                   "バックアップから戻してください" if read_only
+                   else "DB が壊れているので読めません。バックアップから戻してください"),
+        "code": "read_only" if read_only else "db_error",
+        "details": {"reason": "malformed", "error": str(exc), "read_only": read_only,
+                    "mode": state.get("mode")},
+    }
+    guidance = state.get("guidance")
+    if guidance:
+        body["guidance"] = guidance
+    return JSONResponse(body, status_code=503)
 

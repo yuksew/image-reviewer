@@ -311,8 +311,12 @@ class ReviewService:
         return group_id
 
     def group_state(self, group_id: str) -> dict:
-        """まとまり＋項目＋各枚の現在値（`GET /api/groups/{id}`）。"""
-        with self.store.transaction() as con:
+        """まとまり＋項目＋各枚の現在値（`GET /api/groups/{id}`）。
+
+        **（P8-4 の監査 C-3）読むだけなので `locked()`**（`transaction()` だと読み取り専用で
+        起動しているときに 503 になり、**何が残っているかを画面で確かめられない**）。
+        """
+        with self.store.locked() as con:
             return self._group_state(con, group_id)
 
     def list_groups(self, *, state: str | None = None, limit: int = 50,
@@ -321,6 +325,9 @@ class ReviewService:
 
         `include_superseded`（点検 A3）: 要求の差し替えで閉じたまとまり
         （`superseded_by` が入っている行）は**既定で出さない**。`?include_superseded=1` で出す。
+
+        **（P8-4 の監査 C-3）読むだけなので `locked()`**（`transaction()` は読み取り専用で
+        503 になり、復元の前に「何が残っているか」を画面で確かめられなかった）。
         """
         if state and state not in ("open", "decided"):
             raise ReviewError(422, "state は open / decided のいずれかです")
@@ -336,7 +343,7 @@ class ReviewService:
                    " (SELECT count(*) FROM group_item i JOIN asset a ON a.id = i.asset_id"
                    "    WHERE i.group_id = g.id AND a.review_state = 'kept') AS kept_count"
                    " FROM review_group g")
-        with self.store.transaction() as con:
+        with self.store.locked() as con:
             total = con.execute(f"SELECT count(*) AS n FROM review_group g{where}",
                                 args).fetchone()["n"]
             rows = con.execute(summary + where + " ORDER BY g.created_at DESC, g.id DESC"
@@ -364,6 +371,7 @@ class ReviewService:
 
     def list_decisions(self, *, asset: str | None = None, group: str | None = None,
                        limit: int = 100, cursor: int = 0) -> dict:
+        """台帳の読み出し（`GET /api/reviews`）。**（P8-4 の監査 C-3）読むだけなので `locked()`**。"""
         where = " WHERE 1 = 1"
         args: list = []
         if asset:
@@ -372,7 +380,7 @@ class ReviewService:
         if group:
             where += " AND group_id = ?"
             args.append(group)
-        with self.store.transaction() as con:
+        with self.store.locked() as con:
             total = con.execute(f"SELECT count(*) AS n FROM decision{where}", args).fetchone()["n"]
             rows = con.execute("SELECT * FROM decision" + where + " ORDER BY seq DESC LIMIT ? OFFSET ?",
                                [*args, max(0, int(limit)), max(0, int(cursor))]).fetchall()

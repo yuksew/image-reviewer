@@ -15,6 +15,8 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -121,6 +123,74 @@ def zero_page(path: Path, page: int) -> None:
         fh.write(b"\x00" * PAGE)
 
 
+def zero_table_page(path: Path, table: str) -> int:
+    """**その表の根ページを 0 で潰す**（P8-4 の監査 C-3 の形）。
+
+    「2 ページ目を潰した形」で台帳の表が載っているページを狙って壊すのと同じことを、
+    表の根ページを名指しでやる（監査の複製で 500 になった 3 本を決定的に再現する）。
+    """
+    con = sqlite3.connect(str(path))
+    try:
+        row = con.execute("SELECT rootpage FROM sqlite_master WHERE name = ?",
+                          (table,)).fetchone()
+    finally:
+        con.close()
+    assert row is not None, f"表がありません: {table}"
+    root = int(row[0])
+    assert root > 1, f"根ページが 1 ページ目（{table}）。潰すと DB そのものが開けない"
+    zero_page(path, root - 1)
+    return root
+
+
+def fix_manifest_sha(snapshot_dir: Path) -> dict:
+    """`manifest.json` の `db_sha256` / `db_bytes` を**いまのファイルに合わせる**。
+
+    中身ではなく**構造**が壊れている写しを作るために使う（C-1 の照合を通してから
+    `quick_check` に当てる）。
+    """
+    path = Path(snapshot_dir) / "db.sqlite3"
+    manifest_path = Path(snapshot_dir) / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["db_sha256"] = "sha256:" + backup.sha256_file(path)
+    payload["db_bytes"] = int(path.stat().st_size)
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    return payload
+
+
+def big_store(data_dir: Path) -> Store:
+    """**300 ページより大きい DB**を作る（監査 B-1 の「300 ページ目を潰す」形）。
+
+    WAL のままでは主ファイルが 1 ページしかないので、**作った後に畳む**
+    （`wal_checkpoint(TRUNCATE)`。実測: 畳まないと潰しても何も起きない）。
+    """
+    store = Store(data_dir)
+    blob = json.dumps({"text": "x" * 900})
+    with store.transaction() as con:
+        for i in range(1500):
+            con.execute(
+                "INSERT INTO asset(id, sha256, kind, kind_source, width, height, format,"
+                " first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (f"A{i:06d}", f"{i:064x}", "generated", "auto", 16, 16, "png", "t", "t"))
+            con.execute(
+                "INSERT INTO asset_meta(asset_id, meta_json, source, extracted_at)"
+                " VALUES (?,?,?,?)", (f"A{i:06d}", blob, "png", "t"))
+    with store.locked() as con:
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    assert (Path(data_dir) / "db.sqlite3").stat().st_size > 301 * PAGE
+    return store
+
+
+def digests_of(root: Path) -> dict:
+    """**ファイルの中身の sha256**（`GET` が書かないことの検査。P8-1 の監査の穴）。"""
+    import hashlib
+
+    out = {}
+    for path in sorted(Path(root).rglob("*")):
+        if path.is_file():
+            out[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return out
+
+
 def write_sidecar(data_dir: Path, sha256: str, **extra) -> Path:
     out = Path(data_dir) / "sidecar" / f"{sha256}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -137,6 +207,18 @@ def rows_of(store: Store) -> dict:
             "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
         return {name: con.execute(f"SELECT count(*) AS n FROM {name}").fetchone()["n"]
                 for name in names}
+
+
+def table_digest(store: Store) -> str:
+    """**全表の中身の sha256**（行数だけでは見えない書き換えを見る。監査 F(e)）。"""
+    with store.locked() as con:
+        names = [r["name"] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
+        blob = []
+        for name in names:
+            for row in con.execute(f"SELECT * FROM {name}"):
+                blob.append(name + "|" + "|".join(repr(value) for value in tuple(row)))
+    return hashlib.sha256("\n".join(blob).encode("utf-8")).hexdigest()
 
 
 def files_of(root: Path) -> dict:
@@ -698,6 +780,137 @@ def test_only_the_last_seven_snapshots_are_kept(store, clock, backups, svc):
     assert not (backups / backup.local_day("2026-01-01T00:00:00Z")).exists()
 
 
+def test_a_snapshot_whose_copy_is_broken_is_not_adopted(store, clock, backups, svc,
+                                                        monkeypatch):
+    """**（P8-4 の監査 B-1）写しを検査し、通らなければ世代として採用しない。**
+
+    壊すと落ちる: `_write_snapshot` の `check_snapshot_db` を外すと、**壊れた写し**が
+    日次の世代として採用され、`prune` が**健全な古い世代を押し出す**（監査の K9）。
+
+    写しの DB を「DB を写した**後**・検査の**前**」に壊す（`copy_incremental` は
+    `sidecar` / `export` を写す所で、DB の後・検査の前に必ず呼ばれる）。
+    """
+    add_asset(store, make_png(store.data_dir / "a.png"))
+    write_sidecar(store.data_dir, "a" * 64, en_text="x")     # 必ず 1 回呼ばれるように
+    for _ in range(KEEP_SNAPSHOTS):                          # 健全な 7 世代
+        assert svc.tick()["taken"] is not None
+        clock.advance(sec=86400)
+    healthy = [s["name"] for s in backup.list_snapshots(backups)]
+    assert len(healthy) == KEEP_SNAPSHOTS
+
+    real_copy = backup.copy_incremental
+    calls = {"n": 0}
+
+    def sabotage(src, dst, *, previous=None):
+        calls["n"] += 1
+        got = real_copy(src, dst, previous=previous)
+        zero_page(Path(dst).parent / "db.sqlite3", 1)        # **写しだけ**壊す
+        return got
+
+    monkeypatch.setattr(backup, "copy_incremental", sabotage)
+    got = svc.tick()
+    assert calls["n"] >= 1, "前提: 写しの DB を壊す所を通っていない"
+    assert got["taken"] is None and got["error"], got
+    assert "検査" in got["error"]
+    state = svc.state()
+    assert state["last_error"], "壊れた写しが `last_error` に残っていない"
+    # **健全な 7 世代は 1 つも消えていない**（`prune` を呼ばない）
+    names = [s["name"] for s in backup.list_snapshots(backups)]
+    assert set(healthy) <= set(names) and len(names) == KEEP_SNAPSHOTS
+    for info in backup.list_snapshots(backups):
+        assert check_db_file(Path(info["dir"]) / "db.sqlite3", full=True)["ok"] is True
+    # 書きかけの一時フォルダを残さない
+    assert not list(backups.glob(".tmp-*"))
+
+
+def test_a_broken_source_does_not_replace_the_seven_healthy_snapshots(tmp_path, clock, backups):
+    """**（B-1・監査の K9）走ったまま DB が壊れても、健全な 7 世代を壊れた物で置き換えない。**
+
+    壊すと落ちる: 写しの検査（と元の接続の `quick_check`）を外すと、7 回の `tick` が
+    壊れた写しを採用し、**健全な 7 世代が全部消える**（`last_error` も出ないまま）。
+
+    複製の DB を 300 ページ目で潰す（実データの監査と同じ形）。WAL を畳んでから潰すので、
+    走っている接続も生の読みも同じ物を見る。
+    """
+    store = big_store(tmp_path / "data")
+    try:
+        svc = BackupService(store, clock=clock, backup_dir=backups)
+        for _ in range(KEEP_SNAPSHOTS):
+            assert svc.tick()["taken"] is not None
+            clock.advance(sec=86400)
+        healthy = [s["name"] for s in backup.list_snapshots(backups)]
+        assert len(healthy) == KEEP_SNAPSHOTS
+        # **走ったまま壊す**（0 で潰す。WAL は畳んであるので主ファイルに載っている）
+        zero_page(store.data_dir / "db.sqlite3", 300)
+        assert check_db_file(store.data_dir / "db.sqlite3")["ok"] is False, "前提: 壊れている"
+
+        results = []
+        for _ in range(KEEP_SNAPSHOTS):
+            results.append(svc.tick())
+            clock.advance(sec=86400)
+        assert all(r["taken"] is None for r in results), "壊れた写しを採用した"
+        assert results[0]["error"], "壊れたことに気づいていない"
+        assert store.read_only is True, "壊れた DB に書き続けている（G-1）"
+        assert svc.state()["last_error"]
+
+        # **健全な 7 世代がそのまま残っている**（押し出されていない）
+        snaps = backup.list_snapshots(backups)
+        assert [s["name"] for s in snaps] == healthy
+        for info in snaps:
+            assert check_db_file(Path(info["dir"]) / "db.sqlite3", full=True)["ok"] is True
+    finally:
+        store.close()
+
+
+def test_the_same_failure_is_not_written_again(store, clock, backups):
+    """**（監査 D-4）同じ文言の失敗を 30 秒ごとに書き直さない。**
+
+    壊すと落ちる: `_record_error` が毎周期 `last_error_at` を更新すると、置き場が
+    書けないだけで WAL に 1 行ずつ積む（実データで実際に起きていた）。
+    """
+    bad = BackupService(store, clock=clock, backup_dir=store.data_dir / "inside")
+    first = bad.tick()
+    assert first["skipped"] == "failed"
+    with store.locked() as con:
+        row = con.execute("SELECT value FROM settings WHERE key = 'backup.last_error_at'"
+                          ).fetchone()
+    assert row is not None
+    at_first = row["value"]
+    clock.advance(sec=30)
+    assert bad.tick()["skipped"] == "failed"              # 同じ文言で 2 回目
+    with store.locked() as con:
+        keys = [r["key"] for r in con.execute(
+            "SELECT key FROM settings WHERE key LIKE 'backup.last_error%'")]
+        at_second = con.execute("SELECT value FROM settings WHERE key = 'backup.last_error_at'"
+                                ).fetchone()["value"]
+    assert sorted(keys) == ["backup.last_error", "backup.last_error_at"]
+    assert at_second == at_first, "同じ失敗を書き直している（時刻が進んだ）"
+
+
+def test_a_stale_error_is_cleared_when_the_dir_is_writable_again(store, clock, backups,
+                                                               tmp_path):
+    """**（監査 D-5）置き場を直したら、今日の分が既にあっても失敗の記録を消す。**
+
+    壊すと落ちる: `already` の道で `_clear_error` を呼ばないと、古い失敗が翌日まで
+    画面に出続ける（監査の K6f）。**書けないうちは消さない**ことも見る。
+    """
+    add_asset(store, make_png(store.data_dir / "a.png"))
+    bad = BackupService(store, clock=clock, backup_dir=store.data_dir / "inside")
+    assert bad.tick()["skipped"] == "failed"
+    assert bad.state()["last_error"]
+    # **書けない置き場では消さない**（フォルダの所にファイルがある形＝`mkdir` が通らない）
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("x", encoding="utf-8")
+    svc = BackupService(store, clock=clock, backup_dir=blocked)
+    svc._clear_error_if_fixed(blocked)
+    assert svc.state()["last_error"], "書けないのに「直った」と消している"
+    # **今日の分が既にあっても**、書ける置き場なら消える
+    good = BackupService(store, clock=clock, backup_dir=backups)
+    (backups / backup.local_day(clock.now())).mkdir(parents=True, exist_ok=True)
+    assert good.tick()["skipped"] == "already"
+    assert good.state()["last_error"] is None
+
+
 def test_the_failure_is_kept_in_last_error(store, clock, backups):
     """**失敗したら `last_error` に残す**（黙って失敗しない。設計 §0.12 の 6）。
 
@@ -956,11 +1169,16 @@ def test_the_pre_migrate_backup_honours_the_settings_dir(tmp_path, monkeypatch):
     assert backup.inspect_db(data)["mode"] == "ok"
 
 
-def test_a_locked_db_is_reported_not_crashed(tmp_path, clock, backups, monkeypatch):
+def test_a_locked_db_is_reported_not_crashed(tmp_path, clock, backups):
     """**アプリが動いていて置き換えられない**ときは 409 の 1 行（500 にしない）。
 
     壊すと落ちる: `OSError` を写さないと、`restore` がスタックトレースで死ぬ
     （人が「戻せなかった理由」を読めない）。
+
+    **（P8-4 の監査 C-2）錠は本物を使う。** Windows で `open()` しただけでも
+    `os.replace` は `PermissionError`（実測: WinError 5）、`unlink` は WinError 32 になる。
+    前のテストは `shutil.copy2` だけを失敗させていて、**実機で先に落ちる所（`-wal` の
+    `unlink`）を見ていなかった**。
     """
     data = _library_with_history(tmp_path)
     store = Store(data)
@@ -969,22 +1187,107 @@ def test_a_locked_db_is_reported_not_crashed(tmp_path, clock, backups, monkeypat
         snap = svc.snapshot(manual=False)
     finally:
         store.close()
+    before = files_of(data)
 
-    real_copy2 = shutil.copy2
-
-    def locked(src, dst, *args, **kwargs):
-        # **`<data>/db.sqlite3` を置き換える所だけ**失敗させる（退避は通す）
-        if Path(dst) == data / "db.sqlite3":
-            raise PermissionError(13, "アクセスが拒否されました（別のプロセスが掴んでいる）")
-        return real_copy2(src, dst, *args, **kwargs)
-
-    monkeypatch.setattr(backup.shutil, "copy2", locked)
-    with pytest.raises(ReviewError) as got:
-        restore(data, Path(snap["dir"]), clock=clock, backup_dir=backups)
+    with open(data / "db.sqlite3", "rb") as held:        # **本物の錠**（別プロセスが掴んでいる形）
+        with pytest.raises(ReviewError) as got:
+            restore(data, Path(snap["dir"]), clock=clock, backup_dir=backups)
     assert got.value.status == 409 and got.value.code == "restore_failed"
     assert "止めて" in got.value.detail
-    # 退避は取れている（戻せなかっただけ）
     assert got.value.details["data_dir"] == str(data)
+    # **`<data>` は 1 バイトも変わらない**（-wal / -shm も消していない。順序を戻すと落ちる）
+    assert files_of(data) == before
+    # 退避は取れている（戻せなかっただけ）
+    assert any(p.name.startswith("pre-restore-") for p in backups.iterdir())
+
+
+def test_the_stale_wal_is_removed_only_after_the_db_is_in_place(tmp_path, clock, backups,
+                                                               monkeypatch):
+    """**（C-2）順序**: 写しを一時名に置いて `os.replace` → その後に `-wal` / `-shm` を消す。
+
+    壊すと落ちる: `unlink` を `copy2` より先に戻すと、**掴まれているときに `<data>` の
+    `-wal` だけが消える**（退避からしか戻せない）。ここでは `os.replace` を失敗させて、
+    **`unlink` が 1 回も呼ばれていないこと**を数える（監査の s6_run と同じ形）。
+    """
+    data = _library_with_history(tmp_path)
+    store = Store(data)
+    try:
+        svc = BackupService(store, clock=clock, backup_dir=backups)
+        snap = svc.snapshot(manual=False)
+    finally:
+        store.close()
+    # **`-wal` / `-shm` を確実に置く**（接続を 1 本開いたままにする）。順序を戻すと、
+    # ここが**置き換えより先に**消える（このテストが数えている物）
+    holder = sqlite3.connect(str(data / "db.sqlite3"))
+    try:
+        holder.execute("PRAGMA journal_mode = WAL")
+        holder.execute("INSERT INTO settings(key, value) VALUES ('probe', '1')"
+                       " ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        holder.commit()
+        assert (data / "db.sqlite3-wal").exists(), "前提: WAL が出来ていない"
+        before = files_of(data)
+        unlinked: list[Path] = []
+
+        def blocked_replace(src, dst, *args, **kwargs):
+            raise PermissionError(5, "アクセスが拒否されました（別のプロセスが掴んでいる）")
+
+        real_unlink = Path.unlink
+
+        def counted_unlink(self, *args, **kwargs):
+            unlinked.append(self)
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(backup.os, "replace", blocked_replace)
+        monkeypatch.setattr(Path, "unlink", counted_unlink)
+        with pytest.raises(ReviewError) as got:
+            restore(data, Path(snap["dir"]), clock=clock, backup_dir=backups)
+        assert got.value.code == "restore_failed" and got.value.status == 409
+        # **`<data>` の DB と `-wal` / `-shm` は 1 つも消していない**（自分の一時ファイルだけ）
+        touched = [p.name for p in unlinked]
+        assert touched == [n for n in touched if n.startswith(".tmp-restore-db-")], touched
+        assert "db.sqlite3" not in touched
+        assert "db.sqlite3-wal" not in touched and "db.sqlite3-shm" not in touched
+        assert files_of(data) == before
+    finally:
+        holder.close()
+    # 置き換え用の一時ファイルを残さない
+    assert not list(data.glob(".tmp-restore-*"))
+
+
+def test_restore_refuses_a_snapshot_whose_bytes_changed(tmp_path, clock, backups):
+    """**（C-1）中身が 1 バイトでも違えば戻さない**（manifest の `db_sha256` を照合する）。
+
+    壊すと落ちる: 照合を外すと、`quick_check` / `integrity_check` は**構造しか見ない**ので、
+    **中身だけ変わった写し**（ビット化け・別の写しとの混同）が黙って採用される
+    （監査の K10k。戻った DB の設定値が変わった方になっていた）。
+    """
+    data = _library_with_history(tmp_path)
+    store = Store(data)
+    try:
+        svc = BackupService(store, clock=clock, backup_dir=backups)
+        snap = svc.snapshot(manual=False)
+    finally:
+        store.close()
+    snap_db = Path(snap["dir"]) / "db.sqlite3"
+    # 構造は壊さず**中身だけ**変える（末尾の 1 バイト）
+    with open(snap_db, "r+b") as fh:
+        fh.seek(-1, os.SEEK_END)
+        last = fh.read(1)
+        fh.seek(-1, os.SEEK_END)
+        fh.write(bytes([last[0] ^ 0xFF]))
+    assert check_db_file(snap_db, full=True)["ok"] is True, "前提: 構造は壊れていない"
+    assert backup.sha256_file(snap_db) != snap["manifest"]["db_sha256"][len("sha256:"):]
+
+    before = files_of(data)
+    with pytest.raises(ReviewError) as got:
+        restore(data, Path(snap["dir"]), clock=clock, backup_dir=backups)
+    assert got.value.status == 409 and got.value.code == "bad_backup"
+    assert got.value.details["expected"] != got.value.details["actual"]
+    assert files_of(data) == before                      # 元の DB に触っていない
+
+    # `--force` で進むと照合の結果が残る（CLI が 1 行で出す）
+    forced = restore(data, Path(snap["dir"]), force=True, clock=clock, backup_dir=backups)
+    assert forced["sha256"]["ok"] is False and forced["forced"] is True
 
 
 def test_restore_refuses_a_missing_folder(tmp_path, clock, backups):
@@ -992,6 +1295,288 @@ def test_restore_refuses_a_missing_folder(tmp_path, clock, backups):
     with pytest.raises(ReviewError) as got:
         restore(tmp_path / "data", tmp_path / "nowhere", clock=clock, backup_dir=backups)
     assert got.value.status == 422 and got.value.code == "no_snapshot"
+
+
+# ---- 3b. P8-4 の監査の直し（C-3・D-1・D-6・D-7・D-11・D-12・G-5・G-8）----
+
+
+def test_the_read_endpoints_still_read_when_the_db_is_broken(tmp_path, monkeypatch):
+    """**（監査 C-3）読み取り専用でも、読める口は読める。**
+
+    壊すと落ちる: `list_groups` / `list_decisions`（と `group_state`）が
+    `store.transaction()` を使うと、**まとまりの一覧と判断の台帳が 503** になり、
+    復元の前に「何が残っているか」を画面で確かめられない（監査の S5f）。
+    """
+    data = tmp_path / "data"
+    store = Store(data)
+    group_id = db.ulid()
+    try:
+        asset_id = add_asset(store, make_png(data / "a.png"))
+        add_decision(store, asset_id)
+        with store.transaction() as con:               # まとまり 1 つ（`GET /api/groups` 用）
+            con.execute(
+                "INSERT INTO review_group(id, title, kind, source, policy, state,"
+                " created_at, changed_at) VALUES (?,?,?,?,?,'open',?,?)",
+                (group_id, "g", "manual", "manual", "pick_one", db.now(), db.stamp()))
+    finally:
+        store.close()
+    zero_page(data / "db.sqlite3", 1)                  # 2 ページ目を潰す（設計 §3 の形）
+
+    app = app_client(monkeypatch, data, tmp_path / "backups")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        health = client.get("/api/health/db", headers=HUMAN)
+        assert health.status_code == 503 and health.json()["read_only"] is True
+        for path in ("/api/assets", "/api/groups", "/api/reviews", "/api/stats",
+                     "/api/backup", "/api/settings", "/api/roots",
+                     f"/api/groups/{group_id}"):
+            resp = client.get(path, headers=HUMAN)
+            assert resp.status_code == 200, f"{path}: {resp.status_code} {resp.text[:200]}"
+        groups = client.get("/api/groups", headers=HUMAN).json()
+        assert groups["total"] == 1
+        reviews = client.get("/api/reviews", headers=HUMAN).json()
+        assert reviews["total"] == 1
+        one = client.get(f"/api/groups/{group_id}", headers=HUMAN).json()
+        assert one["id"] == group_id
+        # 台帳の 3 本は**500 にしない**（壊れたページを触ったら 503 `read_only`）
+        for path in ("/api/pending-deletes", "/api/deletions", "/api/deletions/trash"):
+            resp = client.get(path, headers=HUMAN)
+            assert resp.status_code in (200, 503), f"{path}: {resp.status_code} {resp.text[:200]}"
+            if resp.status_code == 503:
+                body = resp.json()
+                assert body["code"] == "read_only"
+                assert body["details"]["reason"] == "malformed"
+
+
+def test_a_broken_ledger_page_says_503_not_500(tmp_path, monkeypatch):
+    """**（監査 C-3）台帳のページを潰すと 503 `read_only`**（素の 500 にしない）。
+
+    壊すと落ちる: `sqlite3.DatabaseError` を写さないと、`GET /api/deletions` が
+    `database disk image is malformed` の 500 になり、番号で理由が分からない。
+    """
+    data = tmp_path / "data"
+    store = Store(data)
+    try:
+        add_asset(store, make_png(data / "a.png"))
+    finally:
+        store.close()
+    page = zero_table_page(data / "db.sqlite3", "deletion_log")
+
+    app = app_client(monkeypatch, data, tmp_path / "backups")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        got = client.get("/api/deletions", headers=HUMAN)
+        assert got.status_code == 503, f"{got.status_code} {got.text[:300]}"
+        body = got.json()
+        assert body["code"] == "read_only" and body["details"]["reason"] == "malformed"
+        assert body["details"]["error"], "壊れた理由（例外の文言）が残っていない"
+        # 読める口は生かす（C-3 の芯）
+        assert client.get("/api/groups", headers=HUMAN).status_code == 200
+        assert client.get("/api/reviews", headers=HUMAN).status_code == 200
+    assert page > 1
+
+
+def test_the_gui_is_served_even_when_the_db_cannot_be_opened(tmp_path, monkeypatch):
+    """**（監査 D-1）先頭 4 KB を潰しても画面は出す**（案内を読めるように）。
+
+    壊すと落ちる: `_db_gate` が `/api/` 以外も止めると、`/` が 503 の JSON になり、
+    **利用者は画面から何も読めない**（curl かログを見るしかない）。
+    """
+    data = tmp_path / "data"
+    store = Store(data)
+    try:
+        add_asset(store, make_png(data / "a.png"))
+    finally:
+        store.close()
+    zero_page(data / "db.sqlite3", 0)
+
+    app = app_client(monkeypatch, data, tmp_path / "backups")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/health/db", headers=HUMAN).json()["mode"] == "unusable"
+        home = client.get("/", headers=HUMAN)
+        assert home.status_code == 200, home.text[:200]
+        assert client.get("/api/assets", headers=HUMAN).status_code == 503
+
+
+def test_the_health_endpoint_can_skip_the_integrity_check(tmp_path, monkeypatch):
+    """**（監査 D-7）`?full=0` は `integrity_check` を省く**（錠の下で回す）。
+
+    壊すと落ちる: 毎回 `integrity_check` を回すと、1 万枚では `GET /api/health/db` が
+    秒単位になる（画面が 30 秒ごとに見る口なので効く）。語彙の外は 422。
+    """
+    data = tmp_path / "data"
+    store = Store(data)
+    try:
+        add_asset(store, make_png(data / "a.png"))
+    finally:
+        store.close()
+    app = app_client(monkeypatch, data, tmp_path / "backups")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        light = client.get("/api/health/db?full=0", headers=HUMAN)
+        assert light.status_code == 200
+        assert light.json()["integrity_check"] is None
+        assert "full=0" in light.json()["integrity_check_note"]
+        full = client.get("/api/health/db", headers=HUMAN).json()
+        assert full["integrity_check"] == "ok" and full["quick_check"] == "ok"
+        assert client.get("/api/health/db?full=2", headers=HUMAN).status_code == 422
+
+
+def test_the_out_dir_is_not_pruned_and_says_why(store, clock, backups, svc, tmp_path):
+    """**（監査 D-6）`out` を指定した置き場では古い世代を消さない。**
+
+    壊すと落ちる: 一時の置き場（`--out D:\\backup-now`）でも「直近 7 個」を当てると、
+    **そこにある物を消す**。一覧には `prunable`（掃除の対象か）を出す。
+    """
+    add_asset(store, make_png(store.data_dir / "a.png"))
+    out = tmp_path / "elsewhere"
+    for i in range(KEEP_SNAPSHOTS + 2):
+        got = svc.snapshot(manual=True, out=out)
+        assert got["pruned"] == []
+        clock.advance(sec=61)
+    assert len(backup.list_snapshots(out)) == KEEP_SNAPSHOTS + 2       # 消していない
+    # 名前が自分の形でも `manifest.json` が無ければ掃除の対象にしない（D-6）
+    fake = backups / "20200101"
+    fake.mkdir(parents=True, exist_ok=True)
+    info = [s for s in backup.list_snapshots(backups) if s["name"] == "20200101"][0]
+    assert info["ok"] is False and info["prunable"] is False
+    kept = svc.snapshot(manual=False)
+    assert kept["pruned"] == []                        # 自分の置き場でも消す物が無い
+    assert fake.is_dir() and "20200101" in [s["name"] for s in backup.list_snapshots(backups)]
+
+
+def test_the_backup_dir_shape_is_checked_on_the_spot(tmp_path, clock, backups, store,
+                                                     monkeypatch):
+    """**（監査 D-11）相対パス・ファイル・無いドライブは 422**（次の周期を待たない）。
+
+    壊すと落ちる: 置き場の検査が `<data>` の中かどうかだけだと、相対パスや
+    ファイルを指す値が 200 で通り、失敗は次の周期の `last_error` に出るだけになる。
+    """
+    monkeypatch.delenv("IMAGE_REVIEWER_BACKUP_DIR", raising=False)   # 設定の値を見るため
+    for bad in ("relative\\backups", str(tmp_path / "a-file")):
+        if bad.endswith("a-file"):
+            Path(bad).write_text("x", encoding="utf-8")
+        with pytest.raises(ReviewError) as got:
+            backup.set_backup_dir(store, bad, actor="human")
+        assert got.value.status == 422 and got.value.code == "bad_backup_dir", bad
+    # 無いドライブ（この機械に無い文字を選ぶ）
+    missing = next((f"{c}:\\image-reviewer-backups" for c in "ZYXWV"
+                    if not Path(f"{c}:\\").exists()), None)
+    if missing:
+        with pytest.raises(ReviewError) as got:
+            backup.set_backup_dir(store, missing, actor="human")
+        assert got.value.status == 422 and got.value.code == "bad_backup_dir"
+    assert backup.set_backup_dir(store, str(backups), actor="human")["backup_dir"] == str(backups)
+
+
+def test_the_shape_change_takes_a_pre_topup_backup(tmp_path, monkeypatch):
+    """**（監査 D-2 / G-5）版を上げずに表の形を変える前に控えを取る。**
+
+    壊すと落ちる: `_top_up_v6` の `ALTER` は版を上げないので `pre-migrate-*` の道を
+    通らない。控えが無いまま**実データに `deletion_log.stuck_reason` が足された**
+    （監査の事故 2 件目）。ここでは `asset.deleted_at` を落として古い形を作る。
+    """
+    data = tmp_path / "data"
+    backups = tmp_path / "backups"
+    monkeypatch.setenv("IMAGE_REVIEWER_BACKUP_DIR", str(backups))
+    store = Store(data)
+    try:
+        add_asset(store, make_png(data / "a.png"))
+    finally:
+        store.close()
+    con = sqlite3.connect(str(data / "db.sqlite3"))
+    try:
+        con.execute("DROP INDEX IF EXISTS ix_asset_del")
+        con.execute("ALTER TABLE asset DROP COLUMN deleted_at")
+        con.commit()
+        assert db.missing_top_ups(con) == ["asset.deleted_at"]
+    finally:
+        con.close()
+
+    again = Store(data)                                # 開く＝形が変わる
+    try:
+        assert db.missing_top_ups(again.con) == []      # 足されている
+    finally:
+        again.close()
+    snaps = backup.list_snapshots(backups)
+    assert [s["kind"] for s in snaps] == ["pre-topup"], snaps
+    assert snaps[0]["ok"] is True and snaps[0]["counts"]["assets"] == 1
+    assert (Path(snaps[0]["dir"]) / "manifest.json").is_file()
+    # **掃除の対象にしない**（版を上げる前の控えと同じ扱い）
+    backup.prune_snapshots(backups, keep=0)
+    assert [s["kind"] for s in backup.list_snapshots(backups)] == ["pre-topup"]
+
+
+def test_importing_the_app_module_does_not_open_the_data_dir(tmp_path):
+    """**（監査 D-13 / G-8）`import` しただけで実データを開かない。**
+
+    壊すと落ちる: モジュールの末尾で `app = create_app()` を走らせると、テストの plugin や
+    `python -c "import image_reviewer.app"` が **`IMAGE_REVIEWER_DATA` 無しで実データを
+    書き込み可で開き**、`migrate()` / `_top_up_v6` まで走る（実際に実データへ
+    `deletion_log.stuck_reason` の列が足された。監査の事故 2 件目）。
+
+    別プロセスで見る（このプロセスは既に import 済みかもしれないため）。
+    """
+    repo = Path(__file__).resolve().parents[1]
+    data = tmp_path / "untouched"
+    backup_root = tmp_path / "backups"
+    env = {**os.environ, "IMAGE_REVIEWER_DATA": str(data),
+           "IMAGE_REVIEWER_BACKUP_DIR": str(backup_root)}
+    env.pop("PYTHONPATH", None)
+
+    only_import = ("import image_reviewer.app as m\n"
+                   "assert 'app' not in vars(m), 'import だけで create_app() が走っている'\n"
+                   "assert callable(m.create_app)\n")
+    got = subprocess.run([sys.executable, "-c", only_import], cwd=str(repo), env=env,
+                         capture_output=True, text=True, encoding="utf-8", timeout=120)
+    assert got.returncode == 0, got.stderr[-2000:]
+    assert not data.exists(), f"import だけでデータ置き場を作った: {sorted(data.rglob('*'))[:5]}"
+    assert not backup_root.exists(), "import だけでバックアップを取った"
+
+    # 触ったときには作られる（`uvicorn image_reviewer.app:app` の道）
+    touch = ("import image_reviewer.app as m\n"
+             "assert m.app is not None\n")
+    got = subprocess.run([sys.executable, "-c", touch], cwd=str(repo), env=env,
+                         capture_output=True, text=True, encoding="utf-8", timeout=120)
+    assert got.returncode == 0, got.stderr[-2000:]
+    assert (data / "db.sqlite3").is_file(), "遅延で作られていない"
+
+
+def test_the_state_does_not_wait_for_a_running_snapshot(store, clock, backups, svc):
+    """**（監査 D-12）`GET /api/backup` は写しの最中でも待たない。**
+
+    壊すと落ちる: `state()` が `self._lock` を取ると、`--include-library`（実データ 292 MB）の
+    間ずっと画面が固まる。一時フォルダは一覧に出ない（`os.replace` で出来上がりだけ見える）。
+    """
+    import threading
+
+    add_asset(store, make_png(store.data_dir / "a.png"))
+    held = threading.Event()
+    release = threading.Event()
+
+    def holder():
+        with svc._lock:                                # 写しの最中を模す
+            held.set()
+            release.wait(10)
+
+    thread = threading.Thread(target=holder, daemon=True)
+    thread.start()
+    try:
+        assert held.wait(5)
+        done = threading.Event()
+        box: dict = {}
+
+        def reader():
+            box["state"] = svc.state()
+            done.set()
+
+        other = threading.Thread(target=reader, daemon=True)
+        other.start()
+        finished = done.wait(3.0)
+        release.set()
+        thread.join(timeout=5)
+        other.join(timeout=5)
+        assert finished, "state() が写しの錠を待っている"
+        assert box["state"]["count"] == 0
+    finally:
+        release.set()
 
 
 # ---- 4. 来歴の組み直し（PNG と sidecar から。設計 §0.12-4・§10-9）----
@@ -1150,7 +1735,10 @@ def test_get_endpoints_write_nothing(tmp_path, monkeypatch):
 
     壊すと落ちる: `GET /api/backup` が「最後に取った時刻」を書きに行く、
     `GET /api/health/db` が検査の結果を残す、といった実装はここで落ちる
-    （**全ファイルの大きさと mtime、全表の行数**を前後で比べる）。
+    （**全ファイルの中身の sha256、全表の行数**を前後で比べる）。
+
+    **（P8-4 の監査 F(e)）中身で比べる。** 行数と size / mtime だけだと、
+    同じ大きさのまま値を書き換える実装を見逃す（P8-1 の監査と同じ穴）。
     """
     data = tmp_path / "data"
     backup_root = tmp_path / "backups"
@@ -1166,10 +1754,12 @@ def test_get_endpoints_write_nothing(tmp_path, monkeypatch):
         probe = Store(data)
         try:
             before_rows = rows_of(probe)
+            before_digest = table_digest(probe)
         finally:
             probe.close()
         before_files = files_of(data)
         before_backups = files_of(backup_root)
+        before_hashes = digests_of(data)
 
         for path in ("/api/health", "/api/health/db", "/api/backup", "/api/settings",
                      "/api/roots", "/api/assets", "/api/stats", "/api/pending-deletes",
@@ -1181,9 +1771,11 @@ def test_get_endpoints_write_nothing(tmp_path, monkeypatch):
         probe = Store(data)
         try:
             assert rows_of(probe) == before_rows
+            assert table_digest(probe) == before_digest, "GET が行の中身を変えた"
         finally:
             probe.close()
         assert files_of(data) == before_files
+        assert digests_of(data) == before_hashes, "GET がファイルの中身を変えた"
         assert files_of(backup_root) == before_backups
 
 
@@ -1354,7 +1946,11 @@ def test_the_cli_refuses_a_backup_inside_the_data_dir(tmp_path, monkeypatch, cap
 
 
 def test_the_cli_restore_refuses_a_bad_snapshot(tmp_path, monkeypatch, capsys):
-    """壊れた写しは CLI でも断る（終了コード 2。`--force` は明示のときだけ）。"""
+    """壊れた写しは CLI でも断る（終了コード 2。`--force` は明示のときだけ）。
+
+    - **中身が変わった写し**（`db_sha256` と違う）→ C-1 が先に断る
+    - **manifest の sha を書き直しても、構造が壊れていれば** `quick_check` が断る
+    """
     data = _library_with_history(tmp_path)
     out = tmp_path / "cli-backups"
     monkeypatch.setenv("IMAGE_REVIEWER_DATA", str(data))
@@ -1362,5 +1958,10 @@ def test_the_cli_restore_refuses_a_bad_snapshot(tmp_path, monkeypatch, capsys):
     assert cli.main(["backup", "--out", str(out)]) == 0
     snap = backup.list_snapshots(out)[0]
     zero_page(Path(snap["dir"]) / "db.sqlite3", 1)
+    # 1. 中身が変わった（sha256 の照合で断る。C-1）
+    assert cli.main(["restore", snap["dir"]]) == 2
+    assert "sha256" in capsys.readouterr().err
+    # 2. manifest の sha を合わせても、構造が壊れている（quick_check で断る）
+    fix_manifest_sha(Path(snap["dir"]))
     assert cli.main(["restore", snap["dir"]]) == 2
     assert "壊れています" in capsys.readouterr().err

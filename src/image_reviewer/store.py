@@ -22,6 +22,7 @@ JSON 版と違う点で、**呼び出し側が知るべきこと**:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -30,6 +31,8 @@ from pathlib import Path
 from typing import Iterator
 
 from . import db
+
+log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = db.SCHEMA_VERSION
 
@@ -64,11 +67,27 @@ class Store:
         self.data_dir = Path(data_dir)
         #: **読み取り専用で開いているか**（`GET /api/health/db` と middleware が見る）
         self.read_only = bool(read_only)
+        #: **（P8-4 の監査 D-2 / G-5）** 版を上げずに表の形を変える前に取った控え
+        self.shape_backup: dict | None = None
+        self._shape_backup_error: str | None = None
         # スレッドプールから同じ接続を使うための錠（点検 F6）。入れ子で取るので RLock
         self._lock = threading.RLock()
         self._closed = False
+        if not self.read_only:
+            # **版を上げずに表の形を変える前に控えを取る**（`_top_up_v6` の `ALTER`）。
+            # 実データで `deletion_log.stuck_reason` が控え無しに足された（監査の事故 2 件目）。
+            # **控えが取れなくても開く**（足すだけの `ALTER` なので、開けなくする方が害が大きい）。
+            # 取れなかったことは `settings` の `backup.last_error` に残す（黙って形を変えない）。
+            from .backup import backup_before_shape_change      # 循環 import を避けて局所で
+
+            try:
+                self.shape_backup = backup_before_shape_change(self.data_dir)
+            except Exception as exc:                            # noqa: BLE001
+                self._shape_backup_error = f"表の形を変える前の控えを取れませんでした: {exc}"
         self._con = db.open_db(self.data_dir, read_only=self.read_only,
                                check_same_thread=False)
+        if self._shape_backup_error:
+            self._record_shape_backup_error(self._shape_backup_error)
 
     # ---- 寿命 ----
 
@@ -76,6 +95,26 @@ class Store:
     def con(self) -> sqlite3.Connection:
         """生の接続。直接 SQL を書くとき（取り込みと P5-1 の台帳）に使う。"""
         return self._con
+
+    def _record_shape_backup_error(self, message: str) -> None:
+        """**控え無しで表の形を変えた**ことを残す（P8-4 の監査 D-2 / G-5）。
+
+        ここは `Store` が開いた直後なので、`transaction()` を通さず**生の 1 文**で書く
+        （`settings` は `migrate()` が作っている）。書けなくても開けていることは止めない。
+        """
+        from .backup import SETTING_LAST_ERROR, SETTING_LAST_ERROR_AT
+
+        try:
+            with self._lock:
+                for key, value in ((SETTING_LAST_ERROR, message),
+                                   (SETTING_LAST_ERROR_AT, db.now())):
+                    self._con.execute(
+                        "INSERT INTO settings(key, value) VALUES (?, ?)"
+                        " ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+        except sqlite3.Error:
+            log.warning("表の形を変える前の控えの失敗を記録できませんでした: %s", message)
+        else:
+            log.warning("%s", message)
 
     def close(self) -> None:
         """閉じる。**2 回呼んでも安全**（`with` を抜けた後に呼ぶ経路があるため）。"""

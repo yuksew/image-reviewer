@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -34,7 +35,7 @@ from .api import requests as requests_api
 from .api import reviews as reviews_api
 from .api import roots as roots_api
 from .api import tags as tags_api
-from .api import review_error_handler
+from .api import review_error_handler, sqlite_error_handler
 from .backup import BackupService, backup_before_migrate, inspect_db
 from .deletions import DeletionService
 from .duplicates import DuplicatesService
@@ -173,17 +174,23 @@ def create_app() -> FastAPI:
     #: P8-4: 起動の前に見た DB の状態（`GET /api/health/db` と middleware が見る）
     app.state.db_state = db_state
     app.add_exception_handler(ReviewError, review_error_handler)
+    # P8-4 の監査 C-3: **壊れたページを触った `GET` を 500 にしない**（503 `read_only` に写す）
+    app.add_exception_handler(sqlite3.DatabaseError, sqlite_error_handler)
 
     def _db_gate(request: Request) -> JSONResponse | None:
         """**壊れた DB で書き込ませない**（設計 §1.2 の線 12・§3.4）。
 
         - `unusable`（先頭 4 KB を潰した形＝読み取りも通らない）: `/api/health` と
-          `/api/health/db` 以外の口を **503 `read_only`**
+          `/api/health/db` 以外の**API** を **503 `read_only`**
         - `read_only`（壊れているが読める・版が新しい）: **書き込みの口**（`GET` 以外）を
           503 `read_only`。読み取りの口は生かす（何が残っているかを見せて、復元へ導く）
 
         守り（Host / Origin / Content-Type）の**後ろ**で見る（`Host: evil` は 403 のまま。
         順序が逆だと、壊れた DB のときだけ 403 が 503 に化ける）。
+
+        **（P8-4 の監査 D-1）画面そのものは止めない。** 前は `/`（`StaticFiles`）まで 503 の
+        JSON になっていたので、案内（`guidance`）を curl かログでしか読めなかった。
+        `/api/` の下だけを止める。
         """
         mode = app.state.db_state.get("mode")
         if mode == "ok":
@@ -191,6 +198,8 @@ def create_app() -> FastAPI:
         path = request.url.path
         if path in ("/api/health", "/api/health/db"):
             return None
+        if not path.startswith("/api/"):
+            return None                              # 画面（HTML / JS / CSS）は通す（D-1）
         if mode == "unusable" or request.method not in ("GET", "HEAD", "OPTIONS"):
             return JSONResponse({
                 "detail": "DB が壊れているので書き込めません（読み取り専用で起動しています）",
@@ -449,4 +458,20 @@ def create_app() -> FastAPI:
     return app
 
 
-app = create_app()
+def __getattr__(name: str):
+    """**`import` しただけで実データを開かない**（P8-4 の監査 D-13 / G-8）。
+
+    前はモジュールの末尾で `app = create_app()` を走らせていた（`uvicorn
+    image_reviewer.app:app` のため）。そのため **`image_reviewer.app` を import した
+    だけで**、`IMAGE_REVIEWER_DATA` が無ければ既定の実データ `.data` を**書き込み可で
+    開き**、`migrate()` / `_top_up_v6` / `reasons.seed` / `flush_dirty()` まで走っていた。
+    実際に、テストの plugin が import しただけで**実データに `deletion_log.stuck_reason`
+    の列が足された**（監査の事故 2 件目）。
+
+    ここで**初めて触られたとき**に作る（PEP 562 のモジュール `__getattr__`）。
+    `uvicorn image_reviewer.app:app` も `image_reviewer.app:create_app --factory` も
+    どちらも通る。**`import image_reviewer.app` だけでは何も開かない。**
+    """
+    if name == "app":
+        return create_app()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

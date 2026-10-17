@@ -820,9 +820,9 @@ def probe_backup() -> bool:
         first = svc.tick()
         snap = Path(first["taken"]["dir"]) if first["taken"] else None
         names = sorted(p.name for p in snap.iterdir()) if snap else []
-        line("線 10a 日次（4 つできる・WAL を畳む）",
-             snap is not None and {"db.sqlite3", "manifest.json", "sidecar", "export"}
-             <= set(names),
+        line("線 10a 日次（5 つできる・WAL を畳む）",
+             snap is not None and {"db.sqlite3", "manifest.json", "settings.json", "sidecar",
+                                   "export"} <= set(names),
              f"{snap.name if snap else '-'} / 中身 {names}")
         counts = first["taken"]["counts"] if first["taken"] else {}
         line("線 10b 判断が抜けない（WAL 4 MB を畳む）",

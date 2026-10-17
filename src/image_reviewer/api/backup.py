@@ -55,53 +55,63 @@ def backup_state(request: Request):
 
 
 @router.get("/health/db")
-def health_db(request: Request):
+def health_db(request: Request, full: str = "1"):
     """DB の健全性（§3.3）。**例外も「壊れている」に数える**（点検 B3）。
 
     - 通れば 200、壊れていれば **503**（本文に `guidance`＝復元の案内）
     - `read_only` が真なら**書き込みの口は 503**（middleware が止める）
     - `integrity_check` は `quick_check` が通ったときだけ回す（重い。設計 §0.12-5 は
       起動時 `quick_check`・日次と復元後 `integrity_check` と決めている）
+
+    **（P8-4 の監査 D-7）** 前は `store.con` を**錠の外**で触り、毎回 `integrity_check` を
+    回していた（1 万枚では GET 1 回が秒単位。監査 B3「読みも錠の下で」の流儀とも違う）。
+    いまは全部 `store.locked()` の下で回し、`?full=0` で `integrity_check` を省ける
+    （画面が 30 秒ごとに見る用。既定は今までどおり `full=1`）。
     """
+    if full not in ("0", "1"):
+        raise ReviewError(422, "full は 0 | 1 です", code="bad_full", details={"full": full})
     store = request.app.state.store
     state = request.app.state.db_state
-    got = db.quick_check(store.con)
-    body: dict = {
-        "ok": bool(got["ok"]),
-        "quick_check": got["detail"],
-        "quick_check_ok": bool(got["ok"]),
-        "quick_check_error": got["error"],
-        "quick_check_rows": got["rows"],
-        "integrity_check": None,
-        "integrity_check_note": None,
-        "read_only": bool(store.read_only),
-        "mode": state.get("mode"),
-        "reason": state.get("reason"),
-        "schema_version": state.get("schema_version"),
-        "expected_version": state.get("expected_version"),
-        "data_dir": str(store.data_dir),
-        "guidance": state.get("guidance"),
-        "checked_at": db.now(),
-    }
-    if got["ok"]:
-        info = db.integrity(store.con)
-        body["foreign_key_violations"] = info["foreign_key_violations"]
-        body["journal_mode"] = info["journal_mode"]
-        body["schema_version"] = info["schema_version"]
-        try:
-            rows = [str(row[0]) for row in
-                    store.con.execute("PRAGMA integrity_check").fetchall()]
-            body["integrity_check"] = rows[0] if rows else "(行が返らない)"
-            if rows != ["ok"]:
-                body["ok"] = False
-                body["guidance"] = body["guidance"] or (
-                    "DB の検査に通りませんでした。バックアップから戻すことを検討してください: "
-                    "image-reviewer restore <バックアップのフォルダ>")
-        except Exception as exc:                     # noqa: BLE001  結果は必ず返す
-            body["ok"] = False
-            body["integrity_check"] = f"例外: {exc}"
-    else:
-        body["integrity_check_note"] = "quick_check が通らないので integrity_check は回していません"
+    with store.locked() as con:
+        got = db.quick_check(con)
+        body: dict = {
+            "ok": bool(got["ok"]),
+            "quick_check": got["detail"],
+            "quick_check_ok": bool(got["ok"]),
+            "quick_check_error": got["error"],
+            "quick_check_rows": got["rows"],
+            "integrity_check": None,
+            "integrity_check_note": None,
+            "read_only": bool(store.read_only),
+            "mode": state.get("mode"),
+            "reason": state.get("reason"),
+            "schema_version": state.get("schema_version"),
+            "expected_version": state.get("expected_version"),
+            "data_dir": str(store.data_dir),
+            "guidance": state.get("guidance"),
+            "checked_at": db.now(),
+        }
+        if got["ok"]:
+            info = db.integrity(con)
+            body["foreign_key_violations"] = info["foreign_key_violations"]
+            body["journal_mode"] = info["journal_mode"]
+            body["schema_version"] = info["schema_version"]
+            if full == "0":
+                body["integrity_check_note"] = "full=0 なので integrity_check は回していません"
+            else:
+                try:
+                    rows = [str(row[0]) for row in con.execute("PRAGMA integrity_check").fetchall()]
+                    body["integrity_check"] = rows[0] if rows else "(行が返らない)"
+                    if rows != ["ok"]:
+                        body["ok"] = False
+                        body["guidance"] = body["guidance"] or (
+                            "DB の検査に通りませんでした。バックアップから戻すことを検討してください: "
+                            "image-reviewer restore <バックアップのフォルダ>")
+                except Exception as exc:                 # noqa: BLE001  結果は必ず返す
+                    body["ok"] = False
+                    body["integrity_check"] = f"例外: {exc}"
+        else:
+            body["integrity_check_note"] = "quick_check が通らないので integrity_check は回していません"
     # **読み取り専用で起動しているなら 503**（壊れている・版が新しい・版を上げる前の控えが
     # 取れない）。DB そのものが綺麗でも、**このアプリは書き込めない**ことを番号で示す
     # （本文に `read_only` / `mode` / `guidance` が入っているので、画面はそのまま案内できる）

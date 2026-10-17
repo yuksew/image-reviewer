@@ -31,7 +31,7 @@ import time
 import uuid
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 5       # **v6 はもう無い**（P7 を 2026-10-17 に廃止したので、版は 5 が最新）
 
 # Cronford の base32（ULID）
 _B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"

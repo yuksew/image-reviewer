@@ -515,6 +515,10 @@ CREATE TABLE IF NOT EXISTS delete_request (
   stage        INTEGER NOT NULL CHECK (stage IN (1, 2, 3)),
   count        INTEGER NOT NULL,
   result_json  TEXT,
+  -- **（P8-2）何を頼まれたか**を残す。同じ `client_token` で**違う内容**が来たときに
+  -- 気づけるようにする（前の結果を黙って返すと、2 件目の削除が消える。P6 の
+  -- `client_token_conflict` と同じ流儀）。列なので `CHECK` は無い（`ALTER` で足すため）
+  payload_json TEXT,
   at           TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_delete_token
@@ -570,7 +574,13 @@ CREATE TABLE IF NOT EXISTS pending_delete_preview (
   bytes      INTEGER NOT NULL,
   actor      TEXT NOT NULL CHECK (actor IN ('human', 'agent')),
   created_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL
+  expires_at TEXT NOT NULL,
+  -- **（P8-2。設計 §0.16 A2 / §4.3）実行しても行を消さない。**
+  -- `executed_at` が入っていれば「実行済み」で、2 度目は `result_json` をそのまま返す
+  -- （凍結した一覧をもう一度消してしまわない）。`request_id` は要求（`delete_request`）への参照
+  executed_at TEXT,
+  result_json TEXT,
+  request_id  TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_preview_expiry ON pending_delete_preview(expires_at);
 """
@@ -646,6 +656,10 @@ def _top_up_v6(con: sqlite3.Connection) -> None:
     `_migrate_v6` を通らないので、**P8 の 5 表を一生持たない**（版は 6 と答えるので気づきにくく、
     P8-1 以降で `no such table: deletion_log` になる）。`V6_DELETE_DDL` は**全部 `IF NOT EXISTS`**
     なので、ここでも流して害が無い（`_migrate_v6` と二重でも同じ結果になる）。
+
+    **（P8-2）`pending_delete_preview` の `executed_at` / `result_json` / `request_id` と
+    `delete_request.payload_json` もここで足す**（実データの v6 はこの列が無い形で先に作ってある）。
+    `CREATE TABLE IF NOT EXISTS` は既存の表に列を足さないので、**列を見てから `ALTER`**。
     """
     con.executescript(V6_DELETE_DDL)
     # **（P8-1 の監査 B-1）帯を 4bit × 16 本に作り直した。** 古い 8bit × 8 本の表を持っている DB は
@@ -677,6 +691,19 @@ def _top_up_v6(con: sqlite3.Connection) -> None:
     if have_job and "cancel_requested" not in have_job:
         con.execute("ALTER TABLE job ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0"
                     " CHECK (cancel_requested IN (0, 1))")
+    # **（P8-2。設計 §0.16 A2 / §4.3）凍結した一覧は実行後も消さない。** 実データの v6 は
+    # この 3 列が無い形で先に作ってあるので、`PRAGMA table_info` を見てから足す（家風。
+    # 「同じ版番号で形が違う DB」を塞ぐ）。**無いまま実行すると `no such column: executed_at`
+    # で落ちる**（＝一括削除が丸ごと動かない）。
+    have_preview = {row["name"] for row in con.execute("PRAGMA table_info(pending_delete_preview)")}
+    if have_preview:
+        for name in ("executed_at", "result_json", "request_id"):
+            if name not in have_preview:
+                con.execute(f"ALTER TABLE pending_delete_preview ADD COLUMN {name} TEXT")
+    # **（P8-2）要求の内容**（同じ `client_token` で違う内容が来たことに気づくため）
+    have_req = {row["name"] for row in con.execute("PRAGMA table_info(delete_request)")}
+    if have_req and "payload_json" not in have_req:
+        con.execute("ALTER TABLE delete_request ADD COLUMN payload_json TEXT")
     # **（P8-1 の監査 B-1）帯の中身も新しい形に揃える。** 版は 6 のままなので、表の形だけ直しても
     # 古い 8bit の帯が残る（`phash_band` を落とした DB もここで埋まる）。何度呼んでも同じ。
     # **落とした直後は 0 行**なので、**「本数が違う物」だけでなく「1 本も無い物」も埋める**

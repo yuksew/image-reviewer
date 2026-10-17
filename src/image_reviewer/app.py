@@ -24,6 +24,7 @@ from .annotations import AnnotationService
 # （`_Feature` オブジェクト）を拾ってしまう。**モジュールを名指しで**取る
 from .api.annotations import router as annotations_router
 from .api import compare as compare_api
+from .api import deletions as deletions_api
 from .api import duplicates as duplicates_api
 from .api import export as export_api
 from .api import groups as groups_api
@@ -31,6 +32,7 @@ from .api import requests as requests_api
 from .api import reviews as reviews_api
 from .api import tags as tags_api
 from .api import review_error_handler
+from .deletions import DeletionService
 from .duplicates import DuplicatesService
 from .export import ExportService
 from .gloss import GlossService
@@ -78,6 +80,9 @@ def create_app() -> FastAPI:
     # P8-1: 重複の検出と整理。**pHash は `GET` では計算しない**（背景ジョブだけが計算する）。
     # 起動時に、前のプロセスが落ちて `running` のまま残ったハッシュの job を `failed` にする
     duplicates_svc = DuplicatesService(store)
+    # P8-2: 削除の 3 段階と 5 分の窓。**起動時には消さない**（タイマーは `lifespan` で張る。
+    # 起動の直後に消すと、再起動で取り消せなくなる。設計 §0.6-3）
+    deletions_svc = DeletionService(store)
     exporter.flush_dirty()
 
     @asynccontextmanager
@@ -87,17 +92,25 @@ def create_app() -> FastAPI:
 
         は**プロセスの状態ではなく DB の行**なので、落ちたまま（あるいは前回のまま）1 が残っていると、
         **誰も回していないのに「動いている」と画面に出る**（実際にはスレッドが居ない）。
+
+        P8-2: ここで**削除のタイマー（30 秒周期）を張る**。**張った時点では何も消さない**
+        （期限切れの片づけは 2 回目の周期から。設計 §0.6-3・§1.2 の線 7）。
         """
-        yield
+        deletions_svc.start()
         try:
-            exporter.flush()
-        except Exception:  # noqa: BLE001  終了を失敗で止めない（DB の印は次回が拾う）
-            log.exception("終了時の書き出しに失敗しました（次の起動で拾います）")
+            yield
         finally:
-            exporter.close()
-            # `create_app()` が作った `Store` もここで閉じる。閉じないと接続が残り、
-            # Windows では（テストの後始末などが）`db.sqlite3` を消せない
-            store.close()
+            # **タイマーを先に止める**（止めないと、閉じた接続に触って例外を出す）
+            deletions_svc.stop()
+            try:
+                exporter.flush()
+            except Exception:  # noqa: BLE001  終了を失敗で止めない（DB の印は次回が拾う）
+                log.exception("終了時の書き出しに失敗しました（次の起動で拾います）")
+            finally:
+                exporter.close()
+                # `create_app()` が作った `Store` もここで閉じる。閉じないと接続が残り、
+                # Windows では（テストの後始末などが）`db.sqlite3` を消せない
+                store.close()
 
     app = FastAPI(title="image-reviewer (prototype)", version="0.0.1-proto",
                   lifespan=lifespan)
@@ -109,6 +122,7 @@ def create_app() -> FastAPI:
     app.state.jobs = jobs_svc
     app.state.gloss = gloss_svc
     app.state.duplicates = duplicates_svc
+    app.state.deletions = deletions_svc
     app.add_exception_handler(ReviewError, review_error_handler)
 
     @app.middleware("http")
@@ -139,6 +153,8 @@ def create_app() -> FastAPI:
     app.include_router(annotations_router)
     app.include_router(tags_api.router)
     app.include_router(duplicates_api.router)
+    # P8-2: 削除（`/api/locations/...` と `/api/pending-deletes`・`/api/deletions`・`/api/trash`）
+    app.include_router(deletions_api.router)
 
     def _asset_or_404(asset_id: str) -> dict:
         asset = store.asset(asset_id)
@@ -177,6 +193,8 @@ def create_app() -> FastAPI:
             "path": _primary_path(asset),
             "location_count": len(asset["locations"]),
             "missing": all(l.get("missing_at") for l in asset["locations"]) if asset["locations"] else True,
+            # P8-2: 段 1〜3 で外した印（**一覧の既定から外す**ための欄。§4.1）
+            "deleted_at": asset.get("deleted_at"),
         }
 
     # ---- API ----
@@ -200,11 +218,19 @@ def create_app() -> FastAPI:
         provenance: str | None = Query(None, description="with | without"),
         tag: str | None = Query(None, description="語で絞る（P4-1。§3.6）"),
         known: str = Query("1", description="1（語彙にある語・既定）| 0 | all"),
+        include_deleted: str = Query("0", description="1 で段 1〜3 で外した画像も出す（P8-2）"),
         limit: int = 100,
         cursor: int = 0,
         sort: str = "path",
     ):
         items = [_summary(a) for a in store.assets()]
+        # P8-2（設計 §4.1・§8.1 の 25）: **段 1〜3 で外した画像は既定で一覧に出さない**。
+        # `include_deleted=1` のときだけ出す（外した物が消えないと段 1 の意味が無い）
+        if include_deleted not in ("0", "1"):
+            raise ReviewError(422, "include_deleted は 0 | 1 です",
+                              details={"include_deleted": "0 | 1"})
+        if include_deleted != "1":
+            items = [i for i in items if not i["deleted_at"]]
         if state:
             items = [i for i in items if i["review_state"] == state]
         if provenance == "with":

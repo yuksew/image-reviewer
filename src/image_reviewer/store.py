@@ -467,7 +467,9 @@ class Store:
             # ここから下は JSON 版の形を保つための置き場。P5-0 では持たない列
             "source_url": None,
             "ref_tags": [],
-            "deleted_at": None,
+            # P8-2（段 1 の論理削除。v6 の列）。**行は消さない**ので、ここは印をそのまま返す
+            # （一覧の既定から外すのは `app.py` の側。`review.json` は外さない＝§6.3）
+            "deleted_at": (row["deleted_at"] if "deleted_at" in row.keys() else None),
             "review_state": row["review_state"],
             "review_reason_code_id": row["review_reason_code_id"],
             "review_reason_id": row["review_reason_code_id"],  # 旧名（JSON 版の呼び名）

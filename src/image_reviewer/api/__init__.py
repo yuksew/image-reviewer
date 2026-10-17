@@ -60,6 +60,11 @@ def duplicates_of(request: Request):
     return request.app.state.duplicates
 
 
+def deletions_of(request: Request):
+    """削除の 3 段階と取り消し（P8-2）。`app.state` から取る（閉包で掴まない）。"""
+    return request.app.state.deletions
+
+
 def require_human(actor: str, *, what: str = "この操作") -> str:
     """**人が要る口の検査を 1 か所に置く**（家風。P4 の §0.14 Q3 から続く流儀）。
 

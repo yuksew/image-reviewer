@@ -36,6 +36,7 @@ from .api import reviews as reviews_api
 from .api import roots as roots_api
 from .api import tags as tags_api
 from .api import review_error_handler, sqlite_error_handler
+from .api import actor_of
 from .backup import BackupService, backup_before_migrate, inspect_db
 from .deletions import DeletionService
 from .duplicates import DuplicatesService
@@ -439,6 +440,17 @@ def create_app() -> FastAPI:
         # 「走査の最後の mark_missing が、戻したばかりの枚を参照切れにする」も止まる
         with deletions_svc.scan_guard():
             return run_scan(store, roots)
+
+    @app.get("/api/scan")
+    def scan_state(request: Request):
+        """**いま走査中か**（P8-5。設計 §3.4・`frontend-design.md` §4.5.1）。**読むだけ**。
+
+        `scan` は job を持たないので、画面が「走査中です」を出す材料が無かった（P8-3 の監査 E-6）。
+        ここは**錠を取らずに**印を読む（走査中でも待たずに答えられるように。`scan_state()`）。
+        **`GET` は 1 バイトも書かない**（数えるのは `scans` だけ。DB もファイルも触らない）。
+        """
+        actor_of(request)                     # 語彙の検査（他の口と同じ流儀。D-5）
+        return deletions_svc.scan_state()
 
     @app.post("/api/capture")
     def do_capture(payload: dict = Body(default={})):

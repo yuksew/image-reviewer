@@ -12,6 +12,7 @@
 //   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen pending          # 最近の削除（P8-3）
 //   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen pending --ids a,b  # 削除の確認つき
 //   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen library          # 下部バーの削除の入口（P8-3）
+//   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen settings         # 設定（バックアップと段 3 の印。P8-5）
 //   オプション: --viewport 1200x800 / --dump / --rows 2 / --min-used 0.6 / --chrome <path> / --help
 //
 // なぜ要るか（監査 B1・実行込みのやり直し）:
@@ -34,10 +35,17 @@
 //     **入口（まとまりにする）がスクロール無しで見える**／**既定で 1 枚も選ばない**／
 //     **押すと POST が 1 回だけ**。**前提の行（理由が `<script>` の除外）が無くても NG にしない**
 //     （監査 D-6。空の 1 行を見る）
-//   - 最近の削除（`--screen pending`。P8-3）: 横に溢れない／**残り時間と段の印が出る**／
+//   - 最近の削除（`--screen pending`。P8-3 / P8-5）: 横に溢れない／**残り時間と段の印が出る**／
 //     **上部バーの入口が見える**（保留があるとき。**0 件なら出ないのが正**＝監査 D-6）／
-//     **押すと POST が 1 回だけ**
+//     **押すと POST が 1 回だけ**／**（P8-5）印の無い置き場では段 3 のラジオを出さない**（Q8）／
+//     **走査中の 1 行**（`GET /api/scan` の応答は差し替える。本物の走査は速すぎて捕まらない）
 //     （`--ids a,b` を渡すと削除の確認も押す。POST は差し替えた `fetch` が飲む）
+//   - 設定（`--screen settings`。P8-5）: 横に溢れない／**最後の失敗（`last_error`）の全文が
+//     スクロール無しで見える**／置き場ごとの「段 3 を許す」印／**押すと POST が 1 回だけ**
+//     （印の付け外し・「いま取る」・置き場を変える）／読み取り専用のときの案内
+//   - ライブラリ（`--screen library`）: 上の削除の入口に加えて、**上部バーの
+//     「バックアップに失敗しています」**（`GET /api/backup` の `last_error` と突き合わせる）と、
+//     **押すと `#/settings` で全文が読める**こと（P8-5。P8-4 の再確認 B-1' / G-4）
 //
 // 前提: サーバが動いていること（GUI と API を同じオリジンで配る）。
 
@@ -60,6 +68,7 @@ const VIEWPORTS = [[1400, 900], [1200, 800], [1920, 1080]];
 const ONLY = argOf('viewport', null);       // 例: --viewport 1200x800
 const SCREEN = argOf('screen', 'compare');  // compare | requests | tags | jobs
                                             // | duplicates / pending / library（P8-3）| group（P6-1b）
+                                            // | settings（P8-5）
 const GROUP = argOf('group', null);         // --screen group のまとまり id
 
 // **まとまりの id が空だと Chrome を開く前に落ちる**（実際に踏んだ: Node が
@@ -87,6 +96,7 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   node tools/gui_layout.mjs --base <url> --screen pending              最近の削除（P8-3）
   node tools/gui_layout.mjs --base <url> --screen pending --ids a,b    最近の削除（削除の確認つき）
   node tools/gui_layout.mjs --base <url> --screen library              下部バーの削除の入口（P8-3）
+  node tools/gui_layout.mjs --base <url> --screen settings             設定（バックアップと段 3 の印。P8-5）
 オプション:
   --viewport 1200x800   1 つの窓だけ見る
   --rows 2              行数を合否に使う（既定は窓次第で見ない）
@@ -466,7 +476,49 @@ const MEASURE_LIBRARY = `(() => {
     })(),
     picked: document.querySelectorAll('#rows .frame.picked').length,
     pageOverflow: Math.max(0, de.scrollWidth - de.clientWidth),
+    // **（P8-5）上部バーの印**: バックアップの失敗（last_error）と走査中（§4.5.1）
+    backupBadge: (() => {
+      const el = document.getElementById('stat-backup');
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { hidden: el.hidden === true, text: (el.textContent || '').trim(),
+               href: el.getAttribute('href'),
+               visible: el.hidden !== true && r.height > 0 && r.top >= 0 && r.top < innerHeight };
+    })(),
+    scanBadge: (() => {
+      const el = document.getElementById('stat-scan');
+      if (!el) return null;
+      return { hidden: el.hidden === true, text: (el.textContent || '').trim() };
+    })(),
+    topbarOverflow: (() => {
+      const bar = document.querySelector('#app > .topbar');
+      return bar ? Math.max(0, bar.scrollWidth - bar.clientWidth) : 0;
+    })(),
   };
+})()`;
+
+// **（P8-5）上部バーの「バックアップに失敗しています」を押す**。
+// 押すと `#/settings` へ行き、そこに**全文**が出る（P8-4 の再確認 B-1' / G-4）。
+// 印が出ていないときは「設定」の入口を押す（行き先は同じ）
+const PRESS_LIBRARY_SETTINGS = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = { pressed: false, via: '', hash: '', failedShown: false, failedText: '',
+                settingsShown: false };
+  const badge = document.getElementById('stat-backup');
+  const link = (badge && badge.hidden !== true) ? badge
+    : document.getElementById('stat-settings');
+  out.via = link ? (link.id || '') : '';
+  if (link) { link.click(); out.pressed = true; await wait(900); }
+  out.hash = location.hash;
+  const root = document.getElementById('settings');
+  out.settingsShown = !!root && root.getBoundingClientRect().height > 0;
+  const failed = document.querySelector('#st-backup .st-failed');
+  if (failed) {
+    const r = failed.getBoundingClientRect();
+    out.failedShown = r.height > 0 && r.top >= 0 && r.top < innerHeight;
+    out.failedText = (failed.textContent || '').trim().slice(0, 120);
+  }
+  return out;
 })()`;
 
 // 2 枚を Ctrl + クリックで選んでから下部バーの入口を押す（**1 枚も選んでいなければ押せない**）
@@ -522,10 +574,71 @@ const MEASURE_PENDING = `(() => {
       const r = first.getBoundingClientRect();
       return r.top >= 0 && r.top < innerHeight;
     })(),
+    // **（P8-5）段 3 のラジオの出し分け**（Q8。印の無い置き場では出さない）と、
+    // **走査中の 1 行**（GET /api/scan）
+    stageBoxes: [...document.querySelectorAll('#pd-confirm .pd-stage-box')].map((b) => b.value),
+    stage3Note: [...document.querySelectorAll('#pd-confirm .pd-warn')]
+      .map((n) => n.textContent || '').join(' '),
+    scan: (document.getElementById('pd-scan') || {}).textContent || '',
     bodyOverflow: body ? Math.max(0, body.scrollWidth - body.clientWidth) : 0,
     pageOverflow: Math.max(0, de.scrollWidth - de.clientWidth),
   };
 })()`;
+
+// **（P8-5）走査中の 1 行を、応答を差し替えて見る。**
+//
+// 本物の走査はこの複製では一瞬で終わる（大半が「登録済み」でハッシュを取らない）ので、
+// **走査中を捕まえられない**。ここでは `GET /api/scan` の応答だけを差し替えて
+// 「走査中です」が**出るか・見えるか・はみ出さないか**を見る（`fetch` の差し替えは
+// 他の押す検査と同じ流儀）。**サーバのデータは書かない**。
+const PRESS_PENDING_SCAN = `(async () => {
+  const real = window.fetch;
+  const json = (body) => new Response(JSON.stringify(body),
+    { status: 200, headers: { 'Content-Type': 'application/json' } });
+  window.fetch = (url, opt = {}) => {
+    if (String(url).startsWith('/api/scan')) {
+      return Promise.resolve(json({ scanning: true, started_at: '2026-10-18T03:00:00Z',
+                                    elapsed_sec: 3.5, scans: 2,
+                                    note: '走査中です。終わるまで削除と取り消しは待ちます。' }));
+    }
+    return real(url, opt);
+  };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = { pressed: false, text: '', visible: false, overflow: 0 };
+  const again = document.getElementById('pd-again');
+  if (again) { again.click(); out.pressed = true; await wait(900); }
+  const line = document.getElementById('pd-scan');
+  if (line) {
+    const r = line.getBoundingClientRect();
+    out.text = (line.textContent || '').trim();
+    out.visible = r.height > 0 && r.top >= 0 && r.top < innerHeight;
+    out.overflow = Math.max(0, line.scrollWidth - line.clientWidth);
+  }
+  window.fetch = real;
+  return out;
+})()`;
+
+// **（P8-5）本物の走査で `GET /api/scan` が「走査中」を返すか**（差し替えなし）。
+// 走査が速いと捕まらないことがあるので、**捕まえられなくても NG にしない**（注意として出す）。
+const REAL_SCAN_PROBE = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = { started: false, caught: false, elapsed: null, state: null };
+  const post = window.fetch('/api/scan', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  out.started = true;
+  for (let i = 0; i < 40; i++) {
+    const body = await (await window.fetch('/api/scan')).json();
+    out.state = body.scanning;
+    if (body.scanning) { out.caught = true; out.elapsed = body.elapsed_sec; break; }
+    const done = await Promise.race([post.then(() => true).catch(() => true), wait(25).then(() => false)]);
+    if (done) break;
+  }
+  await post.catch(() => {});
+  await wait(200);
+  out.after = (await (await window.fetch('/api/scan')).json()).scanning;
+  return out;
+})()`;
+
 
 // 上部バーの入口（取り消せる削除があるときに見えるか。§4.6）
 const ENTRY_DELETES = `(() => {
@@ -591,8 +704,98 @@ const PRESS_PENDING = `(async () => {
   return out;
 })()`;
 
-// まとまりレビュー（`#/group/<id>`。P6-1b / 設計 §5.1b）を見る。
-// フィルムストリップが横に溢れないこと・見出し・**決めるボタンの配線**。
+// 設定（`#/settings`。P8-5）。バックアップの状態（**最後の失敗の全文**）と、
+// 置き場ごとの「段 3 を許す」印。横に溢れないこと・**失敗がスクロール無しで見える**こと
+const MEASURE_SETTINGS = `(() => {
+  const root = document.getElementById('settings');
+  // **読み込みの途中（about:blank）では測らない**（document.body が無い）
+  if (!root || !document.body) return null;
+  const bk = document.getElementById('st-backup');
+  const rt = document.getElementById('st-roots');
+  const de = document.documentElement;
+  const box = (el) => { if (!el) return null; const r = el.getBoundingClientRect();
+    return { top: Math.round(r.top), h: Math.round(r.height) }; };
+  const failed = document.querySelector('#st-backup .st-failed');
+  const now = document.querySelector('#st-backup .st-now');
+  const save = document.querySelector('#st-backup .st-save');
+  const firstMark = document.querySelector('#st-roots .st-mark');
+  const visible = (el) => { if (!el) return false; const r = el.getBoundingClientRect();
+    return r.height > 0 && r.top >= 0 && r.top < innerHeight; };
+  return {
+    bodyClass: document.body.className,
+    backupText: bk ? (bk.textContent || '') : '',
+    rootsText: rt ? (rt.textContent || '') : '',
+    failedText: failed ? (failed.textContent || '') : '',
+    failedVisible: visible(failed),
+    readonly: !!document.querySelector('#st-backup .st-readonly'),
+    marks: [...document.querySelectorAll('#st-roots .st-mark')].map((m) => (m.textContent || '').trim()),
+    allowButtons: [...document.querySelectorAll('#st-roots .st-allow')]
+      .map((b) => (b.textContent || '').trim()),
+    nowText: (now || {}).textContent || '',
+    nowVisible: visible(now),
+    saveVisible: visible(save),
+    snaps: document.querySelectorAll('#st-backup .st-snap').length,
+    scripts: document.querySelectorAll('#settings script').length,
+    brief: (document.getElementById('st-brief') || {}).textContent || '',
+    bodyOverflow: (() => { const b = document.querySelector('#settings .st-body');
+      return b ? Math.max(0, b.scrollWidth - b.clientWidth) : 0; })(),
+    pageOverflow: Math.max(0, de.scrollWidth - de.clientWidth),
+    firstMarkBox: box(firstMark),
+    height: Math.round(root.getBoundingClientRect().height),
+  };
+})()`;
+
+// 設定で**押す**（印の付け外し・「いま取る」・置き場を変える）。**POST / PATCH は飲む**
+// （サーバのデータは書かない）。押した結果の 1 行も見る
+const PRESS_SETTINGS = `(async () => {
+  const real = window.fetch;
+  const json = (body, status = 200) => new Response(JSON.stringify(body),
+    { status, headers: { 'Content-Type': 'application/json' } });
+  window.__posts = [];
+  window.fetch = (url, opt = {}) => {
+    const method = (opt.method || 'GET').toUpperCase();
+    if (method === 'GET') return real(url, opt);
+    const u = String(url);
+    window.__posts.push({ url: u, method, body: opt.body || null,
+                          actor: (opt.headers || {})['X-Image-Reviewer-Actor'] || null });
+    if (u.includes('/allow-stage3')) {
+      return Promise.resolve(json({ id: 'gui', display_path: 'D:\\\\lib', allow_stage3: true }));
+    }
+    if (u.startsWith('/api/backup')) {
+      return Promise.resolve(json({ dir: 'D:\\\\gui-backups', count: 5, files: 5, pruned: [] }));
+    }
+    if (u.startsWith('/api/settings')) {
+      return Promise.resolve(json({ backup_dir: 'D:\\\\gui-backups', backup_dir_source: 'setting' }));
+    }
+    return Promise.resolve(json({ ok: true }));
+  };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = { pressedAllow: false, pressedNow: false, pressedSave: false, error: null };
+  try {
+    // **押す直前に取り直す**（描き直しで要素が入れ替わる。PRESS_DUP と同じ教訓）
+    const allow = document.querySelector('#st-roots .st-allow');
+    if (allow) {
+      out.allowWant = allow.dataset.allow === 'true';      // 押したボタンがどちら向きか
+      allow.click();
+      out.pressedAllow = true;
+      await wait(500);
+    }
+    const now = document.querySelector('#st-backup .st-now');
+    if (now && !now.disabled) { now.click(); out.pressedNow = true; await wait(500); }
+    const dir = document.getElementById('st-dir');
+    const save = document.querySelector('#st-backup .st-save');
+    if (dir && save) {
+      dir.value = 'D:\\\\gui-layout-backups';
+      save.click(); out.pressedSave = true; await wait(500);
+    }
+  } catch (error) { out.error = String(error); }
+  window.fetch = real;
+  out.posts = window.__posts;
+  out.msg = (document.getElementById('st-msg') || {}).textContent || '';
+  return out;
+})()`;
+
+// まとまりレビュー（`#/group/<id>`。P6-1b / 設計 §5.1b）を見る。// フィルムストリップが横に溢れないこと・見出し・**決めるボタンの配線**。
 // 決めるボタンは**押す前に `fetch` を差し替えて POST を止める**（データを書かない。
 // 数えるのは「押したら POST が 1 回だけ飛ぶか」＝実装者が踏んだ「名前隠し」の検査）
 const MEASURE_GROUP = `(() => {
@@ -907,6 +1110,27 @@ try {
     } catch (error) {
       console.log(`注意: API から保留を取れませんでした（入口の可視は見ない）: ${error.message}`);
     }
+    // **（P8-5）段 3 の出し分けの期待値**（Q8）。`--ids` の枚のパスと置き場の印から、
+    // `pending.js` と**同じ規則**で組む（**印の無い置き場では段 3 を出さない**）
+    let wantStage3 = null;
+    if (IDS.length) {
+      try {
+        const roots = ((await (await fetch(`${BASE}/api/roots`)).json()).roots) || [];
+        const items = ((await (await fetch(`${BASE}/api/assets?limit=2000`)).json()).items) || [];
+        const byId = new Map(items.map((row) => [row.id, row.path || null]));
+        const paths = IDS.map((id) => byId.get(id) || null);
+        const under = (p, root) => {
+          if (!p || !root) return false;
+          const norm = (v) => String(v).replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+          const a = norm(p); const b = norm(root);
+          return a === b || a.startsWith(`${b}\\`);
+        };
+        wantStage3 = paths.every(Boolean)
+          && paths.every((p) => roots.some((r) => r.allow_stage3 && under(p, r.display_path)));
+      } catch (error) {
+        console.log(`注意: 置き場か枚のパスを取れませんでした（段 3 は見ない）: ${error.message}`);
+      }
+    }
     for (const [width, height] of VIEWPORTS) {
       if (ONLY && ONLY !== `${width}x${height}`) continue;
       await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
@@ -958,6 +1182,16 @@ try {
         console.log('注意: 段 3 の保留が 0 です（入口は出ないのが正。前提の行は要りません。D-6）');
       }
       if (pressed && pressed.pressedUndo && undoPosts.length !== 1) bad.push(`取り消しの POST=${undoPosts.length}`);
+      // **（P8-5・Q8）印の無い置き場では段 3 を出さない**（P8-3 の監査 E-3 の実装）
+      if (IDS.length && wantStage3 !== null && got.stageBoxes.length) {
+        const has3 = got.stageBoxes.includes('3');
+        if (has3 !== wantStage3) {
+          bad.push(`段 3 の出し分け（印あり=${wantStage3} なのに boxes=[${got.stageBoxes.join(',')}]）`);
+        }
+        if (!wantStage3 && !/段 3 の印がありません/.test(got.stage3Note)) {
+          bad.push('段 3 を出さない理由の 1 行');
+        }
+      }
       if (IDS.length) {
         if (!got.confirmVisible) bad.push('削除の確認が見える');
         if (!pressed || !pressed.pressedPreview) bad.push('「消す物を確かめる」を押せない');
@@ -973,14 +1207,145 @@ try {
           if (!/消す用意をしました/.test(pressed.doneText || '')) bad.push('用意ができた 1 行');
         }
       }
+      // **（P8-5）走査中の 1 行**（応答だけ差し替える。§4.6）
+      const scan = await evaluate(PRESS_PENDING_SCAN);
+      if (!scan || !scan.pressed) bad.push('「再読込」を押せない');
+      else {
+        if (!String(scan.text).includes('走査中です。終わるまで削除と取り消しは待ちます。')) {
+          bad.push(`走査中の 1 行（${String(scan.text).slice(0, 24)}）`);
+        }
+        if (!scan.visible) bad.push('走査中の 1 行が見える');
+        if (scan.overflow !== 0) bad.push('走査中の 1 行が横に溢れない');
+      }
+      // **本物の走査**で `GET /api/scan` が「走査中」を返すか（差し替えなし）。
+      // 速いと捕まらないことがあるので **NG にしない**（注意だけ出す）
+      let realScan = null;
+      if (width === VIEWPORTS[0][0]) realScan = await evaluate(REAL_SCAN_PROBE);
+      if (realScan && !realScan.caught) {
+        console.log('注意: 本物の走査中の状態を捕まえられませんでした（走査が速い。'
+          + `差し替えた検査は上で通っています）: started=${realScan.started} after=${realScan.after}`);
+      }
       if (bad.length) failures++;
       console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} 最近の削除: `
         + `rows=${got.rows} 拾い物=${got.found} ゴミ箱=${got.trash} 残り=${JSON.stringify(got.remains)} `
-        + `段=${JSON.stringify(got.strip)} overflow=${got.bodyOverflow}/${got.pageOverflow} `
+        + `段=${JSON.stringify(got.strip)} 段3=${got.stageBoxes.includes('3')}(${wantStage3}) `
+        + `overflow=${got.bodyOverflow}/${got.pageOverflow} `
         + `入口=${got.entryVisible} バー=${entry ? JSON.stringify(entry.text) : '—'} `
         + `確認=${got.confirmVisible}(${String(got.confirmText).trim().slice(0, 12)}) `
         + `POST 取り消し=${undoPosts.length} 凍結=${pvPosts.length} 用意=${bulkPosts.length} `
         + `一覧=${(pressed || {}).items} script=${got.scripts} body=${JSON.stringify(got.bodyClass)} `
+        + `走査中=${JSON.stringify(String((scan || {}).text).slice(0, 18))} `
+        + `本物の走査=${(realScan || {}).caught} `
+        + `brief=${JSON.stringify(got.brief)}`
+        + (bad.length ? `  ← ${bad.join(', ')}` : ''));
+    }
+    ws.close();
+    console.log(failures ? `${failures} 件 NG` : 'すべて ok');
+    process.exit(failures ? 1 : 0);
+  }
+
+  // 設定（`#/settings`。P8-5）。**最後の失敗の全文**・置き場ごとの印・押す検査
+  if (SCREEN === 'settings') {
+    const url = `${BASE}/#/settings`;
+    // 期待値は API から引く（`last_error` があるか・印の数）
+    let want = null;
+    try {
+      const res = await fetch(`${BASE}/api/backup`);
+      const body = await res.json();
+      const roots = (await (await fetch(`${BASE}/api/roots`)).json()).roots || [];
+      want = { failed: Boolean(body.last_error), readOnly: Boolean(body.read_only)
+        || res.status === 503, marks: roots.filter((r) => r.allow_stage3).length,
+        roots: roots.length, snaps: (body.snapshots || []).length,
+        error: String(body.last_error || '').slice(0, 60) };
+    } catch (error) {
+      console.log(`注意: API から状態を取れませんでした（中身の検査はしません）: ${error.message}`);
+    }
+    if (want && !want.failed) {
+      console.log('注意: `last_error` が空です（失敗の全文は見られません。'
+        + '前提は `tools/gui_layout_seed.py --backup-error` で作れます）');
+    }
+    for (const [width, height] of VIEWPORTS) {
+      if (ONLY && ONLY !== `${width}x${height}`) continue;
+      await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      await send('Page.navigate', { url: 'about:blank' });
+      await sleep(200);
+      await send('Page.navigate', { url });
+      let got = null;
+      for (let i = 0; i < 60; i++) {
+        got = await evaluate(MEASURE_SETTINGS);
+        if (got && got.height > 0 && (got.snaps > 0 || got.readonly)) break;
+        await sleep(250);
+      }
+      if (got) { await sleep(400); got = await evaluate(MEASURE_SETTINGS); }
+      if (!got) {
+        failures++;
+        console.log(`NG   ${width}x${height} 設定: 計測できません`);
+        continue;
+      }
+      const pressed = await evaluate(PRESS_SETTINGS);
+      const posts = (pressed && pressed.posts) || [];
+      const allowPosts = posts.filter((p) => String(p.url).includes('/allow-stage3'));
+      const nowPosts = posts.filter((p) => String(p.url).startsWith('/api/backup'));
+      const savePosts = posts.filter((p) => String(p.url).startsWith('/api/settings'));
+      const bad = [];
+      if (!String(got.bodyClass).includes('settings')) bad.push('道が設定になっている');
+      if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
+      if (got.bodyOverflow !== 0) bad.push('本文が横に溢れない');
+      if (got.scripts !== 0) bad.push('script タグを実行しない');
+      if (!got.backupText.includes('最後に取った') && !got.backupText.includes('まだ取っていません')) {
+        bad.push('最後に取った時刻（か「まだ取っていません」）');
+      }
+      if (want && want.snaps > 0 && got.snaps < 1) bad.push(`直近の一覧を出す（${want.snaps} 個ある）`);
+      if (want && want.snaps === 0 && !got.backupText.includes('まだ控えはありません')) {
+        bad.push('控えが 0 のときの 1 行');
+      }
+      if (got.snaps > 0 && !/日次|いま取る|版を上げる前|表の形を変える前/.test(got.backupText)) {
+        bad.push('控えの種類を語で出す');
+      }
+      if (got.marks.length !== (want ? want.roots : got.marks.length)) {
+        bad.push(`置き場ごとに印を出す（${got.marks.length}）`);
+      }
+      if (want) {
+        if (want.failed && !got.failedText.includes(want.error.slice(0, 20))) {
+          bad.push('最後の失敗を全文で出す');
+        }
+        if (want.failed && !got.failedVisible) bad.push('失敗がスクロール無しで見える');
+        if (want.readOnly !== got.readonly) bad.push(`読み取り専用の見せ方（${want.readOnly}）`);
+        if (want.marks !== got.marks.filter((m) => m === '印あり').length) {
+          bad.push(`印ありの数=${want.marks}`);
+        }
+      }
+      if (!got.readonly) {
+        if (!got.nowVisible) bad.push('「いま取る」が見える');
+        if (!got.saveVisible) bad.push('置き場を変える欄が見える');
+        if (!pressed || !pressed.pressedAllow) bad.push('印のボタンを押せない');
+        else if (allowPosts.length !== 1) bad.push(`印の POST=${allowPosts.length}`);
+        else if (JSON.parse(String(allowPosts[0].body || '{}')).allow !== pressed.allowWant) {
+          bad.push(`押した向きの allow を送る（${pressed.allowWant}）`);
+        } else if (allowPosts[0].actor !== 'human') bad.push(`人だと名乗る（${allowPosts[0].actor}）`);
+        if (!pressed || !pressed.pressedNow) bad.push('「いま取る」を押せない');
+        else if (nowPosts.length !== 1 || nowPosts[0].method !== 'POST') {
+          bad.push(`「いま取る」の POST=${nowPosts.length}`);
+        }
+        if (!pressed || !pressed.pressedSave) bad.push('「保存する」を押せない');
+        else if (savePosts.length !== 1 || savePosts[0].method !== 'PATCH') {
+          bad.push(`置き場の PATCH=${savePosts.length}`);
+        } else if (JSON.parse(String(savePosts[0].body || '{}')).backup_dir
+          !== 'D:\\gui-layout-backups') {
+          bad.push('入力した置き場を送る');
+        }
+        if (pressed && !/置き場を変えました|この置き場で段 3 を許します|いま取りました/.test(pressed.msg)) {
+          bad.push(`押した結果を 1 行で出す（${String(pressed.msg).slice(0, 24)}）`);
+        }
+      } else if (/st-now|st-save/.test(got.backupText)) {
+        bad.push('読み取り専用では書き込むボタンを出さない');
+      }
+      if (bad.length) failures++;
+      console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} 設定: `
+        + `控え=${got.snaps} 印=[${got.marks.join(',')}] 失敗=${got.failedVisible}(${JSON.stringify(got.failedText.slice(0, 28))}) `
+        + `読み取り専用=${got.readonly} overflow=${got.bodyOverflow}/${got.pageOverflow} `
+        + `押す=印${allowPosts.length}/取る${nowPosts.length}/保存${savePosts.length} `
+        + `msg=${JSON.stringify(String((pressed || {}).msg).slice(0, 24))} script=${got.scripts} `
         + `brief=${JSON.stringify(got.brief)}`
         + (bad.length ? `  ← ${bad.join(', ')}` : ''));
     }
@@ -990,8 +1355,24 @@ try {
   }
 
   // ライブラリ（`#/`）の下部バー。**削除の入口**（P8-3 の監査 C-1）が**スクロール無しで
-  // 見える**か、2 枚選ぶと押せて、押すと `#/pending-deletes?ids=` へ行くか（**押す検査**）
+  // 見える**か、2 枚選ぶと押せて、押すと `#/pending-deletes?ids=` へ行くか（**押す検査**）。
+  // **（P8-5）上部バーの「バックアップに失敗しています」**（押すと `#/settings` の全文へ）も見る
   if (SCREEN === 'library') {
+    // 期待値は API から引く（`last_error` があるのに印が出ないなら、黙って失敗している）
+    let wantBadge = null;
+    try {
+      const res = await fetch(`${BASE}/api/backup`);
+      const body = await res.json().catch(() => ({}));
+      wantBadge = { status: res.status, failed: Boolean(body.last_error),
+                    readOnly: Boolean(body.read_only) || res.status === 503,
+                    error: String(body.last_error || '') };
+    } catch (error) {
+      console.log(`注意: API からバックアップの状態を取れませんでした（印は見ない）: ${error.message}`);
+    }
+    if (wantBadge && !wantBadge.failed && !wantBadge.readOnly) {
+      console.log('注意: `last_error` が空です（上部バーの失敗の印は出ないのが正。'
+        + '前提は `tools/gui_layout_seed.py --backup-error` で作れます）');
+    }
     for (const [width, height] of VIEWPORTS) {
       if (ONLY && ONLY !== `${width}x${height}`) continue;
       await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
@@ -1026,12 +1407,42 @@ try {
         bad.push(`削除の確認へ渡す（${pressed.hash}）`);
       }
       if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
+      if (got.topbarOverflow !== 0) bad.push('上部バーが横に溢れない');
+      // **（P8-5）バックアップの失敗を上部バーに出す**（P8-4 の再確認 B-1'・G-4）
+      const badge = got.backupBadge;
+      if (!badge) {
+        bad.push('上部バーにバックアップの印がある');
+      } else {
+        if (badge.href !== '#/settings') bad.push(`印の行き先（${badge.href}）`);
+        if (wantBadge) {
+          const wantText = wantBadge.readOnly ? '読み取り専用です'
+            : (wantBadge.failed ? 'バックアップに失敗しています' : '');
+          if (wantText && badge.text !== wantText) bad.push(`印の文言（${badge.text}）`);
+          if (wantText && !badge.visible) bad.push('失敗の印が見える');
+          if (!wantText && badge.hidden !== true) bad.push('失敗が無ければ印を出さない');
+        }
+      }
+      // **走査中の印**は走査していないとき隠れている（出ることは `--screen pending` で見る）
+      if (!got.scanBadge || got.scanBadge.hidden !== true) bad.push('走査していないときは印を出さない');
+      // **押すと設定へ行き、そこに全文が出る**（行き先が在ることを押して確かめる）
+      const toSettings = await evaluate(PRESS_LIBRARY_SETTINGS);
+      if (!toSettings || !toSettings.pressed) bad.push('設定へ入れない');
+      else {
+        if (toSettings.via !== 'stat-backup' && wantBadge && (wantBadge.failed || wantBadge.readOnly)) {
+          bad.push(`失敗の印から入れない（${toSettings.via}）`);
+        }
+        if (!String(toSettings.hash).startsWith('#/settings')) bad.push(`設定の道（${toSettings.hash}）`);
+        if (!toSettings.settingsShown) bad.push('設定の画面が出る');
+      }
       if (bad.length) failures++;
       console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} ライブラリ: `
         + `frames=${got.frames} 下部バー=${got.barVisible} 入口=${got.buttonVisible} `
         + `文言=${JSON.stringify(got.text)} 押せる=${got.disabled === false} `
         + `選んだ枚=${pressed.picked}(${JSON.stringify(pressed.text)}) `
-        + `行き先=${JSON.stringify(pressed.hash)} overflow=${got.pageOverflow}`
+        + `行き先=${JSON.stringify(pressed.hash)} overflow=${got.pageOverflow}/${got.topbarOverflow} `
+        + `バックアップの印=${JSON.stringify((badge || {}).text)} visible=${(badge || {}).visible} `
+        + `設定へ=${JSON.stringify((toSettings || {}).hash)} 失敗の全文=`
+        + `${(toSettings || {}).failedShown}(${JSON.stringify(String((toSettings || {}).failedText).slice(0, 24))})`
         + (bad.length ? `  ← ${bad.join(', ')}` : ''));
     }
     ws.close();

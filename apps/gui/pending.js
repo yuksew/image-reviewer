@@ -11,6 +11,8 @@
 // - **（P8-3 の監査 C-3）失敗の道でも `load()` する**（409 の直後に「別名で戻す」を出す）
 // - **（P8-3 の監査 G-3）戻せなかった理由は `stuck_reason` で 4 通り**に分ける
 // - **（P8-3 の監査 G-4）固定の名前・数を文言に埋め込まない**（置き場は `/api/roots` から組む）
+// - **（P8-5・Q8）印の無い置き場では段 3 のラジオを出さない**（`root.allow_stage3`）
+// - **（P8-5）走査中は「走査中です。終わるまで削除と取り消しは待ちます。」を 1 行**出す
 // - 「いま消す」「別名で戻す」「ゴミ箱から戻す」は**人だけ**の口（押す前に確認を 1 回挟む）
 // - 拾い物（`found`）は**消さない**（人が決める）
 // - `esc()` を必ず通す
@@ -18,6 +20,8 @@
 const PENDING = '/api/pending-deletes';
 const TRASH = '/api/trash';
 const ROOTS = '/api/roots';
+const SCAN = '/api/scan';
+const ASSETS = '/api/assets?limit=2000&sort=path';
 const PREVIEW = '/api/locations/bulk-delete/preview';
 const BULK = '/api/locations/bulk-delete';
 
@@ -172,7 +176,44 @@ export function stage3NoticeHtml(preview, roots) {
   if (!noMark.length) return '';
   const names = [...new Set(noMark.map((r) => r.display_path))];
   return `<div class="pd-warn">この置き場は段 3 の印が付いていません（${esc(names.join(' / '))}）。`
-    + '段 3 は実体を消します。印は設定で付けられます。</div>';
+    + '段 3 は実体を消します。印は<a href="#/settings">設定</a>で付けられます。</div>';
+}
+
+/** **その場所が段 3 を許されているか**（`root.allow_stage3`。Q8）。
+ *
+ * `deletions.py` の `_stage3_ok` と同じ見方: **覆っている置き場のどれか 1 つに印があれば許す**。
+ * **どの置き場にも入っていない場所は許さない**（安全側。§0.6-6 の帰結）。
+ */
+export function stage3Allowed(roots, path) {
+  if (!path) return false;
+  const covering = (roots || []).filter((r) => underPath(path, r.display_path || r.path));
+  return covering.some((r) => Boolean(r.allow_stage3));
+}
+
+/** 選んだ枚の**段 3 の出し分け**（P8-5・Q8）。
+ *
+ * `known` は「置き場を確かめられたか」。確かめられないときは**出さない**（安全側）が、
+ * 文は「印が無い」と言い切らない（**確かめられなかった**と書く。家風「数を黙って捨てない」）。
+ */
+export function stage3OfPaths(roots, paths) {
+  const known = Boolean(paths && paths.length) && paths.every(Boolean);
+  return { allowed: known && paths.every((p) => stage3Allowed(roots, p)), known,
+           paths: paths || [] };
+}
+
+/** 段 3 のラジオを出さないときの 1 行（`frontend-design.md` §6）。 */
+export function stage3BlockedHtml() {
+  const got = state.stage3;
+  const why = got.known
+    ? 'この置き場には段 3 の印がありません。段 1・2 だけ選べます。印は設定で付けられます。'
+    : '置き場を確かめられないので、段 3 は出していません。再読込でやり直せます。';
+  return `<div class="pd-warn">${esc(why)}<a href="#/settings">設定を開く</a></div>`;
+}
+
+/** 走査中の 1 行（P8-5。走査は削除と同じ錠を取るので、押しても待たされる。§4.6）。 */
+export function scanHtml() {
+  if (!state.scan || !state.scan.scanning) return '';
+  return `<div class="pd-scan">走査中です。終わるまで削除と取り消しは待ちます。</div>`;
 }
 
 /** 3 段階の進行（**印 → ゴミ箱 → 実削除**）。いまの段に印を付ける。 */
@@ -190,7 +231,9 @@ const state = {
   trash: { days: [], count: 0, bytes: 0 },
   roots: [],                                 // 段 3 の前置きを**実際の置き場から組む**（G-4）
   ids: [], stage: 1, preview: null, exec: null, msg: '', bad: false,
-  confirmLast: false, timer: null, busy: false,
+  confirmLast: false, timer: null, busy: false, ticks: 0,
+  // P8-5: 走査中か（`GET /api/scan`）と、選んだ枚の段 3 の出し分け（Q8）
+  scan: null, stage3: { allowed: false, known: false, paths: [] },
 };
 
 // ---- 描く（文字列）----
@@ -201,9 +244,13 @@ export function rowHtml(item) {
   const remain = stage === 3 && item.state === 'pending'
     ? `<span class="pd-remain num" data-remain="${esc(item.id)}">あと ${esc(fmtRemain(item.remaining_sec))}</span>`
     : '<span class="pd-remain num">—</span>';
+  // **（P8-3 の再確認 D-1）** 元の場所が埋まっているだけの行は「別名で戻す」を勧める。
+  // 「いま消す」は**ボタンだけ**にして、文では勧めない（取り返しのつかない側を大きく言わない）
   const stuck = item.state === 'stuck'
     ? `<div class="pd-reason">戻せませんでした。${esc(stuckText(item.stuck_reason))}`
-      + '「別名で戻す」か「いま消す」を選べます。</div>'
+      + (item.stuck_reason === 'target_exists' && item.needs_as_copy
+        ? '「別名で戻す」で戻せます。' : '「別名で戻す」か「いま消す」を選べます。')
+      + '</div>'
     : '';
   const buttons = [];
   if (item.undoable) {
@@ -289,7 +336,10 @@ export function confirmHtml() {
       + '<div class="pd-confirm-actions">'
       + '<a class="back" href="#/pending-deletes">最近の削除で確かめる</a></div></div>';
   }
-  const stages = [1, 2, 3].map((n) => `<label class="pd-stage${state.stage === n ? ' on' : ''}">`
+  // **（P8-5・Q8）印の無い置き場では段 3 のラジオを出さない**（段 1・2 だけ出す）。
+  // `state.stage3.allowed` は `GET /api/roots` と選んだ枚のパスから決める（`stage3OfPaths`）
+  const offered = state.stage3.allowed ? [1, 2, 3] : [1, 2];
+  const stages = offered.map((n) => `<label class="pd-stage${state.stage === n ? ' on' : ''}">`
     + `<input type="radio" name="pd-stage" class="pd-stage-box" value="${n}"`
     + `${state.stage === n ? ' checked' : ''}> 段 ${n} ${esc(STAGE_LABEL[n])}</label>`).join('');
   const thumbs = state.ids.slice(0, 12).map((id) =>
@@ -320,7 +370,8 @@ export function confirmHtml() {
         <button class="pd-forget">やめる</button>
       </div>`;
   return `<div class="pd-confirm"><div class="pd-sub">削除の確認</div>
-    <div class="pd-stages">${stages}</div>${items}</div>`;
+    <div class="pd-stages">${stages}</div>
+    ${state.stage3.allowed ? '' : stage3BlockedHtml()}${items}</div>`;
 }
 
 export function messageHtml() {
@@ -353,13 +404,38 @@ async function load() {
   state.foundCount = pending.found_count || 0;
   state.trash = trash;
   state.roots = roots.roots || [];
+  // **（P8-5）走査中か**（`GET /api/scan`。古いサーバでは 404 なので黙って「走査中でない」）
+  state.scan = await fetch(SCAN, { headers: asHuman() })
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  // **（P8-5・Q8）選んだ枚の段 3 の出し分け**（置き場の印と突き合わせる）
+  state.stage3 = await stage3For(state.ids, state.roots);
+  if (!state.stage3.allowed && Number(state.stage) === 3) {
+    state.stage = 1;                       // 出さない段が選ばれたまま残らないように（安全側）
+    state.preview = null;
+  }
   state.busy = false;
   render();
+}
+
+/** 選んだ枚のパスを引き、**段 3 を出せるか**を決める（P8-5・Q8）。
+ *
+ * パスは `GET /api/assets`（1 回）から引く（**枚ごとに `GET` を並べない**）。
+ * 引けなければ `known: false`（＝段 3 を出さない。**安全側**）。
+ */
+async function stage3For(ids, roots) {
+  if (!ids.length) return stage3OfPaths(roots, []);
+  const res = await fetch(ASSETS, { headers: asHuman() }).catch(() => null);
+  if (!res || !res.ok) return stage3OfPaths(roots, ids.map(() => null));
+  const body = await res.json().catch(() => ({}));
+  const byId = new Map((body.items || []).map((row) => [row.id, row.path || null]));
+  return stage3OfPaths(roots, ids.map((id) => byId.get(id) || null));
 }
 
 function render() {
   const confirm = $('pd-confirm');
   if (confirm) confirm.innerHTML = confirmHtml();
+  const scan = $('pd-scan');
+  if (scan) scan.innerHTML = scanHtml();
   const legend = $('pd-legend');
   if (legend) legend.innerHTML = legendHtml();
   const running = $('pd-running');
@@ -399,6 +475,21 @@ function tickRemain() {
     const cell = document.querySelector(`[data-remain="${item.id}"]`);
     if (cell) cell.textContent = `あと ${fmtRemain(item.remaining_sec)}`;
   }
+  // **（P8-5）走査中の 1 行は 5 秒ごとに見直す**（走査が終わったら消す。`GET` は書かない）
+  state.ticks = (state.ticks || 0) + 1;
+  if (state.ticks % 5 === 0) refreshScan();
+}
+
+/** 走査中の 1 行だけを読み直す（**画面全体は描き直さない**。毎秒の書き換えを止めない）。 */
+export async function refreshScan() {
+  const got = await fetch(SCAN, { headers: asHuman() })
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const before = Boolean(state.scan && state.scan.scanning);
+  state.scan = got;
+  if (Boolean(got && got.scanning) === before) return got;
+  const scan = $('pd-scan');
+  if (scan) scan.innerHTML = scanHtml();
+  return got;
 }
 
 // ---- 押されたとき ----
@@ -410,6 +501,8 @@ export function stageTaken() {
 export function askStage(n) {
   const got = Number(n);
   if (![1, 2, 3].includes(got) || got === state.stage) return false;
+  // **（P8-5・Q8）印の無い置き場では段 3 を選ばせない**（ラジオを出していないのと同じ規則）
+  if (got === 3 && !state.stage3.allowed) return false;
   state.stage = got;
   state.preview = null;                 // 段を変えたら凍結は捨てる（評価し直さない）
   state.exec = null;

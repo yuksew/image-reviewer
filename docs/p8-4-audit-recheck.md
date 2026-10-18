@@ -8,7 +8,9 @@
 - 実データ: 最初と最後に `mode=ro` で **v6・24 表・263 枚・判断 3 件・`deleted_at` 0・台帳 0**、画像 263 枚の署名 **`fa99ca126c393d5a`・292,561,491 B**（前回と同じ）。`db.sqlite3` 00:07 のまま。`.backup/` は **8 フォルダ**（G-9 の `pre-p8-4-20261017-232148` が増えた。消していない）。`%USERPROFILE%\image-reviewer-backups` は**無い**（下の B-1 を見よ）。
 - 回帰: **pytest 472 passed ×3**（32.4 / 32.3 / 32.3 s）、**gui_smoke すべて ok（232 ok / NG 0）**、**gui_layout 10 本すべて ok（8 画面＋`pending --ids`＋library。各 3 窓）**、`check_contract_p8.py` は前回のまま（OK 24）。壊し試験 **30 通り中 29 通りで狙ったテストが落ちる**（残り 1 つは私の plugin が届かない形。F）。
 
-## 判定: **合格（条件なし）。ただし実機で 1 件、設計の外の B がある**
+## 判定: **合格（条件つき）。条件は実機の B-1'（8790 が日次を 1 つ取れたことを `GET /api/backup` の `count` で確かめる）**
+
+コードの直しは全部、実行で直っている（下）。条件は運用の側: 立て直した 8790 が sandbox の中に居て、既定の置き場に書けず、控えが 0 個のまま。
 
 直しは全部、実行で確かめた。**B-1**: 健全な日次を 7 日分取ってから走ったまま 300 ページ目を潰し（ページキャッシュは `shrink_memory`＋`cache_size=1` で捨てる）、7 日分 `tick` → 1 回目は `failed`（`DB が壊れています（quick_check: *** in database main ***…）`）、以後は `read_only`、**写しは 1 つも採用されず健全な 7 世代がそのまま**、`last_error` に残り、`store.read_only` が立って書き込みは 503、一時フォルダは残らない（R1）。写しだけの検査も `quick_check → integrity_check` の 2 段で、300 ページ目を潰した写しは落ちる（R1e/f）。**C-1**: 1 バイト変えた写しは 409 `bad_backup`（`expected` / `actual` つき）で `<data>` は変わらず、`--force` では進んで結果に `sha256.ok=False`、CLI は違えば終了 2 の 1 行・合えば「sha256 一致」と退避先の 1 行（R2）。**C-2**: 複製のサーバ（8793）が DB を掴んだまま CLI の `restore` → **終了 2・stderr 1 行「DB を置き換えられません（アプリを止めてから戻してください）: [WinError 5] …」**・トレースバック無し・`<data>` の全表 sha256 と全ファイルが前後で同じ・WAL は残る・`.tmp-restore-db-*` も残らない（S6）。ライブラリでも、別の接続が掴んでいるときは `os.replace` で 409 になり **`unlink` の文（「古い WAL を消せません」）には行かない**（R11）。**C-3**: 2 ページ目・300 ページ目・版 7・控え失敗の各形で `GET /api/groups` と `/api/reviews` が 200、2 ページ目の形で台帳 3 本（`/api/pending-deletes`・`/api/deletions`・`/api/deletions/trash`）は **503 `read_only`・`details.reason: malformed`**（500 は 0 本。S5）。**G-8**: `IMAGE_REVIEWER_DATA` を外して `import image_reviewer.app` → `'app' in vars(m)` は `False`、**実データの全ファイル（`db.sqlite3`・`-wal`・`-shm`・`store.json` ×2）の大きさと mtime が前後で同じ**、`%USERPROFILE%` の置き場も作られない（R9。複製で `m.app` を触ったときだけ `create_app` が走る）。**G-9**: `.backup/pre-p8-4-20261017-232148/` は manifest の sha256 と実物が一致・263 枚・判断 3 件・`integrity_check ok`・契約に合う（R10）。D は下の C-0。
 
@@ -71,7 +73,7 @@
 - **D-2 2 ページ目を潰した形では `GET /api/backup` も 503。** `state()` が `settings` を読み、そのページが壊れているので `sqlite_error_handler` が 503 `read_only` に写す（S5 の page2 の一覧: `/api/backup` 503）。画面（P8-5）は「バックアップの状態が読めない」も読み取り専用の案内として扱うこと。
 - **D-3 `PATCH /api/settings` にファイルの**下**を指す置き場を渡すと 200**（`<file>\sub`。S4e）。作れないので次の周期で `last_error` になる（前と同じ道）。`check_backup_target` は「存在するのにフォルダでない」しか見ない。親を辿って最初に存在する物がファイルなら 422 に。
 - **D-4 `replace_dir` の再試行は 5 回 × 50 ms。** ウイルス対策の掴みは秒単位のこともある。`PermissionError` が続いたときの文言（`last_error`）に「置き場のフォルダを別のプロセスが掴んでいる」と書く。
-- **D-5 `pre-topup-*` の控えは `GET /api/backup` の一覧に `kind: pre-topup` で出るが、`last_at` の計算には含まれる**（`snaps[0]` が pre-topup なら `last_at` はその時刻）。日次の「最後に取った時刻」として画面に出すなら `daily` / `manual` だけで引く。
+- **D-5 `pre-topup-*` の控えは `GET /api/backup` の一覧に `kind: pre-topup` で出るが、`last_at` の計算には含まれる**（`snaps[0]` が pre-topup なら `last_at` はその時刻。コード読み `backup.py` `state()`。実行では見ていない）。日次の「最後に取った時刻」として画面に出すなら `daily` / `manual` だけで引く。
 - **D-6 `.backup/pre-p8-4-*` に `README.txt` がある。** `restore` は余分なファイルを無視するので害は無いが、`list_snapshots` の形（`db.sqlite3`＋`manifest.json`）と違う物を `.backup/` に置く流儀は 1 行書いておく。
 
 ## E. 設計とのずれ

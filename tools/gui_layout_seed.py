@@ -17,6 +17,10 @@
 `--tags`      語を 3 つ（語釈つき 2 つ）と、最初の 2 枚への結び付けを入れる（`#/tags` 用）
 `--exclusion` いちばん近い群の 2 枚に、理由が `<script>alert(1)</script>` の除外を入れる
 `--pending`   1 枚を段 3 の保留にする（**保留の実体は複製**。残り時間 300 秒）
+`--stage3`    置き場に「段 3 を許す」印を立てる（`--root <部分一致>` で絞れる。P8-5）
+`--no-stage3` 置き場の印を**全部外す**（`--screen pending` の「段 3 を出さない」検査の前提。P8-5）
+`--backup-error` `settings` に `backup.last_error` を入れる（上部バーの「失敗しています」の前提）
+`--backup-dir <パス>` バックアップの置き場を設定に書く（**`<data>` の中は断る**）
 """
 
 from __future__ import annotations
@@ -144,13 +148,73 @@ def seed_pending(con: sqlite3.Connection, data: Path) -> None:
     print(f"保留: {deletion_id} を段 3 にした（残り 300 秒。実体は {target}）")
 
 
+def seed_stage3(con: sqlite3.Connection, *, allow: bool, like: str | None = None) -> None:
+    """置き場の**段 3 を許す印**を立てる／外す（P8-5・Q8）。
+
+    `--screen pending` の「**印の無い置き場では段 3 のラジオを出さない**」検査は、
+    前提が「印なしの置き場」なので、素の複製（実データは `illust-authoring` に印がある）では
+    **印あり側しか見られない**。ここで複製の中の印を操作して、両方の形を作れるようにする
+    （**実データは断る**。`guard()`）。
+    """
+    rows = [dict(r) for r in con.execute("SELECT path, display_path FROM root ORDER BY path")]
+    if not rows:
+        print("注意: 置き場が 0 件なので印は動かしません")
+        return
+    hit = [r for r in rows if not like or like.lower() in r["display_path"].lower()]
+    if not hit:
+        print(f"注意: `{like}` に当たる置き場がありません（{len(rows)} 件）")
+        return
+    for row in hit:
+        con.execute("UPDATE root SET allow_stage3 = ? WHERE path = ?",
+                    (1 if allow else 0, row["path"]))
+    word = "立てた" if allow else "外した"
+    print(f"印を{word}: " + " / ".join(r["display_path"] for r in hit))
+
+
+def seed_backup(con: sqlite3.Connection, *, error: bool, backup_dir: str | None) -> None:
+    """バックアップの状態を**複製の中に**作る（P8-5。上部バーの失敗の印・設定の画面）。
+
+    `settings` に `backup.last_error` を入れると、`GET /api/backup` がそのまま返すので、
+    画面の検査が**本物の応答**でできる（`fetch` を差し替えない）。**実機の 8790 が
+    sandbox で `%USERPROFILE%` に書けずに出していたのと同じ形**（P8-4 の再確認 B-1'）。
+    """
+    from image_reviewer import backup as backup_mod
+
+    if backup_dir:
+        # **`<data>` の中は本物と同じ規則で断る**（画面の検査の前提を本物に揃える）
+        data = Path(con.execute("PRAGMA database_list").fetchone()[2]).parent
+        got = backup_mod.check_backup_dir(backup_dir, data)     # 断られれば ReviewError
+        con.execute("INSERT INTO settings(key, value) VALUES (?, ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (backup_mod.SETTING_BACKUP_DIR, str(got)))
+        print(f"置き場を設定に書いた: {got}")
+    if error:
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        message = ("[WinError 5] アクセスが拒否されました: "
+                   "'C:\\Users\\<利用者>\\image-reviewer-backups'（画面の検査の前提。"
+                   "複製にだけ入れています）")
+        for key, value in ((backup_mod.SETTING_LAST_ERROR, message),
+                           (backup_mod.SETTING_LAST_ERROR_AT, now)):
+            con.execute("INSERT INTO settings(key, value) VALUES (?, ?)"
+                        " ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+        print(f"最後の失敗を入れた: {message[:60]}…")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="gui_layout の前提を複製に用意する（P8-3 の監査 D-6）")
     parser.add_argument("--data", required=True, help="複製のフォルダ（実データは断る）")
     parser.add_argument("--tags", action="store_true", help="語と語釈（--screen tags 用）")
     parser.add_argument("--exclusion", action="store_true", help="script タグの理由の除外")
     parser.add_argument("--pending", action="store_true", help="段 3 の保留（--screen pending 用）")
+    parser.add_argument("--stage3", action="store_true", help="「段 3 を許す」印を立てる（P8-5）")
+    parser.add_argument("--no-stage3", action="store_true", help="印を全部外す（P8-5）")
+    parser.add_argument("--root", default=None, help="--stage3 で絞る（表示パスの部分一致）")
+    parser.add_argument("--backup-error", action="store_true",
+                        help="`backup.last_error` を入れる（上部バーの失敗の前提。P8-5）")
+    parser.add_argument("--backup-dir", default=None, help="バックアップの置き場を設定に書く")
     args = parser.parse_args()
+    if args.stage3 and args.no_stage3:
+        parser.error("--stage3 と --no-stage3 は同時に使えません")
     data = guard(Path(args.data))
     con = connect(data)
     try:
@@ -160,6 +224,10 @@ def main() -> None:
             seed_exclusion(con)
         if args.pending:
             seed_pending(con, data)
+        if args.stage3 or args.no_stage3:
+            seed_stage3(con, allow=bool(args.stage3), like=args.root)
+        if args.backup_error or args.backup_dir:
+            seed_backup(con, error=bool(args.backup_error), backup_dir=args.backup_dir)
         con.commit()
         print(f"入れた: {data}")
     finally:

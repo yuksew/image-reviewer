@@ -262,6 +262,11 @@ class DeletionService:
         self._born: dict[str, float] = {}
         # **起動時に見つけた拾い物**（台帳に無い保留領域の中身。G-4。**消さない**）
         self._found: dict = {"items": [], "count": 0, "root": str(self.data_dir / HOLD_DIR)}
+        # **（P8-5）走査中の印**。`scan_guard()` が立てる。`scan_state()` は**錠を取らずに**
+        # ここを読む（走査中でも画面が待たずに答えられるように。§3.4）
+        self._scan_started_at: str | None = None
+        self._scan_started_mono: float | None = None
+        self._scans = 0
 
     # ---- タイマー（30 秒周期。**起動時には消さない**）----
 
@@ -292,9 +297,39 @@ class DeletionService:
         代わりに**同じ錠**を取る: 走査が歩いている間に削除・取り消しが割り込まないので、
         「走査中は消さない」も、**走査の最後の `mark_missing` が、戻したばかりの枚を
         参照切れにする**逆向きの事故も両方止まる。**待つだけ**で 409 は返さない。
+
+        **（P8-5）走査中の印をここで立てる**（`scan_state()` が画面に返す）。
+        印は**錠の外から読める**ので、走査中でも `GET /api/scan` は待たずに答える
+        （`_lock` を取ると、走査が終わるまで画面が固まる）。
         """
-        with self._lock:
-            yield
+        self._scan_started_at = self.clock.now()
+        self._scan_started_mono = self.clock.monotonic()
+        self._scans += 1
+        try:
+            with self._lock:
+                yield
+        finally:
+            self._scan_started_at = None
+            self._scan_started_mono = None
+
+    def scan_state(self) -> dict:
+        """**いま走査中か**（P8-5。設計 §3.4・`frontend-design.md` §4.5.1）。**読むだけ**。
+
+        - **`self._lock` を取らない。** 取ると、走査が終わるまで `GET /api/scan` が待たされる
+          （画面に「走査中です」を出すための口が、走査中にだけ答えないのでは意味が無い）
+        - `elapsed_sec` は**単調時計**から（走査は 1 本なので、印が入れ替わる競合は考えない。
+          走査は `POST /api/scan` の 1 本だけで、入れ子にはならない）
+        """
+        started = self._scan_started_mono
+        elapsed = None if started is None else max(0.0, self.clock.monotonic() - started)
+        return {
+            "scanning": started is not None,
+            "started_at": self._scan_started_at,
+            "elapsed_sec": None if elapsed is None else round(elapsed, 1),
+            "scans": self._scans,
+            "note": ("走査中です。終わるまで削除と取り消しは待ちます。" if started is not None
+                     else "走査していません。"),
+        }
 
     def stop(self) -> None:
         """タイマーを止める（`lifespan` の終了側。**2 回呼んでも安全**）。"""

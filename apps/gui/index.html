@@ -26,7 +26,17 @@
          取り消せる削除が 1 件でもある間だけ出す（残り時間つき）。
          **`#/jobs` の隣に 4 つ目の入口は作らない**（点検 B5）ので、これは (b) の 1 つ -->
     <a class="pending del-badge" id="stat-deletes" href="#/pending-deletes" hidden></a>
+    <!-- P8-5: **バックアップの失敗**（`frontend-design.md` §4.5.1。P8-4 の再確認 B-1'）。
+         `GET /api/backup` の `last_error` があるときだけ出す。**押すと詳細**（`#/settings`）。
+         `GET /api/backup` が 503 のときは同じ場所に「読み取り専用です」 -->
+    <a class="pending bk-badge" id="stat-backup" href="#/settings" hidden></a>
+    <!-- P8-5: **走査中**（`frontend-design.md` §4.5.1。`GET /api/scan`）。
+         走査の間は削除と取り消しが待つので、待たされている理由が見えるようにする。
+         行き先が無いので押せない（`span`） -->
+    <span class="pending sc-badge" id="stat-scan" hidden></span>
     <span class="spacer"></span>
+    <!-- P8-5: 設定（`#/settings`。バックアップの詳細と置き場の段 3 の印） -->
+    <a class="back set-open" id="stat-settings" href="#/settings">設定</a>
     <button id="btn-provenance" title="来歴のある画像 / ない画像を切り替える">来歴: すべて</button>
     <button id="btn-density">密度: 普</button>
     <button id="btn-theme">テーマ: 暗幕</button>
@@ -216,6 +226,9 @@
       <button id="pd-again">再読込</button>
     </div>
     <div class="pd-body">
+      <!-- P8-5: **走査中の 1 行**（`frontend-design.md` §4.6。`GET /api/scan`）。
+           走査の間は削除と取り消しが待つので、待たされている理由をここに出す -->
+      <div id="pd-scan"></div>
       <div id="pd-confirm"></div>
       <div class="pd-block">
         <div class="pd-sub">取り消せる削除<span class="stat">残り時間のうちに「取り消す」で戻せます。</span></div>
@@ -231,6 +244,31 @@
       段 1 はカタログから外すだけ・段 2 はゴミ箱・段 3 は実体を消す用意です。
       <b>いま消す</b>と <b>別名で戻す</b>は人の操作です。人が消した物も、エージェントが消した物も戻せます
       （エージェントは自分の分だけ）。ゴミ箱は<b>自動では消しません</b>。
+      段 3 は<b>印を付けた置き場だけ</b>で選べます（<a href="#/settings">設定</a>）。
+    </div>
+  </div>
+
+  <!-- 設定（P8-5。`#/settings`）。バックアップの状態（**最後の失敗の全文**）と、
+       置き場ごとの「段 3 を許す」印の付け外し。**復元は CLI**（画面から戻さない） -->
+  <div id="settings">
+    <div class="topbar">
+      <a class="back" href="#" id="st-back">← 一覧</a>
+      <span class="name">設定</span>
+      <span class="stat" id="st-brief">—</span>
+      <span class="spacer"></span>
+      <button id="st-again">再読込</button>
+    </div>
+    <div class="st-body">
+      <div id="st-backup"></div>
+      <div id="st-roots"></div>
+      <div id="st-msg"></div>
+    </div>
+    <div class="st-help">
+      <b>バックアップ</b>は 30 秒ごとに「今日の分がまだなら取る」を見ています。
+      <b>失敗はここに全文で出ます</b>（黙って失敗しません）。<b>復元はコマンド</b>で行います
+      （<code>image-reviewer restore &lt;フォルダ&gt;</code>）。
+      <b>段 3 の印</b>は、その置き場で実ファイルの削除を許すという<b>人の意思表示</b>です。
+      印の無い置き場では段 1・2 だけが使えます。
     </div>
   </div>
 

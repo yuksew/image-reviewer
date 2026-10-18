@@ -16,6 +16,8 @@ import { hideJobs, showJobs, wireJobs } from './jobs.js';
 import { hideDuplicates, showDuplicates, wireDuplicates } from './duplicates.js';
 import { hidePending, renderDeleteEntry, showPending, toDelete, wireDeleteEntry,
          wirePending } from './pending.js';
+// P8-5: 設定（`#/settings`。バックアップの詳細と置き場の段 3 の印）
+import { hideSettings, showSettings, wireSettings } from './settings.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -341,7 +343,7 @@ function openCompare() {
 // ---- 道（ハッシュ）----
 
 // `#/compare` / `#/requests` / `#/group/<id>` / `#/asset/<id>` / `#/tags` / `#/jobs` /
-// `#/duplicates` / `#/pending-deletes` の 8 つ。
+// `#/duplicates` / `#/pending-deletes` / `#/settings` の 9 つ。
 // **要求が来ても画面を切り替えない**（`#/requests` を開いたときだけ出す。§5.1）
 function route() {
   const hash = location.hash || '';
@@ -359,6 +361,8 @@ function route() {
   // P8-3: 重複の整理と最近の削除（`frontend-design.md` §3 の 6 と 11）
   const duplicating = hash.startsWith('#/duplicates');
   const deleting = hash.startsWith('#/pending-deletes');
+  // P8-5: 設定（`frontend-design.md` §3 の 10。バックアップと段 3 の印）
+  const setting = hash.startsWith('#/settings');
   document.body.classList.toggle('comparing', comparing);
   document.body.classList.toggle('requests', requesting);
   document.body.classList.toggle('grouping', grouping);
@@ -369,6 +373,7 @@ function route() {
     hideJobs();
     hideDuplicates();
     hidePending();
+    hideSettings();
     showCompare(queryOf(hash));
     return;
   }
@@ -379,6 +384,7 @@ function route() {
     hideJobs();
     hideDuplicates();
     hidePending();
+    hideSettings();
     showRequests(queryOf(hash));
     return;
   }
@@ -388,6 +394,7 @@ function route() {
     hideJobs();
     hideDuplicates();
     hidePending();
+    hideSettings();
     showGroup(pathOf(hash, '#/group/'));
     return;
   }
@@ -397,6 +404,7 @@ function route() {
     hideJobs();
     hideDuplicates();
     hidePending();
+    hideSettings();
     showTags(queryOf(hash)).catch(() => {});
     return;
   }
@@ -406,6 +414,7 @@ function route() {
     hideTags();
     hideDuplicates();
     hidePending();
+    hideSettings();
     showJobs().catch(() => {});
     return;
   }
@@ -416,6 +425,7 @@ function route() {
     hideTags();
     hideJobs();
     hidePending();
+    hideSettings();
     showDuplicates(queryOf(hash)).catch(() => {});
     return;
   }
@@ -426,7 +436,19 @@ function route() {
     hideTags();
     hideJobs();
     hideDuplicates();
+    hideSettings();
     showPending(queryOf(hash)).catch(() => {});
+    return;
+  }
+  // P8-5: 設定（`#/settings`。バックアップの詳細と段 3 の印）
+  if (setting) {
+    hideRequests();
+    hideGroup();
+    hideTags();
+    hideJobs();
+    hideDuplicates();
+    hidePending();
+    showSettings().catch(() => {});
     return;
   }
   hideRequests();
@@ -435,6 +457,7 @@ function route() {
   hideJobs();
   hideDuplicates();
   hidePending();
+  hideSettings();
   // 拡大（`#/asset/<id>`。まとまりレビューの「選んだ 1 枚を拡大で開く」の行き先）。
   // **注記の入口**（点検 C5）: ここで印を付けてから決める。
   // `?group=<id>` が付いていれば、そのまとまりの注記として記録する（要求の応答に出る）
@@ -493,6 +516,8 @@ wireJobs();
 // P8-3: 重複の整理と最近の削除
 wireDuplicates();
 wirePending();
+// P8-5: 設定（バックアップの詳細と段 3 の印）
+wireSettings();
 // 戻る（`← 一覧`）はハッシュを消すだけ（`#/duplicates` / `#/pending-deletes` から）
 for (const [id, back] of [['dup-back', ''], ['pd-back', '']]) {
   const el = $(id);

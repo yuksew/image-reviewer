@@ -1025,10 +1025,13 @@ globalThis.fetch = async (url, options) => {
     progress: { done: 2, total: 2 }, counts: {}, items_failed: [] });
   if (u.startsWith('/api/locations/bulk-delete/preview')) return res(PREVIEW_NOW);
   if (u.startsWith('/api/roots')) {
-    // **（監査 G-4）** 段 3 の前置きは**実際の置き場**から組む（固定のツール名を埋め込まない）
+    // **（監査 G-4）** 段 3 の前置きは**実際の置き場**から組む（固定のツール名を埋め込まない）。
+    // **（P8-5）** 印の付け外しは `id`（正規化した鍵）を使う（`GET /api/roots` の実物と同じ形）
     return res({ roots: [
-      { path: 'd:\\lib', display_path: 'D:\\lib', allow_stage3: false, added_at: 't' },
-      { path: 'c:\\other', display_path: 'C:\\other', allow_stage3: true, added_at: 't' },
+      { id: 'd:\\lib', path: 'd:\\lib', display_path: 'D:\\lib', allow_stage3: false,
+        added_at: 't' },
+      { id: 'c:\\other', path: 'c:\\other', display_path: 'C:\\other', allow_stage3: true,
+        added_at: 't' },
     ] });
   }
   if (u.startsWith('/api/locations/bulk-delete')) {
@@ -1079,6 +1082,93 @@ globalThis.fetch = async (url, options) => {
     pendingGetHeaders = options?.headers || null;
   }
   return asHumanFetch(url, options);
+};
+
+// ---- P8-5: 走査中（`GET /api/scan`）・バックアップ（`GET /api/backup`）・設定 ----
+//
+// `pending.js` は段 3 の出し分けのために**選んだ枚のパス**（`GET /api/assets`）を引き、
+// 走査中の 1 行のために `GET /api/scan` を見る。設定の画面は `GET /api/backup` と
+// `GET /api/roots` を読む。**押す検査**は本物の委譲の聞き手を叩く（`fetch` は飲む）。
+let ASSET_PATHS = { a1: 'C:\\other\\A1.png', a2: 'C:\\other\\A2.png' };  // 既定は**印のある**置き場
+let ASSETS_FAILS = false;
+let SCAN_NOW = { scanning: false, started_at: null, elapsed_sec: null, scans: 1,
+                 note: '走査していません。' };
+const BACKUP_BODY = {
+  backup_dir: 'C:\\work\\image-reviwer\\.backup\\daily',
+  backup_dir_source: 'settings',
+  default_backup_dir: 'C:\\Users\\yukse\\image-reviewer-backups',
+  keep: 7, interval_sec: 30, count: 3, today_done: true,
+  next_run_at: '2026-10-18T15:00:00Z',
+  next_run_note: '今日の分は取りました（次は日付が変わったとき）',
+  // **P8-4 の再確認 B-1' の実際の形**（実機の 8790 が返していた物）
+  last_error: "[WinError 5] アクセスが拒否されました: 'C:\\Users\\yukse\\image-reviewer-backups'",
+  last_error_at: '2026-10-17T23:38:25Z', read_only: false, running: true, ticks: 5,
+  // **サーバの並びと同じ**（名前の降順。`pre-topup-*` は `p` なので数字より先に来る）
+  snapshots: [
+    { name: 'pre-topup-20261018-084455', kind: 'pre-topup', created_at: '2026-10-18T08:44:55Z',
+      bytes: 900_000, ok: true },
+    { name: '20261018-121500', kind: 'manual', created_at: '2026-10-18T03:15:00Z',
+      bytes: 1_500_000, ok: true },
+    { name: '20261018', kind: 'daily', created_at: '2026-10-18T00:00:00Z', bytes: 1_400_000,
+      ok: true },
+  ],
+};
+let BACKUP_NOW = BACKUP_BODY;
+let BACKUP_STATUS = 200;
+let SETTINGS_FAILS = null;             // 422 の本文を入れると失敗の道を見られる
+let settingsWrites = [];               // 人だけの口に**名乗っているか**を見る
+
+const beforeSettings = globalThis.fetch;
+globalThis.fetch = async (url, options) => {
+  const u = String(url);
+  const method = String(options?.method || 'GET').toUpperCase();
+  // **この包みが自分で答える要求だけ**を `writes` に写す（下の包みと二重に数えない）。
+  // 写さないと「1 回だけ叩く」の検査が 0 回に見える
+  const mine = u.startsWith('/api/assets') || u.startsWith('/api/scan')
+    || u.startsWith('/api/backup') || u.startsWith('/api/settings')
+    || u.includes('/allow-stage3');
+  if (mine && method !== 'GET') writes.push({ url: u, method, body: options?.body });
+  if (method !== 'GET' && (u.startsWith('/api/backup') || u.startsWith('/api/settings')
+      || u.includes('/allow-stage3'))) {
+    settingsWrites.push({ url: u, method, headers: options?.headers || null,
+                          body: options?.body });
+  }
+  if (u.startsWith('/api/assets')) {
+    asked.push(u);
+    if (ASSETS_FAILS) return res({ detail: '読めません' }, 503);
+    return res({ items: Object.entries(ASSET_PATHS).map(([id, path]) => ({ id, path })) });
+  }
+  if (u.startsWith('/api/scan')) {
+    asked.push(u);
+    return res(SCAN_NOW);
+  }
+  if (u.startsWith('/api/backup')) {
+    asked.push(u);
+    if (BACKUP_STATUS === 503) {
+      return res({ detail: 'DB が壊れているので書き込めません', code: 'read_only',
+                   details: { mode: 'read_only', reason: 'malformed' },
+                   guidance: 'image-reviewer restore <バックアップのフォルダ> で戻せます' }, 503);
+    }
+    if (method === 'POST') {
+      // **本物の応答の形**（`snapshot()` は `count` ではなく `dir` / `counts` / `pruned` を返す）
+      return res({ dir: `${BACKUP_NOW.backup_dir}\\20261018-121500`, name: '20261018-121500',
+                   manual: true, pruned: [], counts: { assets: 263, decisions: 3 },
+                   files: 5, backup_dir: BACKUP_NOW.backup_dir, already: false });
+    }
+    return res(BACKUP_NOW);
+  }
+  if (u.startsWith('/api/settings')) {
+    asked.push(u);
+    if (SETTINGS_FAILS) return res(SETTINGS_FAILS, 422);
+    return res({ backup_dir: JSON.parse(String(options?.body || '{}')).backup_dir,
+                 backup_dir_source: 'settings' });
+  }
+  if (u.includes('/allow-stage3')) {
+    asked.push(u);
+    return res({ id: 'd:\\lib', path: 'D:\\lib', display_path: 'D:\\lib',
+                 allow_stage3: JSON.parse(String(options?.body || '{}')).allow === true });
+  }
+  return beforeSettings(url, options);
 };
 
 const dupIds = () => dupUi.pickedIds().join(',');
@@ -1442,6 +1532,215 @@ badge.renderDeleteBadge([PENDING_BODY.items[1]]);          // `stuck` の 1 枚�
 check(el('stat-deletes').hidden === true, '戻せない物だけなら出さない');
 badge.renderDeleteBadge([]);
 check(el('stat-deletes').hidden === true, '0 件なら出さない（§4.6）');
+
+// ---- P8-5: 設定（`#/settings`）と上部バー（バックアップの失敗・走査中）----
+//
+// 設計: `docs/frontend-design.md` §4.5.1（上部バーに出す 6 つ）・§6（文言）・§11（設定の画面）、
+//       `docs/p8-design.md` §0.21・§3.3。
+// **押す検査**は `wireSettings()` が付けた**本物の委譲の聞き手**を叩く（`fetch` は飲む）。
+const stUi = await import('../apps/gui/settings.js');
+stUi.wireSettings();
+
+// 17. 上部バー: **バックアップの失敗**（P8-4 の再確認 B-1' / G-4）
+badge.renderBackupBadge(BACKUP_NOW);
+check(el('stat-backup').textContent === 'バックアップに失敗しています',
+  `失敗していることを上部バーに出す: ${el('stat-backup').textContent}`);
+check(el('stat-backup').hidden === false, '失敗しているときは出す（黙って失敗しない）');
+check(String(el('stat-backup').title).includes('WinError 5'),
+  `押す前に理由の頭を見せる（title）: ${String(el('stat-backup').title).slice(0, 40)}`);
+badge.renderBackupBadge({ ...BACKUP_NOW, last_error: null });
+check(el('stat-backup').hidden === true, '失敗が無ければ出さない');
+badge.renderBackupBadge({ ...BACKUP_NOW, last_error: null, read_only: true });
+check(el('stat-backup').textContent === '読み取り専用です', '読み取り専用は別の語で出す');
+badge.renderBackupBadge(null, { status: 503 });
+check(el('stat-backup').textContent === '読み取り専用です' && el('stat-backup').hidden === false,
+  '状態が読めない（503）ときも同じ場所に出す（P8-4 の再確認 D-2・G-4）');
+badge.renderBackupBadge(null);
+check(el('stat-backup').hidden === true, '取れないだけなら出さない（古いサーバでも止めない）');
+// 印は**上部バー**にあり、押すと `#/settings` へ行く（**下の画面に埋めない**）
+const topbarAt = HTML.indexOf('<div class="topbar">');
+const firstTopbar = HTML.slice(topbarAt, HTML.indexOf('</div>', topbarAt));
+check(firstTopbar.includes('id="stat-backup"') && firstTopbar.includes('href="#/settings"'),
+  '上部バーの印から設定（全文）へ入れる');
+check(firstTopbar.includes('id="stat-scan"') && firstTopbar.includes('id="stat-settings"'),
+  '走査中の印と設定の入口も上部バーにある');
+
+// 18. 上部バー: 走査中（走査の間は削除と取り消しが待つ。§4.5.1）
+badge.renderScanBadge({ scanning: true, elapsed_sec: 3.5 });
+check(el('stat-scan').textContent === '走査中です' && el('stat-scan').hidden === false,
+  `走査中を出す: ${el('stat-scan').textContent}`);
+badge.renderScanBadge({ scanning: false });
+check(el('stat-scan').hidden === true, '走査していないときは出さない');
+badge.renderScanBadge(null);
+check(el('stat-scan').hidden === true, '取れないときは出さない（古いサーバ。404）');
+
+// 19. 設定の画面: バックアップの状態（**最後の失敗の全文**。B-1'）
+check(stUi.lastTakenAt(BACKUP_NOW) === '2026-10-18T03:15:00Z',
+  `最後に取った時刻は daily / manual だけから（pre-topup を数えない。D-5）: ${stUi.lastTakenAt(BACKUP_NOW)}`);
+check(stUi.kindText('pre-topup') === '表の形を変える前の控え'
+  && stUi.kindText('daily') === '日次' && stUi.kindText('nazo') === 'その他',
+  '控えの種類は利用者の言葉で出す（`kind` をそのまま出さない）');
+writes.length = 0;
+settingsWrites.length = 0;
+await stUi.showSettings();
+let bkHtml = String(el('st-backup').innerHTML || '');
+check(bkHtml.includes('最後に取ったのは') && bkHtml.includes(pdUi.fmtWhen('2026-10-18T03:15:00Z')),
+  `最後に取った時刻を出す: ${(bkHtml.match(/最後に取ったのは[^<]*/) || [])[0]}`);
+check(bkHtml.includes('C:\\work\\image-reviwer\\.backup\\daily') && bkHtml.includes('設定の値です'),
+  '置き場と、それが設定の値か既定かを出す');
+check(bkHtml.includes('今日の分は取りました'), '今日の分の状態を出す');
+check(bkHtml.includes('3 個の控えがあります（直近 7 個を残します）'), '控えの数と残す数を出す');
+check(bkHtml.includes("[WinError 5] アクセスが拒否されました: "
+  + "'C:\\Users\\yukse\\image-reviewer-backups'"),
+  `最後の失敗を**全文**で出す（B-1'）: ${(bkHtml.match(/st-failed[\s\S]{0,60}/) || [])[0]}`);
+check(bkHtml.includes('置き場を作れないときは、書き込める場所に変えてください。'),
+  '次にできることを 1 行で出す');
+check(bkHtml.includes('20261018-121500') && bkHtml.includes('日次')
+  && bkHtml.includes('表の形を変える前の控え'), '直近の一覧を種類つきで出す');
+check(bkHtml.includes('image-reviewer restore') && !bkHtml.includes('st-restore'),
+  '復元はコマンドだと書く（画面から戻さない。§3.3）');
+
+// 20. 設定の画面: 置き場ごとの「段 3 を許す」印（Q8）
+let rtHtml = String(el('st-roots').innerHTML || '');
+check(rtHtml.includes('印あり') && rtHtml.includes('印なし'), '置き場ごとに印の状態を出す');
+check(rtHtml.includes('印を外す') && rtHtml.includes('この置き場で段 3 を許す'),
+  '付け外しのボタンを分ける');
+check(rtHtml.includes('印の無い置き場では段 3（実ファイルの削除）を選べません。段 1・2 はいつでも使えます。'),
+  '印の意味を 1 行で書く');
+check(el('st-brief').textContent === '3 個の控え ・ 段 3 の印 1 / 2',
+  `見出しに控えと印の数を出す: ${el('st-brief').textContent}`);
+
+// 21. **押す検査**: 印を付ける（1 回だけ・allow: true・**人だと名乗る**）
+writes.length = 0;
+settingsWrites.length = 0;
+el('st-roots').dispatch('click', { target: hitOf('.st-allow', { id: 'd:\\lib', allow: 'true' }) });
+await tick();
+await tick();
+const allowPosts = writes.filter((w) => w.url.includes('/allow-stage3'));
+check(allowPosts.length === 1, `印を付けるのは 1 回だけ叩く: ${allowPosts.length} 回`);
+check(decodeURIComponent(String(allowPosts[0]?.url || '')).includes('/api/roots/d:\\lib/allow-stage3'),
+  `置き場の id を送る: ${allowPosts[0]?.url}`);
+check(JSON.parse(String(allowPosts[0]?.body || '{}')).allow === true, 'allow: true を送る');
+check(settingsWrites[0]?.headers?.['X-Image-Reviewer-Actor'] === 'human',
+  `人だけの口に名乗る（P8-3 の監査 D-8）: ${JSON.stringify(settingsWrites[0]?.headers)}`);
+check(String(el('st-msg').innerHTML || '').includes('この置き場で段 3 を許します。'),
+  `押した結果を 1 行で知らせる: ${String(el('st-msg').innerHTML || '').slice(0, 60)}`);
+
+// 22. **押す検査**: 印を外す（allow: false）
+writes.length = 0;
+el('st-roots').dispatch('click', { target: hitOf('.st-allow', { id: 'c:\\other', allow: 'false' }) });
+await tick();
+await tick();
+const offPosts = writes.filter((w) => w.url.includes('/allow-stage3'));
+check(offPosts.length === 1 && JSON.parse(String(offPosts[0]?.body || '{}')).allow === false,
+  `印を外すときは allow: false: ${offPosts[0]?.body}`);
+
+// 23. **押す検査**: 「いま取る」→ `POST /api/backup`（同じ日でも必ず新しく取る。§3.3）
+writes.length = 0;
+settingsWrites.length = 0;
+el('st-backup').dispatch('click', { target: hitOf('.st-now', {}) });
+await tick();
+await tick();
+const nowPosts = writes.filter((w) => w.url === '/api/backup' && w.method === 'POST');
+check(nowPosts.length === 1, `「いま取る」は 1 回だけ叩く: ${nowPosts.length} 回`);
+check(settingsWrites.some((w) => w.url === '/api/backup'
+  && w.headers?.['X-Image-Reviewer-Actor'] === 'human'), '「いま取る」も人だけの口');
+check(String(el('st-msg').innerHTML || '').includes('いま取りました'), '取れたことを 1 行で知らせる');
+
+// 24. **押す検査**: 置き場を変える → `PATCH /api/settings`
+el('st-dir').value = 'D:\\image-reviewer-backups';
+writes.length = 0;
+settingsWrites.length = 0;
+el('st-backup').dispatch('click', { target: hitOf('.st-save', {}) });
+await tick();
+await tick();
+const patchPosts = writes.filter((w) => w.url === '/api/settings' && w.method === 'PATCH');
+check(patchPosts.length === 1, `置き場を変えるのは 1 回だけ叩く: ${patchPosts.length} 回`);
+check(JSON.parse(String(patchPosts[0]?.body || '{}')).backup_dir === 'D:\\image-reviewer-backups',
+  `入力の値を送る: ${patchPosts[0]?.body}`);
+check(settingsWrites.some((w) => w.method === 'PATCH'
+  && w.headers?.['X-Image-Reviewer-Actor'] === 'human'), '置き場を変えるのも人だけの口');
+
+// 24b. 断られたら理由をそのまま出す（`422 bad_backup_dir`）
+SETTINGS_FAILS = { detail: 'その置き場はデータ置き場の中です', code: 'bad_backup_dir' };
+writes.length = 0;
+el('st-backup').dispatch('click', { target: hitOf('.st-save', {}) });
+await tick();
+await tick();
+check(String(el('st-msg').innerHTML || '').includes('その置き場はデータ置き場の中です'),
+  `断られた理由をそのまま出す: ${String(el('st-msg').innerHTML || '').slice(0, 70)}`);
+check(String(el('st-msg').innerHTML || '').includes('bad'), '失敗は失敗の見た目にする');
+SETTINGS_FAILS = null;
+
+// 25. 読み取り専用のときの案内（`GET /api/backup` が 503。P8-4 の再確認 D-2）
+BACKUP_STATUS = 503;
+await stUi.showSettings();
+const roHtml = String(el('st-backup').innerHTML || '');
+check(roHtml.includes('DB を読み取り専用で開いています。'), '読み取り専用だと 1 行で言う');
+check(roHtml.includes('DB の検査に通りませんでした。'), '理由を語で出す（`malformed` をそのまま出さない）');
+check(roHtml.includes('image-reviewer restore'), '復元の案内を出す');
+check(!/st-now|st-save/.test(roHtml),
+  '書き込むボタンは出さない（押せないのではなく置かない）');
+check(el('st-brief').textContent === '読み取り専用', `見出しも読み取り専用: ${el('st-brief').textContent}`);
+BACKUP_STATUS = 200;
+await stUi.showSettings();
+
+// ---- P8-5: 最近の削除の段 3 の出し分け（Q8）と走査中の 1 行 ----
+
+// 26. **印の無い置き場では段 3 のラジオを出さない**（P8-3 の監査 E-3）
+ASSET_PATHS = { a1: 'D:\\lib\\A1.png', a2: 'D:\\lib\\A2.png' };       // `D:\lib` は印なし
+await pdUi.showPending('?ids=a1,a2');
+let pdConfirm = String(el('pd-confirm').innerHTML || '');
+check(!pdConfirm.includes('value="3"') && pdConfirm.includes('value="1"')
+  && pdConfirm.includes('value="2"'),
+  '印の無い置き場では段 3 を出さない（段 1・2 だけ。Q8・E-3）');
+check(pdConfirm.includes('この置き場には段 3 の印がありません。段 1・2 だけ選べます。印は設定で付けられます。'),
+  `断りの 1 行を出す: ${(pdConfirm.match(/この置き場[^<]*/) || [])[0]}`);
+check(pdConfirm.includes('href="#/settings"'), '印を付ける場所（設定）へ行ける');
+check(pdUi.askStage(3) === false && pdUi.stageTaken() === 1,
+  '出していない段は押しても選ばない（段 1 のまま）');
+
+// 27. 印のある置き場では出す（選べる）
+ASSET_PATHS = { a1: 'C:\\other\\A1.png', a2: 'C:\\other\\A2.png' };   // `C:\other` は印あり
+await pdUi.showPending('?ids=a1,a2');
+pdConfirm = String(el('pd-confirm').innerHTML || '');
+check(pdConfirm.includes('value="3"') && !pdConfirm.includes('段 3 の印がありません'),
+  '印のある置き場では段 3 を出す');
+check(pdUi.askStage(3) === true, '印のある置き場では段 3 を選べる');
+pdUi.askStage(1);
+
+// 28. 置き場を**確かめられない**ときは出さない（安全側。文は「印が無い」と言い切らない）
+ASSETS_FAILS = true;
+await pdUi.showPending('?ids=a1,a2');
+pdConfirm = String(el('pd-confirm').innerHTML || '');
+check(!pdConfirm.includes('value="3"'), '確かめられないときも段 3 を出さない（安全側）');
+check(pdConfirm.includes('置き場を確かめられないので、段 3 は出していません。'),
+  `確かめられなかったと言う: ${(pdConfirm.match(/置き場を確かめ[^<]*/) || [])[0]}`);
+ASSETS_FAILS = false;
+await pdUi.showPending('?ids=a1,a2');
+
+// 29. **走査中の 1 行**（`GET /api/scan`。走査は削除と同じ錠を取る）
+SCAN_NOW = { scanning: true, started_at: '2026-10-18T03:00:00Z', elapsed_sec: 3.5, scans: 2,
+             note: '走査中です。終わるまで削除と取り消しは待ちます。' };
+await pdUi.showPending('?ids=');
+check(String(el('pd-scan').innerHTML || '')
+  .includes('走査中です。終わるまで削除と取り消しは待ちます。'),
+  `最近の削除にも走査中を出す: ${String(el('pd-scan').innerHTML || '').slice(0, 40)}`);
+SCAN_NOW = { scanning: false, started_at: null, elapsed_sec: null, scans: 3,
+             note: '走査していません。' };
+await pdUi.showPending('?ids=');
+check(String(el('pd-scan').innerHTML || '') === '', '走査が終わったら 1 行を消す');
+
+// 30. **（P8-3 の再確認 D-1）** `target_exists` の文は「別名で戻す」を勧め、「いま消す」は
+//      ボタンだけにする（消す方を文で勧めない）
+const teRow = pdUi.rowHtml({ ...PENDING_BODY.items[1] });     // d2: target_exists + as_copy 可
+check(teRow.includes('戻せませんでした。元の場所に既にファイルがあります。「別名で戻す」で戻せます。'),
+  `target_exists の文を直した（P8-3 の再確認 D-1）: ${(teRow.match(/戻せませんでした[\s\S]{0,60}/) || [])[0]}`);
+check(!teRow.includes('いま消す」を選べます'), '「いま消す」を文で勧めない');
+check(teRow.includes('>いま消す<') && teRow.includes('>別名で戻す<'), 'ボタンは両方残す');
+const otherRow = pdUi.rowHtml({ ...PENDING_BODY.items[1], stuck_reason: 'move_failed' });
+check(otherRow.includes('「別名で戻す」か「いま消す」を選べます。'),
+  '他の理由では今までどおり両方を案内する');
 
 console.log(failures.length ? `\n${failures.length} 件 NG` : '\nすべて ok');
 process.exit(failures.length ? 1 : 0);

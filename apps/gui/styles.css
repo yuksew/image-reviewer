@@ -822,3 +822,84 @@ body.duplicating #duplicates, body.pending #pending {
 .pd-done { font-size: 12px; color: var(--keep); padding: 6px 12px; }
 .pd-msg { font-size: 12px; color: var(--accent); padding: 6px 12px; }
 .pd-msg.bad { color: var(--drop); }
+
+/* ---- 設定（`#/settings`）と上部バーの印。P8-5 ---- */
+/* 設計: docs/frontend-design.md §4.5.1（上部バー）・§6（文言）・§11（設定の画面） */
+#settings { display: none; }
+body.settings #app > .proto, body.settings #app > .topbar,
+body.settings #app > .body, body.settings #app > .bottombar { display: none; }
+body.settings #settings { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#settings .topbar .back {
+  font-size: 12px; color: var(--ink-muted); text-decoration: none;
+  border: 1px solid var(--line); padding: 2px 8px; border-radius: 2px;
+}
+#settings .topbar .back:hover { color: var(--accent); border-color: var(--accent); }
+.st-body { flex: 1 1 auto; overflow: auto; min-height: 0; }
+.st-sub {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 12px; font-weight: 700; background: var(--surface);
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+}
+.st-sub .stat { font-weight: 400; font-size: 11px; color: var(--ink-muted); }
+.st-line { font-size: 12px; padding: 3px 12px; overflow-wrap: anywhere; }
+.st-line .stat { font-size: 11px; color: var(--ink-muted); margin-left: 6px; }
+.st-note { font-size: 11px; color: var(--ink-muted); padding: 3px 12px; overflow-wrap: anywhere; }
+.st-warn { font-size: 12px; color: var(--warn); padding: 3px 12px; }
+.st-failed { font-size: 12px; color: var(--drop); padding: 4px 12px; overflow-wrap: anywhere; }
+.st-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 12px; }
+.st-actions button, .st-root button {
+  font-size: 11px; padding: 1px 8px; background: transparent; color: var(--ink);
+  border: 1px solid var(--line); border-radius: 2px; cursor: pointer; flex: 0 0 auto;
+}
+.st-actions button:hover:not(:disabled), .st-root button:hover { color: var(--accent); border-color: var(--accent); }
+.st-actions button:disabled { color: var(--ink-muted); opacity: .6; }
+.st-dir-label { font-size: 11px; color: var(--ink-muted); display: flex; align-items: center; gap: 6px; }
+.st-dir {
+  font: inherit; font-size: 12px; color: var(--ink); background: var(--paper);
+  border: 1px solid var(--line); padding: 2px 6px; width: 32em; max-width: 60vw;
+}
+.st-snaps { border-top: 1px solid var(--line); }
+.st-snap {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 2px 12px; font-size: 11px; border-bottom: 1px solid var(--line);
+}
+.st-snap-when { flex: 0 0 9em; }
+.st-snap-kind { flex: 0 0 8em; color: var(--ink-muted); }
+.st-snap-size { flex: 0 0 5em; color: var(--ink-muted); }
+.st-snap-name {
+  flex: 1 1 10em; min-width: 0; color: var(--ink-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.st-snap-bad { color: var(--drop); }
+.st-root {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 4px 12px; border-bottom: 1px solid var(--line);
+}
+.st-root .spacer { flex: 1; }
+.st-root-path {
+  font-size: 11px; flex: 1 1 18em; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.st-mark {
+  font-size: 11px; color: var(--ink-muted); border: 1px solid var(--line);
+  padding: 0 5px; border-radius: 2px; flex: 0 0 auto;
+}
+.st-mark.on { color: var(--warn); border-color: var(--warn); }
+.st-msg { font-size: 12px; color: var(--accent); padding: 6px 12px; overflow-wrap: anywhere; }
+.st-msg.bad { color: var(--drop); }
+.st-help {
+  font-size: 11px; color: var(--ink-muted); padding: 8px 12px;
+  border-top: 1px solid var(--line); line-height: 1.7;
+}
+/* 上部バーの印（§4.5.1）。**成功は出さない**（失敗と読み取り専用と走査中だけ） */
+.topbar .bk-badge { color: var(--warn); }
+.topbar .bk-badge.bk-readonly { color: var(--drop); }
+.topbar .sc-badge { color: var(--warn); }
+.topbar .set-open {
+  font-size: 12px; color: var(--ink-muted); text-decoration: none;
+  border: 1px solid var(--line); padding: 3px 8px;
+}
+.topbar .set-open:hover { color: var(--accent); border-color: var(--accent); }
+/* 走査中の 1 行（`#/pending-deletes`。§4.6） */
+.pd-scan { font-size: 12px; color: var(--warn); padding: 6px 12px; border-bottom: 1px solid var(--line); }
+.pd-warn a, .pd-scan a, .pd-help a, .st-note a { color: var(--accent); margin-left: 6px; }

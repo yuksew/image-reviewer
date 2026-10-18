@@ -33,6 +33,8 @@
 ## 動かす（プロトタイプ）
 
 ```powershell
+# 起動: デスクトップの `image-reviewer.lnk`（または `start-image-reviewer.cmd`）をダブルクリック
+#      （UV_CACHE_DIR を設定し、3 秒後に http://127.0.0.1:8790 を開く。トレイは無い）
 $env:UV_CACHE_DIR = "$PWD\.uv-cache"
 uv sync
 uv sync --extra tagger                      # 内蔵タガー（onnxruntime。任意。入れると `auto` が内蔵を選ぶ）
@@ -231,6 +233,8 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 この環境のサンドボックス下では uv の既定キャッシュに書けないため、`UV_CACHE_DIR` をリポジトリ内へ向ける。
 
 ```powershell
+# 起動: デスクトップの `image-reviewer.lnk`（または `start-image-reviewer.cmd`）をダブルクリック
+#      （UV_CACHE_DIR を設定し、3 秒後に http://127.0.0.1:8790 を開く。トレイは無い）
 $env:UV_CACHE_DIR = "$PWD\.uv-cache"
 uv sync
 uv run image-reviewer serve --port 8790

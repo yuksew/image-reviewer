@@ -1,4 +1,4 @@
-# 引継書 — image-reviewer / **P8 完了＋P8-6（参照切れの再リンク）完了**（2026-10-18 時点）
+# 引継書 — image-reviewer / **P9（仕上げ）完了。§14 の段は全部済み**（2026-10-18 時点）
 
 このセッション（dsh・ワークツリー `dsh`）で進めた内容と、**次のセッションがそのまま続けられる形**の引継ぎです。
 読む順: **§0 危険な操作 → §1 いまの状態 → §2 Fable との往復 → §3 次の手順**。細部は §4 以降。
@@ -50,7 +50,40 @@
 >   `mode=ro` で確認）。**6 表の DROP と `user_version` 5 への戻しは実装者が再実行する**（`SCHEMA_VERSION = 5` のコードは v6 の DB でも起動する）。
 > - **次の段は P8** のまま。上の罠のカタログ（①〜⑨）は P7 以外でも効く（`/object_info/{class_type}`・`ALTER` で `CHECK` は足せない など）ので残す。
 >
-> **2026-10-18 の追記（P8 完了。重複・削除・バックアップ）**: **P8 の小段（P8-0〜P8-5）が全部通りました**
+> **2026-10-18 の追記（P9 完了。仕上げ＝性能の目標を実測で埋めた）**: **`docs/design.md` §12.1 の
+> 「目標」の行は全部実測で埋まった**（**未計測 0**）。記録は [`p9-implementation.md`](p9-implementation.md)
+> （**測り方・生の値・届かない物・見送った物・exe 化の推奨**）。
+> - **届かなかったのは 1 行だけ**: **一覧 API の p95 は 244.7 ms**（目標 20 ms。**目標は下げていない**）。
+>   理由は **§12.2 の「一覧」（キーセット改ページ・概算の件数・最小の列）が実装に入っていない**こと。
+>   **必要な条件を §12.1 に書いた**（`total` の意味と絞り込みが変わるので、テストと画面の前提を
+>   一緒に直す段として立てる）。**実データ 262 枚なら p95 14.3 ms** なので**いまは困らない**。
+> - **計測の途中で不具合を 2 つ見つけて直した**: ①**`PRAGMA temp_store = MEMORY` が実装に無く、
+>   1 万枚の `GET /api/assets` が 500 になっていた**（`%TEMP%` に書けない置場で一時ファイルを作れない。
+>   §12.2 と §6 の罠には最初から書いてあったのに実装に無かった）②**`sqlite_error_handler` が
+>   壊れていない DB に「バックアップから戻してください」と言っていた**（P8-6 の監査 **D-8**。語彙を分けた）。
+> - **`PRAGMA cache_size = -65536` は入れなかった**（§12.2 の 4 行のうち 1 行だけ採らなかった）。
+>   64 MB のページキャッシュに DB 全体が載ると、**走ったまま壊れた DB を live の `quick_check` が
+>   見落とす**（実測 `ok: True`）。**P8-4 の監査 G-1 の保証**（壊れた DB に書き続けない）が壊れるので、
+>   **速さより安全を取った**（既存のテストがこれを守っている）。
+> - **画面を 1 行直した**: 一覧は `limit=2000` で引くので**1 万枚では 2000 枚で切れる**のに、
+>   上部が「10000 枚」と言っていた。**「10000 枚（先頭 2000 枚を表示）」**と出すようにした
+>   （**数を黙って捨てない**。文言の正は `frontend-design.md` §6）。
+> - **数（実測。2026-10-18 に私が回した）**: `pytest` **518 件**（**5 回**回して 5 回とも緑。
+>   2〜5 回目は 37.5〜38.2 秒。1 回目は 66.1 秒＝サーバと Chrome が同時に走っていた）・
+>   `gui_smoke` **322 検査（NG 0）**・`gui_layout` **11 本すべて ok**（複製 8795）。
+> - **exe 化の推奨は「今は作らない」**。**作れることは実測した**（PyInstaller 6.22.3 が Python 3.14 で動き、
+>   `--onedir` が **23.7 秒・131.9 MB**。起動は **0.53 秒**で、`uv` 経由の 1.05 秒より速い）が、
+>   **`apps/gui` の解決が 1 か所足りず画面が出ない**（`gui_present: false`）。**配布しないなら要らない**。
+>   必要な作業の一覧は `p9-implementation.md` §6-4。
+> - **見送った物**: **768px の上部バー**（**溢れは 0** なので実害なし。直すには
+>   `gui_layout` の `VIEWPORTS` に狭い窓を足すのが先）・**一覧の仮想グリッドとページ送り**・
+>   **`--no-hash` の走査**（実装に無い）。
+> - **実データは無傷**: **455 枚・段 1 の 193 行・判断 3 件・`missing_at` 0 件**のまま
+>   （画像の署名 `d9604560e494c510` と `.data` の署名 `ae60041b0b0b5365` が**前後で同じ**）。
+>   **§14 の段はこれで全部済み**——次にやるのは**利用者の判断待ち**（トレイ・再リンクの画面・
+>   一覧 API の改ページ・`--include-library` を日次に載せるか・exe 化）。
+>
+> **P8 の追記（2026-10-18。重複・削除・バックアップ）**: **P8 の小段（P8-0〜P8-5）が全部通りました**
 > （P8-0 = v6 の表と `backup-manifest` の契約／P8-1 = 重複の検出と整理／P8-2 = 削除の 3 段階と 5 分の取り消し／
 > P8-3 = 重複と削除の画面／P8-4 = バックアップと復元／P8-5 = 設定と文言の仕上げ）。
 > **合格の線に数えるのは P8-1〜P8-4**（**P8-0 は機能を足さない段・P8-5 は画面の仕上げなので数えない**。P5-3 と同じ扱い）。
@@ -87,7 +120,28 @@
 > - **次の段は P9（仕上げ）**。未計測の性能（1024px サムネ・一覧 API・表示速度・**`--include-library` の 292 MB**）の
 >   実測、テストの締め、**exe 化の判断**（[`design.md`](design.md) §14 の P9 の行）。
 >
-> **P8 で踏んだ罠（§6 に足した）**: ① `os.replace` は既存を**黙って上書きする**（取り消し・移動は `os.rename`。WinError 183）／
+> **P9 で踏んだ罠**
+
+- **`PRAGMA temp_store = MEMORY` が実装に無いと、1 万枚で一覧が 500 になる**（`ORDER BY` が一時ファイルを作り、
+  `%TEMP%` に書けない置き場で `unable to open database file`）。**455 枚では起きない**ので、
+  **1 万枚を開くまで誰も気づかない**（§12.2 にも §6 にも「`temp_store = MEMORY` で回避」と書いてあったのに、
+  **実装に落ちていなかった**）。直した（`db.py`）。
+- **`PRAGMA cache_size` を大きくすると、走ったまま壊れた DB の検知が壊れる**（64 MB に DB 全体が載ると
+  live の接続の `quick_check` が `ok: True` を返す）。**既存のテスト
+  （`test_a_broken_source_does_not_replace_the_seven_healthy_snapshots`）が落ちて分かった**——
+  **性能の pragma は安全の保証とぶつかることがある**。
+- **`uv run` を止めても python が生き残る**ので、**起動時間の計測で前のサーバの 200 を拾う**
+  （「17 ms で上がった」と出た）。**回ごとに別のポート**を使い、**`taskkill /T` で木ごと**止める。
+- **前の計測が残したサムネイルがあると「初回生成」を測れない**（`ensure_thumb()` が「在る」を返し、
+  **測っている物が「配信」に変わる**。実測で「初回生成 2 ms」と出た）。**消してから測る**。
+- **測る道具の「増えなくなった時刻」を毎フレーム上書きしない**（読み取った時刻を測ってしまう。
+  グリッドの計測で「全部そろうまで 1.8 秒」という**嘘の値**が出た。未設定のときだけ書くように直した）。
+- **`gui_layout --screen pending --ids` には生きている枚を渡す**（外した枚だと画面がパスを引けず、
+  段 3 の 1 行が「確かめられない」になり**必ず NG**。**あれが正しい動作**）。
+- **PyInstaller は `%USERPROFILE%\AppData\Local\pyinstaller` にキャッシュを掘る**（sandbox の外に出たくなければ
+  `PYINSTALLER_CONFIG_DIR` を内向きに）。**`--add-data` の相対パスは spec の場所から解決されて失敗する**（絶対パスにする）。
+
+**P8 で踏んだ罠（§6 に足した）**: ① `os.replace` は既存を**黙って上書きする**（取り消し・移動は `os.rename`。WinError 183）／
 > ② **索引名は DB 全体で一意**（`IF NOT EXISTS` が黙って何もしない）／③ `quick_check` は**例外を投げることもある**／
 > ④ **先頭 4 KB を潰すと開けない**（2 ページ目を潰すと「開けるが壊れている」）／⑤ **8bit × 8 本の帯は距離 7 までしか保証できない**／
 > ⑥ `import image_reviewer.app` で `create_app()` が走ると**実データに書く**／⑦ **sandbox の子プロセスは `%USERPROFILE%` に書けない**／
@@ -145,21 +199,24 @@
 | **P8-5（画面の仕上げ。合格の線に数えない）** | **完了 → 監査は「合格（条件つき）」**。`#/settings` のバックアップ（最後の失敗の全文・7 世代・**取り直す**・置き場）と**置き場ごとの「段 3 を許す」印**・上部バーの「バックアップに失敗しています」と「走査中です」・段 3 の出し分け・文言の追い込み。**トレイは作らない**（常駐の実装が無い）。口は `GET /api/scan` の 1 つだけ足した。**条件 3 件（C-1〜C-3）は未反映**（下の「次の手順」の 0）。**画面の語は「取り直す」に統一した**（下の 0 の D-1） | `docs/p8-5-implementation.md`、[`p8-5-audit-report.md`](p8-5-audit-report.md)、[`p8-5-audit-triage.md`](p8-5-audit-triage.md) |
 | **P8-6（参照切れの再リンク。合格の線 9）** | **完了。2026-10-18**（**監査はこれから**）。`POST /api/locations/relink`（**人だけ**。`exact` = 新しいファイル / `nearby` = 探すフォルダ）と `GET /api/locations/missing`（**読むだけ**）・`location_history` に `to_path` / `reason` / `actor`（**版は上げない**＝`pre-topup-*` の控え）・**`create_app()` の硬化**（**`IMAGE_REVIEWER_DATA` が無ければ開かない**）・**事故 3 件目**（実データに 3 列が控え無しで入った。**行の変化は 0**。控え `.backup/pre-p8-6-20261018-100443/`）。**画面は作っていない**（口だけ）。`tools/probe_p8.py --relink` が **16 行すべて OK**・`pytest` **507 件** | [`p8-6-relink.md`](p8-6-relink.md) |
 | **P8 の合格の線（P8-1〜P8-4）** | **済み。2026-10-18**（**残っていた再リンク＝線 9 も P8-6 で実装済み**）。決定は [`docs/design.md`](design.md) §16.6 に反映済み。**画面の仕上げ（P8-5）は監査の条件 3 件が残っている** | `docs/design.md` §14・§16.6、[`p8-5-audit-report.md`](p8-5-audit-report.md)、[`p8-6-relink.md`](p8-6-relink.md) |
-| **P9（仕上げ）** | 未着手（**次は P9**） | [`docs/design.md`](design.md) §14 |
+| **P9（仕上げ）** | **完了（2026-10-18）**。**§12.1 の「目標」の行を全部実測で埋めた**（**未計測 0**）。届かなかったのは**一覧 API の 1 行だけ**（p95 **244.7 ms** / 目標 20 ms。**目標は下げていない**。理由と必要な条件は §12.1）。計測の途中で **`PRAGMA temp_store = MEMORY` の欠落**（1 万枚の `GET /api/assets` が 500 になっていた）と **D-8**（壊れていない DB に復元を勧めていた）を直し、**一覧で切った枚数を画面に出した**。道具は `tools/make_synthetic_db.py`（1 万枚の合成 DB）と `tools/probe_p9.py`（**サーバ内**の計測） | [`p9-implementation.md`](p9-implementation.md)、[`design.md`](design.md) §12.1・§12.2・§12.3・§16.7 | [`docs/design.md`](design.md) §14 |
 
-**いまの数（実測。2026-10-18）**: `pytest` **507 件**（2 回回して 35.9 / 40.5 秒）・`gui_smoke` **310 検査**
-（2 回とも ok / NG 0。**P8-5 の条件の直しが並行して入った時点**）・`gui_layout` **10 画面＋`pending --ids` の 11 本**（**P8-6 の記録**が
-段 3 の印を立てた複製 8791 で回してすべて ok。**文書の反映のときには回していない**）。`SCHEMA_VERSION = 6`。
-**実データは v6・263 枚・判断 3 件・削除 0 件・`missing_at` 0 件**（利用者が押した「別物として確定」1 件と
-「まとまり」1 件は残っている）。
+**いまの数（実測。2026-10-18・P9 の最後に回した）**: `pytest` **518 件**（**5 回**回して**5 回とも緑**。
+2〜5 回目は 37.5〜38.2 秒。1 回目は 66.1 秒＝計測のサーバと Chrome が同時に走っていた）・
+`gui_smoke` **322 検査（NG 0）**・`gui_layout` **10 画面＋`pending --ids` の 11 本**（**11 本とも ok**。
+複製 8795 で。**`--screen pending --ids` には生きている枚を渡す**——外した枚を渡すと
+「置き場を確かめられないので段 3 は出していません」が出て NG になる。**あれが正しい動作**）。
+`SCHEMA_VERSION = 6`。**実データは v6・455 枚（生きた 262 枚）・段 1 の 193 行・判断 3 件・`missing_at` 0 件**。
+**P9 の前後で画像の署名 `d9604560e494c510` と `.data` の署名 `ae60041b0b0b5365` が同じ。**
 
 ### いま走っているもの
 
-**利用者のアプリが 8790 で動いています**（2026-10-18 08:38 起動）。**止めない・触らない。**
+**利用者のアプリが 8790 で動いています**（2026-10-18 08:38 起動の個体。PID 7324）。**止めない・触らない。**
 **画面（静的ファイル）は P8-5、裏側のプロセスは P8-4 まで**です（`GET /api/scan` は **404**。P8-5 の監査が実機で確かめた形。
-**P8-5 のコードで立て直すと 200 になる**）。
+**P8-5 のコードで立て直すと 200 になる**）。**P9 の間も一度も止めていない**（`/api/health` も打っていない）。
 **日次バックアップだけは sandbox の中で失敗しています**（§0 の表。`GET /api/backup` の `last_error` に `WinError 5`・`count 0`）。
 **P8-5 の監査は出ました**（[`p8-5-audit-report.md`](p8-5-audit-report.md)。**合格（条件つき）**。条件 3 件は下の「次の手順」の 0）。
+**P8-6 の監査はまだ受けていない**（`p8-6-audit-triage.md` の指摘は反映済み）。
 
 ### 未着手
 
@@ -168,8 +225,10 @@
   `exact` / `nearby`、`GET /api/locations/missing` は**読むだけ**。**中身の `sha256` が一致したときだけ繋ぎ、
   `pHash` は使わない**。実装の記録は [`p8-6-relink.md`](p8-6-relink.md)）。**残っているのは画面**（P8 では
   作らないと決めたまま。`design.md` §6.1）。**P8-6 の監査もこれから**。
-- **P9（仕上げ）**: 未計測の性能の実測（**1024px サムネイル・一覧 API・グリッドの表示速度・`--include-library` の 292 MB**）・
-  テストの締め・**exe 化の判断**（[`design.md`](design.md) §14 の P9 の行）。
+- **P9（仕上げ）**: **完了**（2026-10-18）。§12.1 の未計測は 0（届かなかったのは一覧 API の 1 行だけ）。
+  記録は [`p9-implementation.md`](p9-implementation.md)。**次にやるのは利用者の判断待ち**（下の §7 と
+  `p9-implementation.md` §8 の申し送り: **一覧 API のキーセット改ページ**・**一覧の仮想グリッドとページ送り**・
+  **768px の上部バー**・**`--no-hash`**・**exe 化**）。
 - **トレイ（タスクトレイ常駐）**: **常駐の実装がリポジトリに無い**ので作っていない。作る段で `frontend-design.md` §11 の
   入口 (c)（「最近の削除を開く」）を足す。
 - **P2 / P3 の残り**: 仮想フォルダ・スマートフォルダ・取込の 3 経路（D&D / クリップボード / URL）・
@@ -265,23 +324,31 @@ orca orchestration check --run run_5bdd431bf57b --ack <deliveryId> --json
 軽微（D-1〜D-9）の推奨は監査の §G に 1 行ずつ（D-1「取り直す」→「いま取る」・D-2「今日の分」の文・D-4 走査の印は順番待ちを含む・
 D-7 §11 のトレイの 1 行 など）。
 
-### 1. P9（仕上げ）— 未計測の性能を実測して閉じる
+### 1. P9（仕上げ）— **済み（2026-10-18）**。未計測は 0 になった
 
-**正**: [`design.md`](design.md) §14 の P9 の行と §12.1 の「目標」の行。**測る物**（P8 の時点で「未計測」と書いてある物）:
+**正**: [`design.md`](design.md) §14 の P9 の行と §12.1 の「目標」の行（**§12.1 の表はもう「未計測」が無い**）。
+**記録**: [`p9-implementation.md`](p9-implementation.md)（測り方・生の値・届かない物・見送った物・exe 化の推奨）。
+**結果**（P8 の時点で「未計測」と書いてあった物）:
 
-| 測る物 | いまの状態 |
+| 測る物 | 結果 |
 | --- | --- |
-| 1024px サムネイルの生成 | **未計測**（256px は 36 枚/秒＝実測） |
-| 一覧 API の応答（1 万枚の DB・p95 20ms 以内） | **未計測** |
-| グリッド初回表示 300ms / 追加ページ 100ms（同一 PC の Chrome） | **未計測** |
-| 2 回目以降の走査（差分なし・10 秒以内） | **未計測** |
-| 一括削除の再照合（1,000 件で 1 秒以内） | **未計測**（§12.3） |
-| `--include-library`（実データ 292 MB）の所要 | **未計測**（P8-4 の再確認 H。**測り方から決める**） |
-| 再リンクの `nearby`（1 万枚の置き場で同じ名前を探す） | **未計測**（実データは 263 枚。**ハッシュするのは同じ名前の候補だけ**＝上限 200。`p8-6-relink.md` §7） |
-| タグ付け 0.5 秒/枚（GPU） | **未再計測**（いまは ComfyUI の IllustTagger 0.27 秒/枚） |
+| 1024px サムネイルの生成 | **128 ms/枚（実画像）→ 1 万枚 21.3 分**（同時 8 本で 3.7 分）。**目標を 25 分と決めた** |
+| 一覧 API の応答（1 万枚・p95 20ms） | **244.7 ms（届かない）**。理由は §12.2 の「一覧」が未実装。**目標は下げていない**。実データ 262 枚なら 14.3 ms |
+| グリッド初回表示 300ms（100 枚・Chrome） | **87 ms**（最初のカード）。299 枚で 93 ms・1 万枚（2000 枚で切れる）で 532 ms |
+| 追加ページ読み込み 100ms | **実装が無い**（1 回の `limit=2000` で全部描く。**測る対象が無い**） |
+| 2 回目以降の走査（差分なし・10 秒） | **2.62〜2.70 秒** |
+| 一括削除の再照合（1,000 件で 1 秒） | **596 ms**（`os.stat` だけなら 13.8 ms） |
+| `--include-library`（実データ 291.1 MB） | **2.40 秒**（132 MB/s。1 万枚 11.1 GB なら 1.4 分）。**目標を 5 分と決めた** |
+| 再リンクの `nearby`（1 万枚） | **39.2 ms**（全部歩く最悪）／44.6 ms（1 段目で見つかる）。**目標を 3 秒と決めた** |
+| タグ付け 0.5 秒/枚（GPU） | **未再計測**（**ComfyUI に触らない**指示のため。いまは `IllustTagger` 0.27 秒/枚） |
+| `--no-hash` の初回走査（30 秒） | **実装が無い**（`cli scan` にその口は無い。**測る対象が無い**） |
+| 判断の記録（100ms） | **p95 1.5 ms** |
+| 日次バックアップ（5 秒） | **201 ms**（DB が 3.2 MB になったので P8-4 の 37 ms より大きい） |
 
-**計測の作法**（家風）: **別々の入力**で測る（`execution_cached` に当てない）・**何回の中央値かを書く**・
-**「未計測」を「未計測」と書く**。**exe 化の判断**（`pystray` とショートカット起動）とテストの締めも P9。
+**計測の作法**（家風）: サーバ内（`TestClient`）で測る・**別々の入力**で測る・**何回の p95 か**を書く・
+**「初回生成」と「生成済み」を分ける**（分けないと「配信」を測ってしまう。**実際に踏んだ**）・
+**土台（`/api/health`）の p95 を一緒に出す**。道具は `tools/probe_p9.py`（`--all`）と
+`tools/make_synthetic_db.py`（1 万枚の合成 DB）。
 
 ### 2. 再リンク（P8 の合格の線 9）— **済み（P8-6。監査待ち）**
 
@@ -306,7 +373,7 @@ D-7 §11 のトレイの 1 行 など）。
 ```powershell
 $env:UV_CACHE_DIR = "C:\work\image-reviwer\.uv-cache"
 uv run --no-sync pytest -q                      # 507 件
-node tools/gui_smoke.mjs                        # 310 ok（軽い DOM。CSS を持たない）
+node tools/gui_smoke.mjs                        # 322 ok（軽い DOM。CSS を持たない）
 # 本物の Chrome。サーバは実データのコピーで立てる（8791〜）。前提の行は seed が複製の中に作る
 $env:IMAGE_REVIEWER_DATA = "C:\work\image-reviwer\.tmp-audit-redo\data-XXXX"
 uv run --no-sync python -X utf8 tools/gui_layout_seed.py --data $env:IMAGE_REVIEWER_DATA `
@@ -325,6 +392,8 @@ node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen library         
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen settings            # 設定（P8-5）
 # ★ --screen asset は「段が 3 つ」を前提にしている（P8-5 の監査 C-2）。**印の無い置き場の枚では必ず NG**になるので、
 #   段 3 の印を立てた複製で回す（上の seed の --stage3）。印なしの形は --no-stage3 で別に回す（未修正）。
+# ★ --screen pending --ids には**生きている枚**を渡す（P9 で踏んだ）。外した枚（deleted_at）を渡すと
+#   「置き場を確かめられないので段 3 は出していません」が出て、段 3 の検査が 3 窓とも NG になる（**正しい動作**）。
 # 実機の線（合否を出す）
 uv run --no-sync python tools/probe_p4.py --engine comfyui   # P4 の線 1・2・7
 uv run --no-sync python tools/probe_p6_1a.py                 # P6 の性能（線 150ms / 20ms）
@@ -336,12 +405,32 @@ uv run --no-sync python tools/probe_p8.py --restore          # P8 の線 11（�
 uv run --no-sync python tools/probe_p8.py --all              # 全部（自分の置き場を作り、後始末する）
 uv run --no-sync --with jsonschema python tools/check_contract_p6.py       # 契約の検証（P6）
 uv run --no-sync --with jsonschema python tools/check_contract_p8.py       # 契約の検証（P8 の backup-manifest）
+# P9（性能の実測。**合成 1 万枚の DB と実データの複製を作る**。§12.1 の表を作り直せる）
+uv run --no-sync python -X utf8 tools/make_synthetic_db.py --out .tmp-audit-redo/p9/synth10k --count 10000
+uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データの複製> --runs 30
 ```
 
 ---
 
 ## 5. 数字の記録（次のセッションが前提にできる実測）
 
+- **P9（仕上げ。2026-10-18 の実測。正は [`design.md`](design.md) §12.1 と [`p9-implementation.md`](p9-implementation.md)）**:
+  **一覧 API は p95 244.7 ms**（1 万枚・`TestClient`。**目標 20 ms に届かない**。`store.assets()` が 200 ms・
+  SQL 3 本が 47.5 ms。実データ 262 枚なら **p95 14.3 ms**）／**1024px サムネイルの生成は 128 ms/枚**
+  （実画像 1.15 MB。1 万枚 21.3 分。**同時 8 本なら 22 ms/枚 → 3.7 分**）／**256px は 30 ms/枚**
+  （1 万枚 4.9 分。**同時 8 本で 4 ms/枚**）／**生成済みの配信は p95 2.4〜2.6 ms**／
+  **比較の 8 枚は p95 8.3 ms**（文書＋8 枚のサムネイルで 22 ms）／
+  **グリッドは 100 枚で 87 ms・299 枚で 93 ms**（最初のカードまで。全部そろうまで 104 ms）／
+  **1 万枚は 2000 枚で切れて 532 ms**（DOM 12,259 ノード）／**2 回目の走査は 2.6〜2.7 秒**・
+  **初回は 9.1 秒（温）／40.6 秒（書いた直後）**／**判断の記録は p95 1.5 ms**／
+  **一括削除の再照合は 596 ms / 1,000 件**（`os.stat` だけなら 13.8 ms）／
+  **`--include-library` は 2.40 秒 / 262 枚・291.1 MB**（132 MB/s）／**日次は 201 ms**（DB 3.2 MB）／
+  **`nearby` は 39〜45 ms**（1 万枚）。
+  **土台（`GET /api/health`）の p95 は 1.1〜1.3 ms**。
+- **exe 化**（P9 の試し）: **PyInstaller 6.22.3 が Python 3.14.7 で動く**。`--onedir` が **23.7 秒・131.9 MB**
+  （`onnxruntime` 37.5 MB ＋ `numpy` 26.3 MB ＋ `PIL` 10.7 MB）で、**起動は 0.53 秒**
+  （`uv run --no-sync image-reviewer serve` は **1.05 秒**）。**画面が出ない**（`gui_present: false`。
+  `apps/gui` の解決が 1 か所足りない）。`.venv` は 128.4 MB。
 - **P6**: 要求の受付 p95 1.5 ms（keep-alive。線 150）／一覧 1,000 件 p95 2.8 ms（線 20）／切り出しは画素数比例（1024² 全面 21 ms・`compress_level=1`）。
 - **P4-1**: ComfyUI の `IllustTagger` **0.26〜0.31 s/枚**（スコア付き）／`WD14Tagger` は**キャッシュが当たらないと 2.8〜3.4 s/枚**（設計にあった 0.40 s/枚は `execution_cached` の値）／内蔵 GPU **0.063 s/枚**・CPU 0.75 s/枚（未導入）。
   1 万枚の見積り: **内蔵 GPU 約 11 分 / IllustTagger 約 45 分 / WD14Tagger 約 8 時間**。
@@ -439,23 +528,36 @@ uv run --no-sync --with jsonschema python tools/check_contract_p8.py       # 契
 
 ## 7. 利用者（人間）の判断待ち・確認待ち
 
+**P9 で「段」は全部終わったので、ここにある物が次にやることの全部**です。
+**P9 の申し送り（`p9-implementation.md` §8）も同じ内容**です。
+
 1. **★ 8790 を sandbox の外（自分の端末）で立て直す**（**バックアップのため**）。いまは `%USERPROFILE%\image-reviewer-backups` に
    書けず、**日次が 0 個**（`last_error` に `WinError 5`）。立て直したら `GET /api/backup` の `count` が
    1 以上になったことを 1 度確かめる。**置き場を変えて凌ぐ**なら `PATCH /api/settings {"backup_dir": "<data> の外>"`。
-2. **再リンクの画面を作るか、いつ作るか。** **口は P8-6 で作った**（`POST /api/locations/relink` は**人だけ**・
+2. **★ 一覧 API のキーセット改ページを入れるか、いつ入れるか**（**P9 で唯一目標に届かなかった行**）。
+   p95 **244.7 ms** / 目標 20 ms。**1 万枚が現実になるまでは困らない**（実データ 262 枚で p95 14.3 ms）ので、
+   P9 では入れずに**段を別に立てる**ことにした。入れるときは `total` の意味と `q` / `tag` の絞り込みが
+   変わるので、**テストと画面の前提を一緒に直す**（`design.md` §12.1 の「必要な条件」）。
+3. **一覧の仮想グリッドとページ送りを入れるか。** いまは `limit=2000` で 1 回引いて全部描くので、
+   **1 万枚では 2000 枚で切れる**（P9 で「先頭 2000 枚を表示」と出すようにした）。**2000 枚より先を見る道が無い**。
+   入れるなら**狭い窓の検査**（`gui_layout` の `VIEWPORTS` は 1200 以上しか無い）とセットで。
+4. **再リンクの画面を作るか、いつ作るか。** **口は P8-6 で作った**（`POST /api/locations/relink` は**人だけ**・
    `GET /api/locations/missing` は読むだけ。**画面は無い**＝対象の枚を一覧で見て「近くを探す」「場所を指定」を
-   押す画面。`docs/frontend-design.md` に項目が無いので、作るなら画面設計から）。推奨: **P9 の後半**
-   （再リンクが要るのは「実体を動かした・消した」ときで、いまは口で足りる。`docs/p8-6-relink.md`）。
-3. **トレイ（タスクトレイ常駐）を作るか。** いまは**常駐の実装がリポジトリに無い**ので、画面の一覧と入口から外してある
-   （`frontend-design.md` §3・§4.5・§4.6・§11）。**利用者の当初の回答は「トレイに出す」**なので、作る段を決める
-   （推奨: ショートカット起動と一緒に、P9 の後半）。
-4. **`onnxruntime-gpu`（CUDA の DLL）を入れるか。** 入ると内蔵タガーが **0.063 秒/枚**（いまは ComfyUI の
-   `IllustTagger` が 0.27 秒/枚）。**入れるにはサーバを止める**許可が要る（`pyproject.toml` の `tagger` の extra）。
-5. **`PATCH /api/settings` をどこまで開けるか。** いま受け取るのは **`backup_dir` だけ**。ComfyUI・タガー・閾値・
-   テーマなどは **DB の `settings` にあるが、変える口が無い**（画面も読むだけ）。要るなら次の段で。
-6. **`?source=` の複数指定が AND か OR か**（P4 からの持ち越し。設計に無く、実装は AND）。
-7. **`.data` の版**: いま **v6**。**次に上げるのは P2 / P3 の段**（上げる前に `pre-migrate-<日時>/` の控えを取り、
-   `pre-topup-*` と同じく掃除の対象にしない）。
+   押す画面。`docs/frontend-design.md` に項目が無いので、作るなら画面設計から）。
+5. **トレイ（タスクトレイ常駐）を作るか。** いまは**常駐の実装がリポジトリに無い**ので、画面の一覧と入口から外してある
+   （`frontend-design.md` §3・§4.5・§4.6・§11）。**利用者の当初の回答は「トレイに出す」**なので、作る段を決める。
+6. **768px の上部バーを詰めるか**（P9 で見送った。**溢れは 0** なので実害は無く、**3 行に折り返す**見た目の問題。
+   直すには `gui_layout` の `VIEWPORTS` に狭い窓を足すのが先）。
+7. **exe 化するか**（**P9 の推奨は「今は作らない」**。作れることは実測済み＝`p9-implementation.md` §6）。
+8. **`--include-library` を日次に載せるか**（日次が 201 ms → 2.4 秒になる。1 万枚なら 1.4 分）。
+9. **`--no-hash` の走査を作るか**（§12.1 の行。いまは実装に無い）。
+10. **`onnxruntime-gpu`（CUDA の DLL）を入れるか。** 入ると内蔵タガーが **0.063 秒/枚**（いまは ComfyUI の
+    `IllustTagger` が 0.27 秒/枚）。**入れるにはサーバを止める**許可が要る（`pyproject.toml` の `tagger` の extra）。
+11. **`PATCH /api/settings` をどこまで開けるか。** いま受け取るのは **`backup_dir` だけ**。ComfyUI・タガー・閾値・
+    テーマなどは **DB の `settings` にあるが、変える口が無い**（画面も読むだけ）。要るなら次の段で。
+12. **`?source=` の複数指定が AND か OR か**（P4 からの持ち越し。設計に無く、実装は AND）。
+13. **`.data` の版**: いま **v6**。**次に上げるのは P2 / P3 の段**（上げる前に `pre-migrate-<日時>/` の控えを取り、
+    `pre-topup-*` と同じく掃除の対象にしない）。
 
 **決着済み**: 語釈の模型（`qwen3vl_8b_int8_convrot`）／タガーは ComfyUI を優先（`settings` の `tagger.engine=comfyui`）／
 **skill の置き場**（原本は `.agents/skills/` の 1 か所、`.claude/skills/` はジャンクション。**リポジトリは git 管理になった**ので
@@ -470,6 +572,7 @@ uv run --no-sync --with jsonschema python tools/check_contract_p8.py       # 契
 | 全体の設計（正） | [`design.md`](design.md)（**P8 の決定は §16.6**。表は §5.8・口は §6.1・性能は §12.3・段は §14。**P8-6 の再リンクは §5.1・§5.8・§6.1・§14・§15・§16.6**） |
 | フロントの設計 | [`frontend-design.md`](frontend-design.md)（画面一覧は §3。**削除と重複は §4.6**・文言は §6・細部は §11） |
 | 段ごとの設計 | [`p8-design.md`](p8-design.md)（**§0 が拘束力のある差分**） / `p5-design.md` / `p6-design.md` / `p4-design.md` |
+| **P9（仕上げ）の実装の記録** | [`p9-implementation.md`](p9-implementation.md)（**§12.1 の実測値の表**・測り方・届かない物・**exe 化の推奨**・見送った物・申し送り・設計の穴） |
 | P8 の点検と仕分け | [`p8-review-report.md`](p8-review-report.md) ＋ [`p8-review-triage.md`](p8-review-triage.md) |
 | P8 の監査と仕分け | [`p8-0-audit-report.md`](p8-0-audit-report.md) / [`p8-1-audit-report.md`](p8-1-audit-report.md) / [`p8-2-audit-report.md`](p8-2-audit-report.md) ＋ [`p8-2-audit-recheck.md`](p8-2-audit-recheck.md) / [`p8-3-audit-report.md`](p8-3-audit-report.md) ＋ [`p8-3-audit-recheck.md`](p8-3-audit-recheck.md) / [`p8-4-audit-report.md`](p8-4-audit-report.md) ＋ [`p8-4-audit-recheck.md`](p8-4-audit-recheck.md)（＋各 `p8-*-audit-triage.md`） |
 | P8 の実装の記録（自分で決めた点・穴） | `docs/p8-{0,1,2,3,4,5}-implementation.md` |
@@ -478,7 +581,7 @@ uv run --no-sync --with jsonschema python tools/check_contract_p8.py       # 契
 | 前の段の記録（歴史） | `docs/p4-*` / `docs/p5-*` / `docs/p6-*` / `docs/p7-*`（P7 は廃止。[`p7-decision.md`](p7-decision.md)） |
 | 朝のまとめ（利用者向け） | [`p6-morning-report.md`](p6-morning-report.md)（P8 は利用者への問いを §0.14 で先に済ませた） |
 | 控え | `.backup\`（**9 フォルダ**。`pre-p4-*` / `pre-p7-removal*` / `pre-p8-0-*` / `pre-p8-1-restart-*` / `pre-p8-2-restart-*` / `pre-p8-4-20261017-232148` / `pre-p8-6-20261018-100443`） |
-| 検証の道具 | `tools/gui_smoke.mjs` / `tools/gui_layout.mjs` / **`tools/gui_layout_seed.py`** / `tools/probe_p4.py` / `tools/probe_p6_1a.py` / `tools/probe_p6_2.py` / **`tools/probe_p8.py`** / `tools/check_contract_p6.py` / **`tools/check_contract_p8.py`** |
+| 検証の道具 | `tools/gui_smoke.mjs` / `tools/gui_layout.mjs` / **`tools/gui_layout_seed.py`** / `tools/probe_p4.py` / `tools/probe_p6_1a.py` / `tools/probe_p6_2.py` / **`tools/probe_p8.py`** / **`tools/probe_p9.py`（P9 の性能）** / **`tools/make_synthetic_db.py`（1 万枚の合成 DB）** / `tools/gui_shot.mjs` / `tools/check_contract_p6.py` / **`tools/check_contract_p8.py`** |
 
 ---
 

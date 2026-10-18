@@ -1374,6 +1374,79 @@ def test_a_broken_ledger_page_says_503_not_500(tmp_path, monkeypatch):
     assert page > 1
 
 
+# ---- 3c. P9 の直し（P8-6 の監査 D-8）----
+
+
+@pytest.mark.parametrize("error,kind", [
+    (sqlite3.OperationalError("unable to open database file"), "OperationalError"),
+    (sqlite3.IntegrityError("UNIQUE constraint failed: asset_location.path"), "IntegrityError"),
+    (sqlite3.OperationalError("database is locked"), "OperationalError"),
+])
+def test_an_error_that_is_not_corruption_is_not_reported_as_a_broken_db(
+        tmp_path, monkeypatch, error, kind):
+    """**（P9。P8-6 の監査 D-8）壊れていない DB に「バックアップから戻してください」と言わせない。**
+
+    `sqlite_error_handler` は `sqlite3.DatabaseError` ぜんぶを受けていた。`DatabaseError` は
+    `IntegrityError` と `OperationalError` の**親**なので、次の実測（P9）のように
+    **健全な DB でも復元を勧めていた**:
+
+    ```
+    GET /api/assets（1 万枚の合成 DB）
+    -> 503 {"code": "db_error", "details": {"reason": "malformed",
+                                            "error": "unable to open database file"}}
+    ```
+    （本当の原因は**一時ファイルを作れないこと**。`PRAGMA temp_store = MEMORY` で直った）
+
+    壊すと落ちる: `_is_corruption()` の検査を外すと、この 3 つは 500 ではなく **503** になり、
+    本文に「バックアップから戻してください」が出る（`IntegrityError` は取引の中の
+    `SELECT` を外したときにも実際に飛ぶ。`p8-6-audit-triage.md` の C-3）。
+    """
+    data = tmp_path / "data"
+    store = Store(data)
+    try:
+        add_asset(store, make_png(data / "a.png"))
+    finally:
+        store.close()
+
+    app = app_client(monkeypatch, data, tmp_path / "backups")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        def boom():
+            raise error
+        monkeypatch.setattr(client.app.state.store, "assets", boom)
+        got = client.get("/api/assets", headers=HUMAN)
+        assert got.status_code == 500, f"{got.status_code} {got.text[:300]}"
+        body = got.json()
+        assert body["code"] == "sqlite_error"
+        assert body["details"]["kind"] == kind
+        assert "壊れているとは限りません" in body["detail"]
+        assert "バックアップ" not in got.text
+
+
+def test_a_corrupt_page_still_says_503_read_only(tmp_path, monkeypatch):
+    """**壊れている仲間は今までどおり 503**（D-8 の直しで本当の壊れ方を落とさない）。
+
+    壊すと落ちる: `CORRUPTION_WORDS` の判定を外すと、潰したページを触った `GET` が
+    500 になり、**画面が復元の案内を出せなくなる**（監査 C-3 が守っている物）。
+    """
+    data = tmp_path / "data"
+    store = Store(data)
+    try:
+        add_asset(store, make_png(data / "a.png"))
+    finally:
+        store.close()
+    zero_table_page(data / "db.sqlite3", "deletion_log")
+
+    app = app_client(monkeypatch, data, tmp_path / "backups")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        got = client.get("/api/deletions", headers=HUMAN)
+        assert got.status_code == 503, f"{got.status_code} {got.text[:300]}"
+        body = got.json()
+        assert body["code"] == "read_only"
+        assert "バックアップから戻してください" in body["detail"]
+        assert body["details"]["reason"] == "malformed"
+
+
+
 def test_the_gui_is_served_even_when_the_db_cannot_be_opened(tmp_path, monkeypatch):
     """**（監査 D-1）先頭 4 KB を潰しても画面は出す**（案内を読めるように）。
 

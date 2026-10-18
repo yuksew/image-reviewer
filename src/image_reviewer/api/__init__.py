@@ -123,10 +123,38 @@ def sqlite_error_handler(request: Request, exc: sqlite3.DatabaseError) -> JSONRe
 
     読み取り専用でない（走ったまま壊れた）ときは `code` を `db_error` にして、
     **DB そのものが壊れている**ことを伝える（どちらも 503。500 にしない）。
+
+    ---
+
+    **（P9。P8-6 の監査 D-8）ここは `sqlite3.DatabaseError` ぜんぶを受けていた。**
+    `DatabaseError` は `IntegrityError` と `OperationalError` の**親**なので、
+    「DB が壊れている」の写しが**壊れていない DB にも掛かっていた**——実測（P9）:
+    1 万枚の合成 DB で `GET /api/assets` が
+    `{"code": "db_error", "details": {"reason": "malformed", "error": "unable to open
+    database file"}}` を返し、**画面は「バックアップから戻してください」と言った**
+    （本当の原因は一時ファイルを作れないこと。**DB は健全**）。
+
+    そこで**語彙を分ける**:
+
+    - **壊れている仲間**（`malformed` / `not a database` / `corrupt` / `encrypted` /
+      `disk I/O error`）だけ 503（今までどおり。読み取り専用なら `read_only`）
+    - それ以外（`unable to open database file`・`database is locked`・`no such table`・
+      `IntegrityError` など）は **500 `sqlite_error`**。
+      **「バックアップから戻してください」とは言わない**（壊れているとは限らない）
+
+    `kind` に例外のクラス名を入れる（`IntegrityError` か `OperationalError` かがログ無しで分かる）。
     """
     store = getattr(getattr(request.app, "state", None), "store", None)
     state = getattr(getattr(request.app, "state", None), "db_state", None) or {}
     read_only = bool(getattr(store, "read_only", False))
+    if not _is_corruption(exc):
+        # **壊れているとは限らない**。番号も文言も分ける（D-8）
+        return JSONResponse(
+            {"detail": "DB の操作で内部エラーが起きました（DB が壊れているとは限りません）",
+             "code": "sqlite_error",
+             "details": {"kind": type(exc).__name__, "error": str(exc),
+                         "read_only": read_only, "mode": state.get("mode")}},
+            status_code=500)
     body: dict = {
         "detail": ("DB が壊れているので読めません（読み取り専用で起動しています）。"
                    "バックアップから戻してください" if read_only
@@ -139,4 +167,20 @@ def sqlite_error_handler(request: Request, exc: sqlite3.DatabaseError) -> JSONRe
     if guidance:
         body["guidance"] = guidance
     return JSONResponse(body, status_code=503)
+
+
+#: 「DB が壊れている」と言ってよい SQLite の言い方（**ここが 1 か所**。D-8）
+CORRUPTION_WORDS = ("malformed", "not a database", "corrupt", "encrypted",
+                    "disk i/o error", "file is encrypted")
+
+
+def _is_corruption(exc: BaseException) -> bool:
+    """その `DatabaseError` は**壊れている仲間**か（P9。D-8）。
+
+    例外の**クラスでは分けられない**（`OperationalError` も `IntegrityError` も
+    `DatabaseError` の子で、「壊れている」も「一時ファイルが作れない」も
+    `OperationalError` で来る）。SQLite の**文言**で分ける（`quick_check` の判定と同じ流儀）。
+    """
+    text = str(exc).lower()
+    return any(word in text for word in CORRUPTION_WORDS)
 

@@ -40,6 +40,39 @@ def test_pragmas_are_set_per_connection(tmp_path: Path):
         con.close()
 
 
+def test_the_temporary_btree_goes_to_memory(tmp_path: Path):
+    """**（P9。設計 §12.2 の「DB」の行）一時 b-tree をメモリに置く／`cache_size` は既定のまま。**
+
+    `ORDER BY` が要る読み（`store.assets()`）は**一時ファイル**を作りに行く。1 万枚では
+    バッファに収まらないので、置き場によっては
+    `sqlite3.OperationalError: unable to open database file` になる。
+
+    壊すと落ちる: `PRAGMA temp_store = MEMORY` を `db.connect()` から外すと 2 → 0 になり、
+    **P9 の実測で 1 万枚の `GET /api/assets` が 500 になった**（`%TEMP%` に書けない環境）。
+
+    **`cache_size` は既定のまま**（`assert` で固定する）。§12.2 は `-65536`（64 MB）と
+    書いているが、P9 の実測で**走ったまま壊れた DB を live の `quick_check` が見落とす**
+    ようになった（64 MB に DB 全体が載り、壊れる前のページがそのまま返る）。
+    あの保証は `tests/test_backup.py` の
+    `test_a_broken_source_does_not_replace_the_seven_healthy_snapshots` が守っている。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        assert con.execute("PRAGMA temp_store").fetchone()[0] == 2          # 2 = MEMORY
+        assert con.execute("PRAGMA mmap_size").fetchone()[0] == 268435456  # 256 MB
+        # **わざと既定のまま**（P9 の実測。上の docstring）
+        assert con.execute("PRAGMA cache_size").fetchone()[0] == -2000
+    finally:
+        con.close()
+    # 読み取り専用の接続でも同じ（壊れた DB から読む道。§0.12-5）
+    con = db.connect(tmp_path, read_only=True)
+    try:
+        assert con.execute("PRAGMA temp_store").fetchone()[0] == 2
+        assert con.execute("PRAGMA cache_size").fetchone()[0] == -2000
+    finally:
+        con.close()
+
+
 def test_integrity_is_clean(tmp_path: Path):
     con = db.open_db(tmp_path)
     try:

@@ -11,12 +11,14 @@
 > 手順は [`docs/design.md`](docs/design.md) §16.2 の 1 を参照。文書内の名前は既に `image-reviewer` にしてある。
 
 - 状態: **P5（判断と比較）・P6（要求と注記）・P4（タグと語釈）・P8（重複・削除・バックアップ）・
-  P8-6（参照切れの再リンク）が動く。テスト 507 件**（`uv run --no-sync pytest -q` を自分で 2 回回して実測。
-  `gui_smoke` **310 検査**（2 回とも ok / NG 0）・
-  `gui_layout` **10 画面＋`pending --ids`** もすべて ok）。各段は
+  P8-6（参照切れの再リンク）・P9（仕上げ）まで動く。この段で §12.1 の性能の目標を全部実測で埋めた
+  （未計測 0。届かなかったのは一覧 API の 1 行だけで、理由と必要な条件は
+  [`docs/design.md`](docs/design.md) §12.1 と [`docs/p9-implementation.md`](docs/p9-implementation.md) にある）。
+  テスト 518 件**（`uv run --no-sync pytest -q` を自分で **5 回**回して実測。**5 回とも緑**。
+  `gui_smoke` **322 検査**（ok / NG 0）・
+  `gui_layout` **10 画面＋`pending --ids` の 11 本**もすべて ok）。各段は
   設計 → Fable の点検 → 小段ごとの実装 → **Fable が実行込みで監査** → 指摘の反映、で進めている
-  （P8 は [`docs/p8-design.md`](docs/p8-design.md) とその点検・監査
-  （`docs/p8-review-report.md` / `docs/p8-*-audit-report.md`）、
+  （P9 は [`docs/p9-implementation.md`](docs/p9-implementation.md)、
   段の全体は [`docs/handoff.md`](docs/handoff.md)**）。
 - **P8 の小段（P8-0〜P8-5）は全部通り、監査はどれも「合格（条件つき）」**（P8-3 の再確認は「合格（条件なし）」）。
   **P8-5（設定と文言の仕上げ）の条件 3 件だけは未反映**——「段 3 を許す」印のボタンが二度押しで 2 回 POST される・
@@ -40,8 +42,8 @@ uv sync
 uv sync --extra tagger                      # 内蔵タガー（onnxruntime。任意。入れると `auto` が内蔵を選ぶ）
 uv run image-reviewer scan --root 'C:\work\illust-authoring\.store\anima-dev'
 uv run image-reviewer serve --port 8790     # → http://127.0.0.1:8790
-uv run --no-sync pytest -q                  # 507 件
-node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。310 検査）
+uv run --no-sync pytest -q                  # 518 件（P9 で 513 → 518。5 回回して緑）
+node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。322 検査）
 # 画面の計測（本物の Chrome）は**複製で立てたサーバ**へ。実データの 8790 では回さない（§「gui_layout は…」）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --count 8          # 比較（3 窓）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen requests  # 要求の一覧
@@ -73,6 +75,13 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
   が**複製の中に**作る（**実データは断る**）。
 - **`--screen asset` は「段が 3 つ」を前提にしている。** 段 3 の印が無い置き場の枚を渡すと**必ず NG** になるので、
   `--stage3` を立てた複製で回す（**印なしの形は未対応**。P8-5 の監査 C-2。直し方は `docs/handoff.md` §3 の 0）。
+- **`--screen pending --ids` には「生きている枚」を渡す。** 段 1〜3 で外した枚（`asset.deleted_at`）を渡すと、
+  画面は `GET /api/assets` からその枚のパスを引けず、段 3 の 1 行が
+  **「置き場を確かめられないので段 3 は出していません」**（＝正しい動作）になって、
+  「段 3 の印がありません」を見る検査が NG になる（**P9 で実際に踏んだ**）。
+- **CLI（`backup` / `scan` / `rebuild-metadata`）は `IMAGE_REVIEWER_DATA` が無ければ実データ `.data` を直接開きます**
+  （利用者の道具なので正しい入口です）。**壊す試験や計測をしたいときは、必ず複製を作って
+  `IMAGE_REVIEWER_DATA=<複製>` を付けてください**（画像を動かす試験は特に）。`serve` も同じ env で複製へ向けられます。
 
 - **`uv sync` はサーバを止めてから打つ。** 動かしたままだと `os error 32`（使用中のファイルを置き換えられない）
   で失敗する。
@@ -98,13 +107,20 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 - **この環境では置き場を `C:\work\image-reviwer\.backup\daily\` に設定しています**（2026-10-18・利用者の決定）。既定の `%USERPROFILE%\image-reviewer-backups` は**アプリのプロセスから作れなかった**（`WinError 5`。同じ持ち主のシェルからは作れた＝原因は未特定）。`#/settings` の「置き場を変える」で戻せます。**同じドライブなので、ドライブが壊れた場合は両方失います**
   `<data>` ごと消しても、そこから戻せる（`image-reviewer restore <dir>`。`<data>` の中は置き場にできない）。
   取れなかったときは**上部バーと `#/settings` に失敗の全文**が出る（黙って失敗しない）。
-- **未実装**: **P9（仕上げ。未計測の性能の実測と exe 化の判断）**・**トレイ（タスクトレイ常駐。
-  常駐の実装がリポジトリに無い）**・**P2（カタログ。仮想フォルダ・スマートフォルダ・
-  ドラッグ&ドロップ / クリップボード / URL の取込）**・**P3 の残り（`userdata` への設置・
+- **未実装**: **トレイ（タスクトレイ常駐。常駐の実装がリポジトリに無い）**・**P2（カタログ。仮想フォルダ・
+  スマートフォルダ・ドラッグ&ドロップ / クリップボード / URL の取込）**・**P3 の残り（`userdata` への設置・
   タグの統合と改名・本格的な検索・グラフの ComfyUI への設置）**・**プリセットの画面**・
   **参照切れの再リンクの画面（口だけは P8-6 で作った。`POST /api/locations/relink`・
   `GET /api/locations/missing`。`docs/p8-6-relink.md`）**・
-  **`--include-library` の所要時間（未計測。実データなら 292 MB）**。
+  **一覧 API のキーセット改ページ（P9 の実測で p95 244.7 ms。目標 20 ms に届いていない。
+  1 万枚が現実になるまで困らないので、入れる段を別に立てる。`docs/design.md` §12.1）**・
+  **一覧の仮想グリッドとページ送り（いまは `limit=2000` で 1 回引いて全部描く。1 万枚では
+  2000 枚で切れるので「先頭 2000 枚を表示」と出している）**。
+- **exe 化（PyInstaller）は「今は作らない」**（P9 の推奨）。**作れることは実測した**
+  （PyInstaller 6.22.3 が Python 3.14 で動き、`--onedir` が 23.7 秒で 131.9 MB。
+  起動は 0.53 秒で、いまの `uv` 経由（1.05 秒）より速い）が、**`apps/gui` の解決が 1 か所足りず
+  画面が出ない**（`gui_present: false`）。**配布しないなら要らない**。必要な作業の一覧は
+  [`docs/p9-implementation.md`](docs/p9-implementation.md) §6。
 - 記録は [`docs/prototype-notes.md`](docs/prototype-notes.md)。実データで確かめた結果もそこにある。
 
 ## 文書
@@ -243,19 +259,26 @@ uv run image-reviewer serve --port 8790
 
 ## 次にすること
 
-**P8（重複・削除・バックアップ）は完了**（2026-10-18）。P8-0（v6 の表と契約）/ P8-1（重複の検出と整理）/
-P8-2（削除の 3 段階と 5 分の取り消し）/ P8-3（重複と削除の画面）/ P8-4（バックアップと復元）/
-P8-5（設定と文言の仕上げ）の **6 小段**で、**合格の線に数えるのは P8-1〜P8-4**（P8-0 は機能を足さない段、
-P8-5 は画面の仕上げ）。各段を Fable が**実行込みで監査**し、指摘は全部反映した
-（設計 [`docs/p8-design.md`](docs/p8-design.md)、点検 [`docs/p8-review-report.md`](docs/p8-review-report.md)、
-監査 [`docs/p8-0-audit-report.md`](docs/p8-0-audit-report.md) 〜 [`docs/p8-4-audit-report.md`](docs/p8-4-audit-report.md)
-と再確認 `docs/p8-*-audit-recheck.md`）。**実データは v6・263 枚・判断 3 件・削除 0 件**。
-**P8-5 のあとに、残っていた合格の線 9（参照切れの再リンク）を P8-6 として作った**（2026-10-18。
-[`docs/p8-6-relink.md`](docs/p8-6-relink.md)。**口は 2 つで、画面は無い**）。
+**P9（仕上げ）は完了**（2026-10-18。[`docs/p9-implementation.md`](docs/p9-implementation.md)）。
+**`docs/design.md` §12.1 の「目標」の行は全部実測で埋まった**（未計測 0）。
+新しく作った道具は `tools/make_synthetic_db.py`（1 万枚の合成 DB）と `tools/probe_p9.py`（サーバ内の計測）。
+**この段で見つけて直した物**（P8-6 の申し送りと、計測の途中で見つかった物）:
+①`PRAGMA temp_store = MEMORY` が実装に無く、**1 万枚の一覧が 500 になっていた**ので入れた
+②`PRAGMA cache_size = -65536` は**入れなかった**（走ったまま壊れた DB の検知が壊れるため）
+③`sqlite_error_handler` が**壊れていない DB に「バックアップから戻してください」と言っていた**（語彙を分けた）
+④一覧が `limit=2000` で切れるのに**上部が全枚数と言っていた**ので「先頭 2000 枚を表示」と出した。
+**届かなかったのは一覧 API の 1 行だけ**（p95 244.7 ms / 目標 20 ms。**目標は下げていない**）。
 
-1. **次は P9（仕上げ）。** 未計測の性能を実測して [`docs/design.md`](docs/design.md) §12.1 の「目標」の行を
-   裏づける（1024px サムネイル・一覧 API・グリッドの表示速度・**`--include-library` の所要時間**）。
-   テストの締めと **exe 化の判断**も P9（同 §14）。
+1. **次にやるなら**（**どれも利用者の判断**）:
+   - **トレイ（タスクトレイ常駐）**と**ショートカット起動の仕上げ**（常駐の実装がリポジトリに無い）。
+   - **参照切れの再リンクの画面**（**口は P8-6 で作った**＝`POST /api/locations/relink` は**人だけ**、
+     `GET /api/locations/missing` は**読むだけ**。**中身の `sha256` が一致したときだけ繋ぐ**。
+     **画面は無い**ので `GET /api/locations/missing` の `hint` に従って口で使う。
+     `docs/p8-6-relink.md`）。
+   - **一覧 API のキーセット改ページ**（§12.1 の「届かなかった 1 行」。`total` の意味と絞り込みが
+     変わるので、テストと画面の前提を一緒に直す段として立てる）。
+   - **`--include-library` を日次に載せるか**（日次が 201 ms → 2.4 秒になる。1 万枚なら 1.4 分）。
+   - **exe 化**（今は作らない、が推奨。作るなら `apps/gui` の解決＋静的ファイルの同梱が要る）。
 2. **P8 で「この段では作らない」と決めたまま残っているもの**:
    - **参照切れの再リンクの画面**（**口は P8-6 で作った**＝`POST /api/locations/relink` は**人だけ**、
      `GET /api/locations/missing` は**読むだけ**。**中身の `sha256` が一致したときだけ繋ぐ**。

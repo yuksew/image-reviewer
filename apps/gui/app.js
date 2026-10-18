@@ -24,6 +24,11 @@ const $ = (id) => document.getElementById(id);
 const state = {
   assets: [],
   stats: null,
+  // **（P9）一覧は `limit=2000` で引く**ので、1 万枚の DB では**先頭 2000 枚**しか出ない。
+  // 何枚出して何枚あるかを控えておき、上部に出す（家風「数を黙って捨てない」。
+  // P9 の実測: 1 万枚の合成 DB で 2000 枚だけ出て、上部は「10000 枚」と言っていた）
+  listed: 0,
+  total: 0,
   filter: 'all',
   provenance: 'all', // all | with | without
   density: 'normal',
@@ -67,6 +72,9 @@ async function load() {
   state.stats = await api('/api/stats');
   const data = await api('/api/assets?limit=2000&sort=path');
   state.assets = data.items;
+  // **（P9）切った枚数を黙って捨てない**（`total` は API が返す。1 万枚では 2000 枚で切れる）
+  state.listed = (data.items || []).length;
+  state.total = Number.isFinite(data.total) ? data.total : state.listed;
   renderStats();
   renderSheet();
 }
@@ -113,7 +121,12 @@ async function rescan() {
 
 function renderStats() {
   const s = state.stats || {};
-  $('stat-brief').textContent = `${s.assets ?? 0} 枚`;
+  // **（P9）切った枚数を黙って捨てない。** `state.total > state.listed` のときだけ添える
+  // （文言の正は `frontend-design.md` §6。実データ 455 枚では今までどおり「455 枚」）
+  const total = state.total || (s.assets ?? 0);
+  $('stat-brief').textContent = (state.listed && state.total > state.listed)
+    ? `${total} 枚（先頭 ${state.listed} 枚を表示）`
+    : `${total} 枚`;
   $('c-all').textContent = s.assets ?? 0;
   $('c-with').textContent = s.with_provenance ?? 0;
   $('c-without').textContent = s.without_provenance ?? 0;

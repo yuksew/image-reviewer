@@ -25,11 +25,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import time
 import uuid
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 6       # v6 = P8（重複・削除・バックアップ）。**P7 の v6（条件の記録）は
                          # 2026-10-17 に廃止したので、番号が空いていた**（`docs/p7-decision.md`）
@@ -95,6 +98,29 @@ def connect(data_dir: str | Path, *, read_only: bool = False,
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA busy_timeout = 15000")
     con.execute("PRAGMA foreign_keys = ON")
+    # **（P9。設計 §12.2 の「DB」の 4 行）一時 b-tree をメモリに置く。**
+    # これを掛けないと、`ORDER BY` が要る読み（`store.assets()` の
+    # `ORDER BY is_primary DESC, display_path`）が**一時ファイルを作りに行く**。
+    # 1 万枚ではバッファに収まらず、置き場によっては
+    # `sqlite3.OperationalError: unable to open database file` になる
+    # （**P9 の実測**: 1 万枚の合成 DB で `GET /api/assets` が 500 になった。
+    #   `%TEMP%` に書けない環境＝エージェントの sandbox。§12.2 は最初からこれを書いていた）。
+    con.execute("PRAGMA temp_store = MEMORY")
+    # **`cache_size` は既定のままにする**（§12.2 は `-65536`＝64 MB と書いているが、
+    # **入れなかった**）。P9 の実測: 64 MB のページキャッシュに DB 全体（2.28 MB の合成）が
+    # 載ると、**走ったまま壊れた DB を live の接続の `quick_check` が見落とす**
+    # （`ok: True` のまま。既定の 2 MB なら `database disk image is malformed` になる）。
+    # それは P8-4 の監査 G-1 が守っている「壊れた DB に書き続けない」保証そのもの
+    # （`tests/test_backup.py::test_a_broken_source_does_not_replace_the_seven_healthy_snapshots`
+    #  がこの 1 行を守っている）。速さより安全を取る。
+    # `cache_size` と `mmap_size` は**ページの大きさを読む**ので、**壊れた DB では投げる**
+    # （実測: 先頭 4 KB を潰した DB で `DatabaseError: file is not a database`）。
+    # ここで落とすと「壊れた DB でも起動して 503 で案内する」道（§0.12-5）が**開けなくなる**
+    # ので、**最善努力**にする（速さの話であって、正しさの話ではない）。
+    try:
+        con.execute("PRAGMA mmap_size = 268435456")     # 256 MB
+    except sqlite3.Error as exc:
+        log.warning("mmap_size を掛けられませんでした（壊れた DB の道）: %s", exc)
     if not read_only:
         con.execute("PRAGMA journal_mode = WAL")
         con.execute("PRAGMA synchronous = NORMAL")

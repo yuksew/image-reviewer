@@ -95,6 +95,7 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 **中身の `sha256` が一致したときだけ繋ぐ**。`GET /api/locations/missing` で一覧が引ける）**まで**。
 
 - **バックアップは `<data>` の外（既定 `%USERPROFILE%\image-reviewer-backups`）に日次で取る。**
+- **この環境では置き場を `C:\work\image-reviwer\.backup\daily\` に設定しています**（2026-10-18・利用者の決定）。既定の `%USERPROFILE%\image-reviewer-backups` は**アプリのプロセスから作れなかった**（`WinError 5`。同じ持ち主のシェルからは作れた＝原因は未特定）。`#/settings` の「置き場を変える」で戻せます。**同じドライブなので、ドライブが壊れた場合は両方失います**
   `<data>` ごと消しても、そこから戻せる（`image-reviewer restore <dir>`。`<data>` の中は置き場にできない）。
   取れなかったときは**上部バーと `#/settings` に失敗の全文**が出る（黙って失敗しない）。
 - **未実装**: **P9（仕上げ。未計測の性能の実測と exe 化の判断）**・**トレイ（タスクトレイ常駐。

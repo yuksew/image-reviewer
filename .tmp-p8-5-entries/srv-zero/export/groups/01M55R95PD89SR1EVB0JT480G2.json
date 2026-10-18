@@ -1,0 +1,125 @@
+{
+  "schema": "urn:image-reviewer:schema:review-export",
+  "abi": "0.1",
+  "generated_at": "2026-10-17T20:19:05Z",
+  "generator": {
+    "name": "image-reviewer",
+    "version": "0.1.0"
+  },
+  "reason_codes": [],
+  "groups": [
+    {
+      "id": "01M55R95PD89SR1EVB0JT480G2",
+      "title": "重複の候補（距離 0・2 枚）",
+      "kind": "duplicate",
+      "source": "manual",
+      "source_ref": null,
+      "policy": "pick_one",
+      "state": "open",
+      "decision": null,
+      "selected_asset_ids": [],
+      "reason_code_id": null,
+      "reason_label": null,
+      "note": null,
+      "created_at": "2026-10-17T20:19:02Z",
+      "decided_at": null,
+      "decided_by": null,
+      "superseded_by": null,
+      "items": [
+        {
+          "asset_id": "01M4Z0KJRT8N9T5PDFTJCVDYQN",
+          "verdict": null,
+          "group_decision": null,
+          "reason_code_id": null,
+          "reason_label": null,
+          "note": null
+        },
+        {
+          "asset_id": "01M4Z0KJS980CS22CBSXPC0QT6",
+          "verdict": null,
+          "group_decision": null,
+          "reason_code_id": null,
+          "reason_label": null,
+          "note": null
+        }
+      ]
+    }
+  ],
+  "assets": [
+    {
+      "id": "01M4Z0KJRT8N9T5PDFTJCVDYQN",
+      "kind": "generated",
+      "review_state": "unreviewed",
+      "verdict": null,
+      "reason_code_id": null,
+      "reason_label": null,
+      "note": null,
+      "decided_at": null,
+      "decided_by": null,
+      "group_ids": [
+        "01M55R95PD89SR1EVB0JT480G2"
+      ],
+      "sha256": "8b30cdad25def83db02dfde842cf0eb7aa681cb62a391f3c5e6acdbe6a836fa4",
+      "missing": false,
+      "duplicate_of": null,
+      "reproduction": null,
+      "external_ref": null,
+      "provenance": {
+        "model": "anima-aesthetic-v1.1.safetensors",
+        "loras": null,
+        "vae": "qwen_image_vae.safetensors",
+        "sampler": "er_sde",
+        "scheduler": "simple",
+        "seed": "0",
+        "steps": 30,
+        "cfg": 4.5,
+        "denoise": 0.4,
+        "width": 1024,
+        "height": 1024,
+        "prompt_id": null,
+        "has_workflow_graph": false
+      },
+      "locations": null
+    },
+    {
+      "id": "01M4Z0KJS980CS22CBSXPC0QT6",
+      "kind": "generated",
+      "review_state": "unreviewed",
+      "verdict": null,
+      "reason_code_id": null,
+      "reason_label": null,
+      "note": null,
+      "decided_at": null,
+      "decided_by": null,
+      "group_ids": [
+        "01M55R95PD89SR1EVB0JT480G2"
+      ],
+      "sha256": "fa690e934ddd56a55190440c020a8cbeb3855d31dcf61ff0558896e85bd04bdf",
+      "missing": false,
+      "duplicate_of": null,
+      "reproduction": null,
+      "external_ref": null,
+      "provenance": {
+        "model": "anima-turbo-v1.1.safetensors",
+        "loras": null,
+        "vae": "qwen_image_vae.safetensors",
+        "sampler": "er_sde",
+        "scheduler": "simple",
+        "seed": "0",
+        "steps": 8,
+        "cfg": 1.0,
+        "denoise": 1.0,
+        "width": 1024,
+        "height": 1024,
+        "prompt_id": null,
+        "has_workflow_graph": false
+      },
+      "locations": null
+    }
+  ],
+  "requests": [],
+  "scope": {
+    "kind": "group",
+    "id": "01M55R95PD89SR1EVB0JT480G2"
+  }
+}

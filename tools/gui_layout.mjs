@@ -46,7 +46,11 @@
 //     読み取り専用のときの案内（**200 の `read_only` も含む**＝C-3）
 //   - ライブラリ（`--screen library`）: 上の削除の入口に加えて、**上部バーの
 //     「バックアップに失敗しています」**（`GET /api/backup` の `last_error` と突き合わせる）と、
-//     **押すと `#/settings` で全文が読める**こと（P8-5。P8-4 の再確認 B-1' / G-4）
+//     **押すと `#/settings` で全文が読める**こと（P8-5。P8-4 の再確認 B-1' / G-4）。
+//     **（P8-5 の追い込み）上部バーの 2 つの入口**: 「重複の整理」が**常設**で
+//     **スクロール無しで見え**、**押すと `#/duplicates` の画面が出る**／「最近の削除」が
+//     **まだ戻せる行（段 1〜3）が 1 件でもあれば出て**（**段 1 だけでも出す**）、
+//     **押すと `#/pending-deletes` の画面が出る**（**0 件なら出さない**のが正）
 //
 // 前提: サーバが動いていること（GUI と API を同じオリジンで配る）。
 
@@ -657,6 +661,60 @@ const ENTRY_DELETES = `(() => {
            visible: el.hidden !== true && r.top >= 0 && r.top < innerHeight && r.height > 0 };
 })()`;
 
+// **（P8-5 の追い込み）上部バーの 2 つの入口**を測る。
+//
+// - 「重複の整理」（`#stat-duplicates`）: **常設**。`#/duplicates` への入口が画面に 1 つも無く、
+//   URL を打たないと入れなかった（P8 の実装漏れ）。
+// - 「最近の削除」（`#stat-deletes`）: **まだ戻せる行が 1 件でもあれば出る**（**段 1 だけでも出す**）。
+//
+// 「スクロール無しで見える」は、**上部バーの中にあり、窓（`innerHeight`）に収まっている**ことで見る
+// （`--screen asset` の `delVisible` と同じ規則）。
+const MEASURE_ENTRIES = `(() => {
+  const read = (id) => {
+    const el = document.getElementById(id);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const bar = document.querySelector('#app > .topbar');
+    const br = bar ? bar.getBoundingClientRect() : null;
+    return {
+      id,
+      hidden: el.hidden === true,
+      text: (el.textContent || '').trim(),
+      href: el.getAttribute('href'),
+      visible: el.hidden !== true && r.width > 0 && r.height > 0
+        && r.top >= 0 && r.top < innerHeight && r.right <= innerWidth + 1,
+      inTopbar: !!br && r.top >= br.top - 1 && r.bottom <= br.bottom + 1,
+    };
+  };
+  return { duplicates: read('stat-duplicates'), deletes: read('stat-deletes') };
+})()`;
+
+// 「重複の整理」を押す（**常設の入口**）。押すと `#/duplicates` へ行き、重複の整理の画面が出る
+const PRESS_LIBRARY_DUP = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = { pressed: false, hash: '', shown: false, bodyClass: '' };
+  const link = document.getElementById('stat-duplicates');
+  if (link) { link.click(); out.pressed = true; await wait(1400); }
+  out.hash = location.hash;
+  const root = document.getElementById('duplicates');
+  out.shown = !!root && root.getBoundingClientRect().height > 0;
+  out.bodyClass = document.body.className;
+  return out;
+})()`;
+
+// 「最近の削除」を押す（**まだ戻せる行があるときだけ出る**。出ていなければ押さない）
+const PRESS_LIBRARY_DELETES = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = { pressed: false, hash: '', shown: false, bodyClass: '' };
+  const link = document.getElementById('stat-deletes');
+  if (link && link.hidden !== true) { link.click(); out.pressed = true; await wait(1400); }
+  out.hash = location.hash;
+  const root = document.getElementById('pending');
+  out.shown = !!root && root.getBoundingClientRect().height > 0;
+  out.bodyClass = document.body.className;
+  return out;
+})()`;
+
 // 最近の削除で**押す**（取り消す・削除の確認の 2 段。POST は飲む）。
 // 凍結の応答は作り物を返すので、**サーバに凍結は作られない**
 const PRESS_PENDING = `(async () => {
@@ -1155,10 +1213,16 @@ try {
     const url = IDS.length
       ? `${BASE}/#/pending-deletes?ids=${IDS.map(encodeURIComponent).join(',')}`
       : `${BASE}/#/pending-deletes`;
-    let pendingExpected = null;
+    // **（P8-5 の追い込み）入口の期待値は「まだ戻せる行（段 1〜3）の数」**。
+    // 前の版は段 3 の窓がある行だけで数えていたので、**段 1 で外した行があるのに
+    // 「入口が出ていないのが正」と判定していた**（実データの 88 枚がそれ）。
+    let rowExpected = null;        // まだ戻せる行の数（入口の件数）
+    let windowExpected = null;     // そのうち段 3 の窓がある行の数（残り時間を出す行）
     try {
       const body = await (await fetch(`${BASE}/api/pending-deletes`)).json();
-      pendingExpected = (body.items || []).filter((it) => it.state === 'pending').length;
+      const items = body.items || [];
+      rowExpected = items.length;
+      windowExpected = items.filter((it) => it.state === 'pending').length;
     } catch (error) {
       console.log(`注意: API から保留を取れませんでした（入口の可視は見ない）: ${error.message}`);
     }
@@ -1218,20 +1282,26 @@ try {
       if (got.bodyOverflow !== 0) bad.push('本体が横に溢れない');
       if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
       if (got.rows > 0 && !got.entryVisible) bad.push('入口が見える（先頭の行）');
-      if (pendingExpected) {
+      if (rowExpected) {
+        // **（P8-5 の追い込み）段 1 の行だけでも入口は出る**
         if (!entry || entry.hidden || !entry.visible) bad.push('上部バーの入口が見える');
-        else if (!/最近の削除/.test(entry.text)) bad.push('入口に「最近の削除」と出る');
-        else if (!/あと \d+:\d\d/.test(entry.text)) bad.push(`入口に残り時間（${entry.text}）`);
-        if (!got.remains.some((t) => /あと \d+:\d\d/.test(t))) {
-          bad.push(`行に残り時間（${got.remains.join('/')}）`);
+        else if (!new RegExp(`最近の削除 ${rowExpected}`).test(entry.text)) {
+          bad.push(`入口に件数を出す（${entry.text}／API は ${rowExpected} 行）`);
         }
-      } else if (pendingExpected === 0) {
-        // **（監査 D-6）前提の行（段 3 の保留）が無くても NG にしない。** 0 件のときは
-        // **入口を出さない**のが正（`frontend-design.md` §4.6）ので、そちらを見る
+        if (windowExpected) {
+          if (!/あと \d+:\d\d/.test(entry.text)) bad.push(`入口に残り時間（${entry.text}）`);
+          if (!got.remains.some((t) => /あと \d+:\d\d/.test(t))) {
+            bad.push(`行に残り時間（${got.remains.join('/')}）`);
+          }
+        } else {
+          console.log('注意: 段 3 の窓がある行は 0 です（入口は件数だけ。段 1・2 の行は窓が無い）');
+        }
+      } else if (rowExpected === 0) {
+        // **（監査 D-6）前提の行が無くても NG にしない。** 0 件のときは**入口を出さない**のが正
         if (entry && entry.exists && entry.hidden !== true) {
-          bad.push('段 3 の窓が 0 なのに上部バーの入口が出ている');
+          bad.push('まだ戻せる行が 0 なのに上部バーの入口が出ている');
         }
-        console.log('注意: 段 3 の保留が 0 です（入口は出ないのが正。前提の行は要りません。D-6）');
+        console.log('注意: まだ戻せる行が 0 です（入口は出ないのが正。前提の行は要りません。D-6）');
       }
       if (pressed && pressed.pressedUndo && undoPosts.length !== 1) bad.push(`取り消しの POST=${undoPosts.length}`);
       // **（P8-5・Q8）印の無い置き場では段 3 を出さない**（P8-3 の監査 E-3 の実装）
@@ -1283,6 +1353,7 @@ try {
         + `段=${JSON.stringify(got.strip)} 段3=${got.stageBoxes.includes('3')}(${wantStage3}) `
         + `overflow=${got.bodyOverflow}/${got.pageOverflow} `
         + `入口=${got.entryVisible} バー=${entry ? JSON.stringify(entry.text) : '—'} `
+        + `(API の行数=${rowExpected} 窓=${windowExpected}) `
         + `確認=${got.confirmVisible}(${String(got.confirmText).trim().slice(0, 12)}) `
         + `POST 取り消し=${undoPosts.length} 凍結=${pvPosts.length} 用意=${bulkPosts.length} `
         + `一覧=${(pressed || {}).items} script=${got.scripts} body=${JSON.stringify(got.bodyClass)} `
@@ -1439,6 +1510,16 @@ try {
       console.log('注意: `last_error` が空です（上部バーの失敗の印は出ないのが正。'
         + '前提は `tools/gui_layout_seed.py --backup-error` で作れます）');
     }
+    // **（P8-5 の追い込み）上部バーの入口の期待値**: 「最近の削除」は**まだ戻せる行
+    // （段 1〜3）が 1 件でもあれば出る**（段 1 だけでも出す）。`count` は `GET /api/pending-deletes`
+    // が返した行の数（エージェントとして読むが、`count` と `items` は `actor` で変わらない）
+    let wantDeletes = null;
+    try {
+      const body = await (await fetch(`${BASE}/api/pending-deletes`)).json();
+      wantDeletes = (body.items || []).length;
+    } catch (error) {
+      console.log(`注意: API から保留を取れませんでした（「最近の削除」の入口は見ない）: ${error.message}`);
+    }
     for (const [width, height] of VIEWPORTS) {
       if (ONLY && ONLY !== `${width}x${height}`) continue;
       await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
@@ -1500,6 +1581,59 @@ try {
         if (!String(toSettings.hash).startsWith('#/settings')) bad.push(`設定の道（${toSettings.hash}）`);
         if (!toSettings.settingsShown) bad.push('設定の画面が出る');
       }
+      // ---- P8-5 の追い込み: 上部バーの 2 つの入口 ----
+      //
+      // **押す検査**（P7-4 の教訓: 押さないテストは穴を隠す）。**窓ごとに読み直してから**押す
+      // （前の押す検査で道が変わっているため）。**サーバのデータは書かない**（道が変わるだけ）。
+      await send('Page.navigate', { url: 'about:blank' });
+      await sleep(200);
+      await send('Page.navigate', { url: `${BASE}/#/` });
+      await sleep(1200);
+      const entries = await evaluate(MEASURE_ENTRIES);
+      const dup = entries && entries.duplicates;
+      if (!dup) {
+        bad.push('上部バーに「重複の整理」の入口がある');
+      } else {
+        if (dup.href !== '#/duplicates') bad.push(`重複の整理の行き先（${dup.href}）`);
+        if (dup.text !== '重複の整理') bad.push(`重複の整理の文言（${dup.text}）`);
+        if (dup.hidden) bad.push('重複の整理の入口は常設（隠さない。§4.5.1）');
+        if (!dup.visible) bad.push('重複の整理の入口がスクロール無しで見える');
+        if (!dup.inTopbar) bad.push('重複の整理の入口が上部バーの中にある');
+      }
+      const toDup = await evaluate(PRESS_LIBRARY_DUP);
+      if (!toDup || !toDup.pressed) bad.push('「重複の整理」を押せない');
+      else {
+        if (!String(toDup.hash).startsWith('#/duplicates')) {
+          bad.push(`重複の整理の道（${toDup.hash}）`);
+        }
+        if (!toDup.shown) bad.push(`重複の整理の画面が出る（${toDup.bodyClass}）`);
+      }
+      // 「最近の削除」: **段 1〜3 の行が 1 件でもあれば出す**。0 件なら出さない
+      await send('Page.navigate', { url: 'about:blank' });
+      await sleep(200);
+      await send('Page.navigate', { url: `${BASE}/#/` });
+      await sleep(1200);
+      const delEntryNow = (await evaluate(MEASURE_ENTRIES) || {}).deletes;
+      const toDel = await evaluate(PRESS_LIBRARY_DELETES);
+      if (wantDeletes) {
+        if (!delEntryNow || delEntryNow.hidden || !delEntryNow.visible) {
+          bad.push(`まだ戻せる行が ${wantDeletes} 件あるのに「最近の削除」の入口が出ていない`);
+        } else if (!/^最近の削除 \d+/.test(delEntryNow.text)) {
+          bad.push(`「最近の削除」の文言（${delEntryNow.text}）`);
+        }
+        if (!toDel || !toDel.pressed) bad.push('「最近の削除」を押せない');
+        else {
+          if (!String(toDel.hash).startsWith('#/pending-deletes')) {
+            bad.push(`最近の削除の道（${toDel.hash}）`);
+          }
+          if (!toDel.shown) bad.push(`最近の削除の画面が出る（${toDel.bodyClass}）`);
+        }
+      } else if (wantDeletes === 0) {
+        if (delEntryNow && !delEntryNow.hidden) {
+          bad.push('まだ戻せる行が 0 なのに「最近の削除」の入口が出ている');
+        }
+        if (toDel && toDel.pressed) bad.push('0 件なのに「最近の削除」を押せてしまう');
+      }
       if (bad.length) failures++;
       console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} ライブラリ: `
         + `frames=${got.frames} 下部バー=${got.barVisible} 入口=${got.buttonVisible} `
@@ -1508,7 +1642,12 @@ try {
         + `行き先=${JSON.stringify(pressed.hash)} overflow=${got.pageOverflow}/${got.topbarOverflow} `
         + `バックアップの印=${JSON.stringify((badge || {}).text)} visible=${(badge || {}).visible} `
         + `設定へ=${JSON.stringify((toSettings || {}).hash)} 失敗の全文=`
-        + `${(toSettings || {}).failedShown}(${JSON.stringify(String((toSettings || {}).failedText).slice(0, 24))})`
+        + `${(toSettings || {}).failedShown}(${JSON.stringify(String((toSettings || {}).failedText).slice(0, 24))}) `
+        + `重複の入口=${JSON.stringify((dup || {}).text)} visible=${(dup || {}).visible} `
+        + `押す=${JSON.stringify((toDup || {}).hash)} 画面=${(toDup || {}).shown} `
+        + `削除の入口=${JSON.stringify((delEntryNow || {}).text)} visible=${(delEntryNow || {}).visible} `
+        + `押す=${JSON.stringify((toDel || {}).hash)} 画面=${(toDel || {}).shown} `
+        + `(API の行数=${wantDeletes})`
         + (bad.length ? `  ← ${bad.join(', ')}` : ''));
     }
     ws.close();

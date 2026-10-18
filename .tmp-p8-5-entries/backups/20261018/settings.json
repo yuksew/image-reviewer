@@ -1,0 +1,17 @@
+{
+ "schema": "urn:image-reviewer:settings",
+ "abi": "0.1",
+ "settings": {
+  "backup.last_error": "[WinError 5] アクセスが拒否されました: 'C:\\Users\\<利用者>\\image-reviewer-backups'（画面の検査の前提。複製にだけ入れています）",
+  "backup.last_error_at": "2026-10-18T11:25:43Z",
+  "backup.last_ok_at": "2026-10-18T08:12:06Z",
+  "backup_dir": "C:\\work\\image-reviwer\\.tmp-p8-5-entries\\backups",
+  "export_delay_sec": "2",
+  "next_after_decision": "1",
+  "preview_ttl_sec": "600",
+  "tagger.comfyui_temp": "C:\\ai\\ComfyUI_windows_portable\\ComfyUI\\temp",
+  "tagger.engine": "comfyui",
+  "tagger.node": "illust",
+  "undo_window_sec": "300"
+ }
+}

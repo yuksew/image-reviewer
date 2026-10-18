@@ -134,16 +134,31 @@ async function fetchJobs() {
 
 // ---- P8-3: 取り消せる削除の入口（上部バー。§4.6・§11）----
 //
-// - 取り消せる削除が 1 件でもある間だけ出す（**残り時間つき**。`最近の削除 3 ・ あと 3:12`）
-// - いちばん短い残り時間を出す（**窓が切れる順**。§11）
+// - **まだ戻せる行が 1 件でもある間**だけ出す（**段 1 の行だけでも出す**。P8-5 の追い込み）
+// - 件数は返った行の数をそのまま出す（段 1〜3。`GET /api/pending-deletes` の `count` と同じ）
+// - **窓のある段 3 があれば**いちばん短い残り時間を添える（`最近の削除 3 ・ あと 3:12`。
+//   **窓が切れる順**。§11）。窓の無い段 1・2 の行だけなら `最近の削除 88`（残り時間は出さない）
 // - **`GET` は書かない**（残り時間はサーバのタイマーだけが減らす）。ここも読むだけ
+//
+// **P8-5 の追い込み（実装漏れ）**: 前の版は `state === 'pending' && remaining_sec != null`
+// （＝段 3 の窓がある行）だけで数えていた。`pending()` は P8-5 で段 1〜3 を返すようになったのに、
+// ここが段 3 のままだったので、**段 1 で外しただけの行しか無いときは入口が 1 つも出ず、
+// 画面から戻す導線が見えなかった**（`asset.deleted_at` は立っているのに、
+// `#/pending-deletes` へ入る道が URL だけだった。実データで起きていた）。
 
 export function renderDeleteBadge(items) {
   const el = $('stat-deletes');
   if (!el) return;
-  const pending = (items || []).filter((it) => it.state === 'pending' && it.remaining_sec != null);
-  const text = pending.length
-    ? `最近の削除 ${pending.length} ・ あと ${fmtRemain(Math.min(...pending.map((it) => Number(it.remaining_sec) || 0)))}`
+  // 段 1（`hidden`）・段 2（`trashed`）・段 3（`pending`）・戻せなかった行（`stuck`）は
+  // **どれも画面の「最近の削除」に出て、そこから戻せる**（`deletions.py` の `pending()` が
+  // 戻せない行＝`purged` / `restored` を元から返さない）
+  const rows = (items || []).filter((it) => it && it.id);
+  const windows = rows
+    .filter((it) => it.state === 'pending' && it.remaining_sec != null)
+    .map((it) => Number(it.remaining_sec) || 0);
+  const text = rows.length
+    ? `最近の削除 ${rows.length}`
+      + (windows.length ? ` ・ あと ${fmtRemain(Math.min(...windows))}` : '')
     : '';
   el.textContent = text;
   el.hidden = !text;

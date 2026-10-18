@@ -1,0 +1,130 @@
+{
+ "schema": "urn:image-reviewer:sidecar",
+ "abi": "0.1",
+ "captured_at": "2026-10-15T01:05:00Z",
+ "sha256": "79fe0685e43b18851dd2d24509c5872584e784329c93fc618444f7b3a99b274a",
+ "path": "C:\\ai\\ComfyUI_windows_portable\\ComfyUI\\output\\ComfyUI\\Anima\\20261010\\132800_00001_.png",
+ "prompt_id": "064994ca-39bf-45fa-8975-994da07bcb1b",
+ "captured_from_node": "11",
+ "en_text": "1girl. solo. chibi. safe.  \nHeart effect in the background.  \nFront-facing angle.  \n\nThe girl is straddling the boy.  \n\nHer chest is very small.  \nShe is wearing a nurse uniform.  \nShe is wearing a nurse cap.  \nShe is holding a syringe in one hand.  \n\nHer mouth is closed, with a smile on her face.  \nHer body is facing forward, her face turned sideways.  \nHer eyes are looking at the camera.",
+ "final_prompt": "(masterpiece, best quality, good quality, score_9), safe,\n\n1girl. solo. chibi. safe.  \nHeart effect in the background.  \nFront-facing angle.  \n\nThe girl is straddling the boy.  \n\nHer chest is very small.  \nShe is wearing a nurse uniform.  \nShe is wearing a nurse cap.  \nShe is holding a syringe in one hand.  \n\nHer mouth is closed, with a smile on her face.  \nHer body is facing forward, her face turned sideways.  \nHer eyes are looking at the camera.",
+ "ja_text": "1girl. solo. chibi. safe.\n背景にハートのエフェクトがある.\n正面からのアングル.\n\n少女が男の上にまたがっている.\n\n彼女の胸はとても小さい. \n彼女はナース服を着ている.\n彼女はナース帽を被っている.\n彼女は片手に注射器を持っている.\n\n彼女は口を閉じ、笑みを浮かべている.\n彼女は体を正面に向け、顔を横にむけている.\n彼女の目はカメラを向いている.\n",
+ "textgen_params": {
+  "max_length": 512,
+  "sampling_mode.temperature": 0.7,
+  "sampling_mode.top_k": 64,
+  "sampling_mode.top_p": 0.95,
+  "sampling_mode.min_p": 0.05,
+  "sampling_mode.repetition_penalty": 1.0,
+  "sampling_mode.seed": 14,
+  "sampling_mode.presence_penalty": 0.0,
+  "thinking": false,
+  "use_default_template": true,
+  "mtp": "auto"
+ },
+ "textgen_system_prompt": "You translate Japanese scene descriptions into English prompts for an anime image generator. The user message is the Japanese text to translate.\nRules:\n- Write in English only. Never output Chinese or Japanese characters.\n- Keep every detail and its order. Do not add anything that is not in the text (no extra clothes, lighting, mood or style).\n- Attach each feature and action to the right person (who wears what, who does what).\n- For Japanese-specific things with no exact English word, use the romanized Japanese term (for example: yukata, kotatsu, seiza).\n- Left/right about people means their position in the picture, not a panel.\n- Output only the prompt, no preamble.",
+ "concat_prefix": "(masterpiece, best quality, good quality, score_9), safe,",
+ "concat_delimiter": "\n\n",
+ "llm": "qwen3vl_8b_int8_convrot.safetensors",
+ "meta": {
+  "model": "anima-turbo-v1.1.safetensors",
+  "clip": "qwen_3_06b_base.safetensors",
+  "clip_all": [
+   "qwen_3_06b_base.safetensors",
+   "qwen3vl_8b_int8_convrot.safetensors"
+  ],
+  "vae": "qwen_image_vae.safetensors",
+  "llm": "qwen3vl_8b_int8_convrot.safetensors",
+  "loras": [
+   {
+    "name": "BuAnime_NSFW_Style_Anima_BuAnimeV2.safetensors",
+    "strength_model": 1.0,
+    "strength_clip": null,
+    "loader": "LoraLoaderModelOnly"
+   }
+  ],
+  "sampler": "er_sde",
+  "scheduler": "beta",
+  "steps": 10,
+  "cfg": 1.0,
+  "denoise": 1.0,
+  "seed": "733495470076873",
+  "seed_raw": 733495470076873,
+  "width": 1360,
+  "height": 1360,
+  "positive_literal": null,
+  "negative_literal": "",
+  "final_prompt": "(masterpiece, best quality, good quality, score_9), safe,\n\n1girl. solo. chibi. safe.  \nHeart effect in the background.  \nFront-facing angle.  \n\nThe girl is straddling the boy.  \n\nHer chest is very small.  \nShe is wearing a nurse uniform.  \nShe is wearing a nurse cap.  \nShe is holding a syringe in one hand.  \n\nHer mouth is closed, with a smile on her face.  \nHer body is facing forward, her face turned sideways.  \nHer eyes are looking at the camera.",
+  "final_prompt_source": "reconstructed",
+  "ja_text": "1girl. solo. chibi. safe.\n背景にハートのエフェクトがある.\n正面からのアングル.\n\n少女が男の上にまたがっている.\n\n彼女の胸はとても小さい. \n彼女はナース服を着ている.\n彼女はナース帽を被っている.\n彼女は片手に注射器を持っている.\n\n彼女は口を閉じ、笑みを浮かべている.\n彼女は体を正面に向け、顔を横にむけている.\n彼女の目はカメラを向いている.\n",
+  "ja_source": "png_primitive",
+  "textgen_params": {
+   "max_length": 512,
+   "sampling_mode.temperature": 0.7,
+   "sampling_mode.top_k": 64,
+   "sampling_mode.top_p": 0.95,
+   "sampling_mode.min_p": 0.05,
+   "sampling_mode.repetition_penalty": 1.0,
+   "sampling_mode.seed": 14,
+   "sampling_mode.presence_penalty": 0.0,
+   "thinking": false,
+   "use_default_template": true,
+   "mtp": "auto"
+  },
+  "has_textgen": true,
+  "init_image": null,
+  "node_types": {
+   "VAELoader": 1,
+   "CLIPLoader": 2,
+   "UNETLoader": 1,
+   "ModelAttentionBackend": 1,
+   "LoraLoaderModelOnly": 1,
+   "PrimitiveStringMultiline": 2,
+   "TextGenerate": 1,
+   "StringConcatenate": 1,
+   "PreviewAny": 1,
+   "CLIPTextEncode": 2,
+   "EmptyLatentImage": 1,
+   "KSampler": 1,
+   "VAEDecode": 1,
+   "SaveImage": 1
+  },
+  "unresolved": [],
+  "primary_ksampler": "15",
+  "positive_side": {
+   "text": null,
+   "source": "reconstructed",
+   "concat_prefix": "(masterpiece, best quality, good quality, score_9), safe,",
+   "delimiter": "\n\n"
+  },
+  "concat_prefix": "(masterpiece, best quality, good quality, score_9), safe,",
+  "concat_delimiter": "\n\n",
+  "negative_side": {
+   "text": "",
+   "source": "png_literal",
+   "concat_prefix": null,
+   "delimiter": null
+  },
+  "textgen_system_prompt": "You translate Japanese scene descriptions into English prompts for an anime image generator. The user message is the Japanese text to translate.\nRules:\n- Write in English only. Never output Chinese or Japanese characters.\n- Keep every detail and its order. Do not add anything that is not in the text (no extra clothes, lighting, mood or style).\n- Attach each feature and action to the right person (who wears what, who does what).\n- For Japanese-specific things with no exact English word, use the romanized Japanese term (for example: yukata, kotatsu, seiza).\n- Left/right about people means their position in the picture, not a panel.\n- Output only the prompt, no preamble.",
+  "textgen_consumers": [
+   {
+    "node": "10",
+    "class_type": "StringConcatenate",
+    "input": "string_b"
+   },
+   {
+    "node": "11",
+    "class_type": "PreviewAny",
+    "input": "source"
+   }
+  ],
+  "graph_format": "api+ui",
+  "en_text": "1girl. solo. chibi. safe.  \nHeart effect in the background.  \nFront-facing angle.  \n\nThe girl is straddling the boy.  \n\nHer chest is very small.  \nShe is wearing a nurse uniform.  \nShe is wearing a nurse cap.  \nShe is holding a syringe in one hand.  \n\nHer mouth is closed, with a smile on her face.  \nHer body is facing forward, her face turned sideways.  \nHer eyes are looking at the camera.",
+  "en_source": "comfyui_history",
+  "en_is_rederived": 0,
+  "en_engine": "qwen3vl_8b_int8_convrot.safetensors",
+  "prompt_id": "064994ca-39bf-45fa-8975-994da07bcb1b",
+  "captured_from_node": "11",
+  "captured_at": "2026-10-15T01:05:00Z"
+ }
+}

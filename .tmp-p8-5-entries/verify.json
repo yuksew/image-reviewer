@@ -1,0 +1,172 @@
+﻿{
+  "base": "http://127.0.0.1:8797",
+  "viewports": [
+    {
+      "width": 1400,
+      "height": 900,
+      "lib": {
+        "bar": {
+          "scrollWidth": 1400,
+          "clientWidth": 1400,
+          "overflow": 0
+        },
+        "pageOverflow": 0,
+        "duplicates": {
+          "id": "stat-duplicates",
+          "hidden": false,
+          "text": "重複の整理",
+          "href": "#/duplicates",
+          "top": 57,
+          "left": 825,
+          "right": 903,
+          "width": 78,
+          "height": 28,
+          "visible": true
+        },
+        "deletes": {
+          "id": "stat-deletes",
+          "hidden": false,
+          "text": "最近の削除 194 ・ あと 3:00",
+          "href": "#/pending-deletes",
+          "top": 61,
+          "left": 207,
+          "right": 369,
+          "width": 162,
+          "height": 20,
+          "visible": true
+        },
+        "settings": {
+          "id": "stat-settings",
+          "hidden": false,
+          "text": "設定",
+          "href": "#/settings",
+          "top": 57,
+          "left": 915,
+          "right": 957,
+          "width": 42,
+          "height": 28,
+          "visible": true
+        }
+      },
+      "dup": {
+        "pressed": true,
+        "hash": "#/duplicates",
+        "bodyClass": "duplicating",
+        "shown": true,
+        "title": "重複の整理",
+        "groups": 20,
+        "brief": "距離 ≤ 6 ・ 20 群"
+      },
+      "del": {
+        "pressed": true,
+        "hash": "#/pending-deletes",
+        "bodyClass": "pending",
+        "shown": true,
+        "rows": 194,
+        "undoButtons": 194,
+        "firstRow": "あと 2:59\n    1 印→2 ゴミ箱→3 実削除\n    C:\\ai\\ComfyUI_windows_portab",
+        "firstUndoText": "取り消す",
+        "firstUndoDisabled": false,
+        "firstUndoVisible": true,
+        "stage1UndoText": "戻す",
+        "stage1UndoDisabled": false,
+        "stage1UndoVisible": true,
+        "brief": "1 件 ・ 326.6 MB",
+        "firstRowRemain": "あと 2:59"
+      },
+      "undoPress": {
+        "pressed": true,
+        "id": "01M57BDSBY80WTXHS7S42RXFWV",
+        "before": 194,
+        "after": 193,
+        "msg": "1 枚を元の場所に戻しました。",
+        "firstRowAfter": "\n    あと 2:57\n    1 印→2 ゴミ箱→3 実削除\n    C:\\ai\\ComfyUI_windows_portable\\ComfyUI\\output\\ComfyUI\\Anima\\20261010\\132800_00001_.png\n    1.7 MB ・ 人 ・ 2026-10-18 20:25\n    取り消すいま消す\n    \n  "
+      },
+      "shots": [
+        "C:\\work\\image-reviwer\\.tmp-p8-5-entries\\shots\\library-1400x900.png",
+        "C:\\work\\image-reviwer\\.tmp-p8-5-entries\\shots\\duplicates-1400x900.png",
+        "C:\\work\\image-reviwer\\.tmp-p8-5-entries\\shots\\pending-1400x900.png"
+      ]
+    },
+    {
+      "width": 768,
+      "height": 1360,
+      "lib": {
+        "bar": {
+          "scrollWidth": 768,
+          "clientWidth": 768,
+          "overflow": 0
+        },
+        "pageOverflow": 0,
+        "duplicates": {
+          "id": "stat-duplicates",
+          "hidden": false,
+          "text": "重複の整理",
+          "href": "#/duplicates",
+          "top": 67,
+          "left": 299,
+          "right": 360,
+          "width": 60,
+          "height": 48,
+          "visible": true
+        },
+        "deletes": {
+          "id": "stat-deletes",
+          "hidden": false,
+          "text": "最近の削除 193 ・ あと 3:00",
+          "href": "#/pending-deletes",
+          "top": 71,
+          "left": 161,
+          "right": 275,
+          "width": 115,
+          "height": 40,
+          "visible": true
+        },
+        "settings": {
+          "id": "stat-settings",
+          "hidden": false,
+          "text": "設定",
+          "href": "#/settings",
+          "top": 67,
+          "left": 372,
+          "right": 407,
+          "width": 35,
+          "height": 48,
+          "visible": true
+        }
+      },
+      "dup": {
+        "pressed": true,
+        "hash": "#/duplicates",
+        "bodyClass": "duplicating",
+        "shown": true,
+        "title": "重複の整理",
+        "groups": 20,
+        "brief": "距離 ≤ 6 ・ 20 群"
+      },
+      "del": {
+        "pressed": true,
+        "hash": "#/pending-deletes",
+        "bodyClass": "pending",
+        "shown": true,
+        "rows": 193,
+        "undoButtons": 193,
+        "firstRow": "あと 2:29\n    1 印→2 ゴミ箱→3 実削除\n    C:\\ai\\ComfyUI_windows_portab",
+        "firstUndoText": "取り消す",
+        "firstUndoDisabled": false,
+        "firstUndoVisible": true,
+        "stage1UndoText": "戻す",
+        "stage1UndoDisabled": false,
+        "stage1UndoVisible": true,
+        "brief": "1 件 ・ 324.9 MB",
+        "firstRowRemain": "あと 2:29"
+      },
+      "undoPress": null,
+      "shots": [
+        "C:\\work\\image-reviwer\\.tmp-p8-5-entries\\shots\\library-768x1360.png",
+        "C:\\work\\image-reviwer\\.tmp-p8-5-entries\\shots\\duplicates-768x1360.png",
+        "C:\\work\\image-reviwer\\.tmp-p8-5-entries\\shots\\pending-768x1360.png"
+      ]
+    }
+  ]
+}

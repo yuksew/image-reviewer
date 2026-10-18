@@ -1557,15 +1557,69 @@ PENDING_NOW = PENDING_BODY;
 await pdUi.showPending('?ids=');
 check(String(el('pd-running').innerHTML || '').includes('あと 3:12'), '本体の応答に戻した');
 
-// 16. 上部バーの入口（§4.6。取り消せる削除が 0 なら出さない）
+// 16. 上部バーの入口（§4.6。**段 1 の行だけでも出す**。0 件なら出さない）
+//
+// **P8-5 の追い込み（実装漏れ）**: 前の版は `state === 'pending'`（段 3 の窓がある行）だけで
+// 数えていたので、**段 1 で外した 88 枚があっても入口が出ず、戻す導線が見えなかった**。
+// `pending()` は P8-5 で段 1〜3 を返しているので、入口もそれに合わせる。
 badge.renderDeleteBadge(PENDING_BODY.items);
-check(el('stat-deletes').textContent === '最近の削除 2 ・ あと 0:10',
+check(el('stat-deletes').textContent === '最近の削除 5 ・ あと 0:10',
   `入口に件数と残り時間（いちばん短い物）を出す: ${el('stat-deletes').textContent}`);
-check(el('stat-deletes').hidden === false, '取り消せる削除があるときは出す');
-badge.renderDeleteBadge([PENDING_BODY.items[1]]);          // `stuck` の 1 枚だけ（窓が無い）
-check(el('stat-deletes').hidden === true, '戻せない物だけなら出さない');
+check(el('stat-deletes').hidden === false, 'まだ戻せる行があるときは出す');
+// **段 1 の行だけ**（窓が無い）でも出す。件数は出し、**残り時間は出さない**（窓が無いので嘘になる）
+badge.renderDeleteBadge([PENDING_BODY.items[3]]);
+check(el('stat-deletes').textContent === '最近の削除 1',
+  `段 1 の行だけでも出す（残り時間は出さない）: ${el('stat-deletes').textContent}`);
+check(el('stat-deletes').hidden === false, '段 1 の行だけでも入口を出す（P8-5 の追い込み）');
+// **段 3 でも窓が無い行**（`stuck`。画面では「別名で戻す」を押せる）だけでも出す。
+// 前の版は「戻せない物だけなら出さない」だったが、**画面には出ていて押せる**ので出さないと辻褄が合わない
+badge.renderDeleteBadge([PENDING_BODY.items[1]]);
+check(el('stat-deletes').textContent === '最近の削除 1' && el('stat-deletes').hidden === false,
+  `戻せなかった行だけでも出す（画面で「別名で戻す」を押せる）: ${el('stat-deletes').textContent}`);
 badge.renderDeleteBadge([]);
 check(el('stat-deletes').hidden === true, '0 件なら出さない（§4.6）');
+badge.renderDeleteBadge(null);
+check(el('stat-deletes').hidden === true, '取れないとき（null）も出さない（古いサーバでも止めない）');
+
+// 16b. **押す検査**: 上部バーの「重複の整理」（P8-5 の追い込み）と「最近の削除」（§4.6）の入口。
+//
+// 作り物の DOM は**リンクを辿らない**（ページを読み直さない）。ブラウザがする事のうち
+// **`href` を `location.hash` に入れる**ところだけを、`index.html` の**本物の `href`** で行う。
+// **押して行き先の画面が出るかは `gui_layout --screen library` が本物の Chrome で見る。**
+
+/** `index.html` の `<a id="...">` を 1 つ読む（入口はここにしかないので、ここを出所にする）。 */
+function anchorOf(id) {
+  const got = new RegExp(`<a[^>]*\\bid="${id}"[^>]*>([^<]*)</a>`).exec(HTML);
+  if (!got) return null;
+  const tag = got[0].slice(0, got[0].indexOf('>'));
+  const at = HTML.indexOf('<div class="topbar">');
+  const firstTopbar = HTML.slice(at, HTML.indexOf('</div>', at));
+  return {
+    text: got[1].trim(),
+    html: got[0],
+    href: (/\bhref="([^"]*)"/.exec(tag) || [])[1] || null,
+    hidden: /(^|\s)hidden(\s|=|$)/.test(tag),
+    inTopbar: firstTopbar.includes(`id="${id}"`),
+  };
+}
+
+const dupEntry = anchorOf('stat-duplicates');
+check(!!dupEntry, '上部バーに「重複の整理」の入口がある（P8-5 の追い込み）');
+check(dupEntry && dupEntry.text === '重複の整理', `入口の文言: ${dupEntry && dupEntry.text}`);
+check(dupEntry && dupEntry.href === '#/duplicates', `入口の行き先: ${dupEntry && dupEntry.href}`);
+check(dupEntry && dupEntry.hidden === false, '入口は隠れていない（出る条件は無い。§4.5.1）');
+check(dupEntry && dupEntry.inTopbar === true, '入口は上部バーにある（§4.5.1・§11）');
+check(dupEntry && dupEntry.html.includes('set-open'),
+  `設定と同じ見た目（押せる物だと分かる）: ${dupEntry && dupEntry.html}`);
+location.hash = '';
+if (dupEntry) location.hash = dupEntry.href;      // ブラウザが押されたときにする事
+check(location.hash === '#/duplicates', `押すと #/duplicates へ行く: ${location.hash}`);
+
+const delEntry = anchorOf('stat-deletes');
+check(delEntry && delEntry.href === '#/pending-deletes',
+  `「最近の削除」の入口の行き先: ${delEntry && delEntry.href}`);
+check(delEntry && delEntry.inTopbar === true, '「最近の削除」の入口は上部バーにある（§4.6）');
+location.hash = '';
 
 // ---- P8-5: 設定（`#/settings`）と上部バー（バックアップの失敗・走査中）----
 //

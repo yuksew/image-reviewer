@@ -1,0 +1,92 @@
+﻿
+
+===== library(768) =====
+注意: `last_error` が空です（上部バーの失敗の印は出ないのが正。前提は `tools/gui_layout_seed.py --backup-error` で作れます）
+すべて ok
+node.exe : Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 94
+At C:\work\image-reviwer\.tmp-p8-5-entries\run_layout.ps1:23 char:10
++   $out = & node C:\work\image-reviwer\tools\gui_layout.mjs --base $ba ...
++          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Assertion faile...sync.c, line 94:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+exit=-1073740791
+
+===== duplicates =====
+注意: 除外の理由が <script>… ではありません（文字の検査はしません。D-6）: "理由なし"
+ok  1400x900 重複: groups=20/20 items=55 おすすめの印=20 絵=25 しきい値=3(距離 ≤ 6) 既定の選択=0(全部選ぶ) overflow=0/0 wide=0 入口=true 除外の一覧=1 理由="理由なし" script=0 body="duplicating" POST まとまり=1 除外=1 brief="距離 ≤ 6 ・ 20 群"
+注意: 除外の理由が <script>… ではありません（文字の検査はしません。D-6）: "理由なし"
+ok  1200x800 重複: groups=20/20 items=55 おすすめの印=20 絵=24 しきい値=3(距離 ≤ 6) 既定の選択=0(全部選ぶ) overflow=0/0 wide=0 入口=true 除外の一覧=1 理由="理由なし" script=0 body="duplicating" POST まとまり=1 除外=1 brief="距離 ≤ 6 ・ 20 群"
+注意: 除外の理由が <script>… ではありません（文字の検査はしません。D-6）: "理由なし"
+ok  1920x1080 重複: groups=20/20 items=55 おすすめの印=20 絵=28 しきい値=3(距離 ≤ 6) 既定の選択=0(全部選ぶ) overflow=0/0 wide=0 入口=true 除外の一覧=1 理由="理由なし" script=0 body="duplicating" POST まとまり=1 除外=1 brief="距離 ≤ 6 ・ 20 群"
+すべて ok
+exit=0
+
+===== pending =====
+注意: 段 3 の窓がある行は 0 です（入口は件数だけ。段 1・2 の行は窓が無い）
+ok  1400x900 最近の削除: rows=193 拾い物=0 ゴミ箱=0 残り=["—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—"] 段="1 印→2 ゴミ箱→3 実削除" 段3=false(null) overflow=0/0 入口=true バー="最近の削除 193" (API の行数=193 窓=0) 確認=false() POST 取り消し=1 凍結=0 用意=0 一覧=undefined script=0 body="pending" 走査中="走査中です。終わるまで削除と取り消し" 本物の走査=true brief="0 件 ・ 324.9 MB"
+注意: 段 3 の窓がある行は 0 です（入口は件数だけ。段 1・2 の行は窓が無い）
+ok  1200x800 最近の削除: rows=193 拾い物=0 ゴミ箱=0 残り=["—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—"] 段="1 印→2 ゴミ箱→3 実削除" 段3=false(null) overflow=0/0 入口=true バー="最近の削除 193" (API の行数=193 窓=0) 確認=false() POST 取り消し=1 凍結=0 用意=0 一覧=undefined script=0 body="pending" 走査中="走査中です。終わるまで削除と取り消し" 本物の走査=undefined brief="0 件 ・ 324.9 MB"
+注意: 段 3 の窓がある行は 0 です（入口は件数だけ。段 1・2 の行は窓が無い）
+ok  1920x1080 最近の削除: rows=193 拾い物=0 ゴミ箱=0 残り=["—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—","—"] 段="1 印→2 ゴミ箱→3 実削除" 段3=false(null) overflow=0/0 入口=true バー="最近の削除 193" (API の行数=193 窓=0) 確認=false() POST 取り消し=1 凍結=0 用意=0 一覧=undefined script=0 body="pending" 走査中="走査中です。終わるまで削除と取り消し" 本物の走査=undefined brief="0 件 ・ 324.9 MB"
+すべて ok
+exit=0
+
+===== settings =====
+注意: `last_error` が空です（失敗の全文は見られません。前提は `tools/gui_layout_seed.py --backup-error` で作れます）
+ok  1400x900 設定: 控え=2 印=[印なし,印あり] 失敗=false("") 読み取り専用=false overflow=0/0 押す=印1/取る1/保存1 msg="置き場を変えました: D:\\gui-backup" script=0 brief="2 個の控え ・ 段 3 の印 1 / 2"
+ok  1200x800 設定: 控え=2 印=[印なし,印あり] 失敗=false("") 読み取り専用=false overflow=0/0 押す=印1/取る1/保存1 msg="置き場を変えました: D:\\gui-backup" script=0 brief="2 個の控え ・ 段 3 の印 1 / 2"
+ok  1920x1080 設定: 控え=2 印=[印なし,印あり] 失敗=false("") 読み取り専用=false overflow=0/0 押す=印1/取る1/保存1 msg="置き場を変えました: D:\\gui-backup" script=0 brief="2 個の控え ・ 段 3 の印 1 / 2"
+すべて ok
+exit=0
+
+===== tags =====
+NG  1400x900 タグ: rows=0 listOverflow=0 pageOverflow=0 detail=true brief="語彙あり"  ← 語の行が出る
+NG  1200x800 タグ: rows=0 listOverflow=0 pageOverflow=0 detail=true brief="語彙あり"  ← 語の行が出る
+NG  1920x1080 タグ: rows=0 listOverflow=0 pageOverflow=0 detail=true brief="語彙あり"  ← 語の行が出る
+3 件 NG
+exit=1
+
+===== jobs =====
+ok  1400x900 ジョブ: rows=1 empty=false listOverflow=0 wideTop=1400 brief="1 件"
+ok  1200x800 ジョブ: rows=1 empty=false listOverflow=0 wideTop=1200 brief="1 件"
+ok  1920x1080 ジョブ: rows=1 empty=false listOverflow=0 wideTop=1920 brief="1 件"
+すべて ok
+exit=0
+
+===== requests =====
+注意: open な要求が 0 件です（先に要求を作ってください。例: POST /api/review-requests）
+ok  1400x900 要求: cards=0/0 nested=0 overflow=0 list=1400 maxRight=0 listRight=1400
+ok  1200x800 要求: cards=0/0 nested=0 overflow=0 list=1200 maxRight=0 listRight=1200
+ok  1920x1080 要求: cards=0/0 nested=0 overflow=0 list=1920 maxRight=0 listRight=1920
+すべて ok
+exit=0
+
+===== group =====
+ok  1400x900 まとまり: frames=2 overflow=0 decide=有効 POST=1 brief="2 枚 ・ 1 枚選ぶ ・ 未決定" 来歴="anima-aesthetic-v1.1 · seed 0 · steps 30 · cfg 4.5"
+ok  1200x800 まとまり: frames=2 overflow=0 decide=有効 POST=1 brief="2 枚 ・ 1 枚選ぶ ・ 未決定" 来歴="anima-aesthetic-v1.1 · seed 0 · steps 30 · cfg 4.5"
+ok  1920x1080 まとまり: frames=2 overflow=0 decide=有効 POST=1 brief="2 枚 ・ 1 枚選ぶ ・ 未決定" 来歴="anima-aesthetic-v1.1 · seed 0 · steps 30 · cfg 4.5"
+すべて ok
+exit=0
+
+===== asset =====
+ok  1400x900 注記: marks=0 rows=0 outside=0 listOverflow=0 boxTop=341px visible=true tgTop=644px tgVisible=true delTop=543px delVisible=true 削除の入口="#/pending-deletes?ids=01M4Z0KJR69CW8RA2R5Q9ZXHHW" 段=3(3) markNos=[] rowNos=[] タグ: rows=0 overflow=0 高さの差=0px 折り返し=0/語名=0 印=0 語釈=0 script=0
+ok  1200x800 注記: marks=0 rows=0 outside=0 listOverflow=0 boxTop=341px visible=true tgTop=644px tgVisible=true delTop=543px delVisible=true 削除の入口="#/pending-deletes?ids=01M4Z0KJR69CW8RA2R5Q9ZXHHW" 段=3(3) markNos=[] rowNos=[] タグ: rows=0 overflow=0 高さの差=0px 折り返し=0/語名=0 印=0 語釈=0 script=0
+ok  1920x1080 注記: marks=0 rows=0 outside=0 listOverflow=0 boxTop=341px visible=true tgTop=644px tgVisible=true delTop=543px delVisible=true 削除の入口="#/pending-deletes?ids=01M4Z0KJR69CW8RA2R5Q9ZXHHW" 段=3(3) markNos=[] rowNos=[] タグ: rows=0 overflow=0 高さの差=0px 折り返し=0/語名=0 印=0 語釈=0 script=0
+すべて ok
+exit=0
+
+===== compare =====
+ok  1400x900 初回: rows=1 perRow=8 outside=0 tile=162 frame=162 cap=430 used=0.5 見出し可視=32%
+ok  1400x900 resize 後: rows=1 perRow=8 outside=0 tile=162 frame=162 cap=430 used=0.5 見出し可視=32%
+ok  1400x900 seed 順: rows=1 perRow=8 outside=0 tile=162 frame=162 cap=440 used=0.5 見出し可視=32%
+ok  1200x800 初回: rows=1 perRow=8 outside=0 tile=135 frame=135 cap=440 used=0.5 見出し可視=26%
+ok  1200x800 resize 後: rows=1 perRow=8 outside=0 tile=135 frame=135 cap=440 used=0.5 見出し可視=26%
+ok  1200x800 seed 順: rows=1 perRow=8 outside=0 tile=135 frame=135 cap=430 used=0.5 見出し可視=27%
+ok  1920x1080 初回: rows=1 perRow=8 outside=0 tile=232 frame=232 cap=430 used=0.5 見出し可視=47%
+ok  1920x1080 resize 後: rows=1 perRow=8 outside=0 tile=232 frame=232 cap=430 used=0.5 見出し可視=47%
+ok  1920x1080 seed 順: rows=1 perRow=8 outside=0 tile=232 frame=232 cap=430 used=0.5 見出し可視=47%
+すべて ok
+exit=0
+
+===== 邨ゅｏ繧・=====

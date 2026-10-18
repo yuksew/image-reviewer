@@ -9,9 +9,11 @@
 <body>
 <div id="app">
   <div class="proto">
-    <strong>プロトタイプ</strong> — 閲覧と来歴の表示、比較（並べる / 来歴の差分表 / 同期ズーム /
-    差分ヒートマップ / 似ている順）、<b>要求の一覧とまとまりの判断</b>まで。
-    注記、タグ付け、監視、条件の記録はまだ入っていません（設計は docs/ にあります）。
+    <strong>プロトタイプ</strong> — 閲覧と来歴の表示、判断（キープ / ボツ）、比較（並べる / 来歴の差分表 /
+    同期ズーム / 差分ヒートマップ / 似ている順）、要求の一覧とまとまりの判断、注記、タグ付けと語釈、
+    <b>重複の整理</b>、削除の 3 段階と 5 分の取り消し、バックアップと復元まで入っています。
+    <b>条件の記録（P7）は 2026-10-17 に廃止</b>、監視の常駐も作っていません（訳は「訳を捕獲」で取ります）。
+    設計は docs/ にあります。
   </div>
 
   <div class="topbar">
@@ -23,7 +25,8 @@
     <!-- P4-3: タグ付けの進行と完了（`#/jobs`。§5.5）。0 件なら出さない -->
     <a class="pending job-badge" id="stat-jobs" href="#/jobs" hidden></a>
     <!-- P8-3: 最近の削除の入口（`frontend-design.md` §4.6。**上部バー**）。
-         取り消せる削除が 1 件でもある間だけ出す（残り時間つき）。
+         **まだ戻せる行（段 1〜3）が 1 件でもある間**だけ出す（**段 1 の行だけでも出す**。
+         窓のある段 3 があれば残り時間つき。P8-5 の追い込みで条件を直した）。
          **`#/jobs` の隣に 4 つ目の入口は作らない**（点検 B5）ので、これは (b) の 1 つ -->
     <a class="pending del-badge" id="stat-deletes" href="#/pending-deletes" hidden></a>
     <!-- P8-5: **バックアップの失敗**（`frontend-design.md` §4.5.1。P8-4 の再確認 B-1'）。
@@ -35,6 +38,10 @@
          行き先が無いので押せない（`span`） -->
     <span class="pending sc-badge" id="stat-scan" hidden></span>
     <span class="spacer"></span>
+    <!-- P8-5 の追い込み: **重複の整理の常設の入口**（`frontend-design.md` §4.5.1・§11）。
+         `#/duplicates` への入口が画面に 1 つも無く、URL を打たないと入れなかった。
+         **出る条件は無い**（いつでも押せる）。押すと道が変わるだけ（`GET` も `POST` もしない） -->
+    <a class="back set-open" id="stat-duplicates" href="#/duplicates">重複の整理</a>
     <!-- P8-5: 設定（`#/settings`。バックアップの詳細と置き場の段 3 の印） -->
     <a class="back set-open" id="stat-settings" href="#/settings">設定</a>
     <button id="btn-provenance" title="来歴のある画像 / ない画像を切り替える">来歴: すべて</button>

@@ -30,7 +30,7 @@ def require_human(actor: str) -> None:
     （`source='manual'` の行に `actor` が入っているので、後から見分けられる）。
     """
     if actor != "human":
-        raise ReviewError(403, "タグの付け外しは人だけができます（エージェントは要求で求めてください）",
+        raise ReviewError(403, "タグの付け外しは人だけができます（エージェントは要求に書いてください）",
                           details={"actor": actor})
 
 

@@ -117,7 +117,8 @@ def stuck_reason_of(value: str | None) -> str | None:
     """
     if value is None or value in STUCK_REASONS:
         return value
-    raise ValueError(f"知らない戻せない理由です: {value!r}")
+    raise ValueError(f"戻せない理由の値が不正です: {value!r}"
+                     "（target_exists / move_failed / different / missing）")
 
 
 def free_name(directory: Path, name: str) -> Path:
@@ -234,7 +235,7 @@ def _actor_of(actor: Any) -> str:
 def _require_human(actor: str, what: str) -> str:
     """**人が要る操作の検査**（`as_copy` とゴミ箱からの復帰。家風「検査は 1 か所」）。"""
     if actor != "human":
-        raise ReviewError(403, f"{what}は人だけができます", code="human_only",
+        raise ReviewError(403, f"{what}のは人だけです", code="human_only",
                           details={"actor": actor})
     return actor
 
@@ -869,9 +870,9 @@ class DeletionService:
         base.mkdir(parents=True, exist_ok=True)
         if not same_volume(target["display_path"], base):
             self._prune_empty(base)                # **空なら**片づける（他の保留が在れば残る）
-            raise ReviewError(409, "この置き場は保留領域と別のボリュームです"
-                                   "（コピーになるので、いまはアプリから消せません。"
-                                   "エクスプローラで消してください）",
+            raise ReviewError(409, "この置き場は保留領域と別のボリュームにあります。"
+                                   "移すとコピーになるので、いまはアプリから消せません。"
+                                   "エクスプローラーで消してください",
                               code="cross_volume",
                               details={"path": target["display_path"], "hold": str(base)})
         if stage == 2:
@@ -902,7 +903,7 @@ class DeletionService:
             fsize, fmtime = frozen.get("size"), frozen.get("mtime_ns")
             if fsize is not None and fmtime is not None and (
                     int(fsize) != int(target["size"]) or int(fmtime) != int(target["mtime_ns"])):
-                raise ReviewError(409, "確認した一覧の登録と変わっています（もう一度 preview してください）",
+                raise ReviewError(409, "確認した一覧の登録と変わっています（もう一度、消す物を確かめてください: preview）",
                                   code="changed",
                                   details={"path": path,
                                            "frozen": {"size": int(fsize), "mtime_ns": int(fmtime)},
@@ -910,7 +911,7 @@ class DeletionService:
                                                    "mtime_ns": int(target["mtime_ns"])}})
         size, mtime_ns = identity_of(path)
         if int(target["size"]) != size or int(target["mtime_ns"]) != mtime_ns:
-            raise ReviewError(409, "登録した時と中身が変わっています（別のファイルを消しかけています）",
+            raise ReviewError(409, "登録した時と中身が変わっています（別のファイルを消すところでした）",
                               code="changed",
                               details={"path": path,
                                        "registered": {"size": int(target["size"]),
@@ -1028,7 +1029,7 @@ class DeletionService:
                     422, f"エージェントが 1 回に消せるのは {AGENT_MAX_BATCH} 枚までです",
                     code="too_many", details={"count": len(items), "limit": AGENT_MAX_BATCH})
             if self.clock.now() > str(expires_at):
-                raise ReviewError(409, "確認した一覧の有効期限が切れました。もう一度 preview してください",
+                raise ReviewError(409, "確認した一覧の有効期限が切れました。もう一度、消す物を確かめてください（preview）",
                                   code="preview_expired",
                                   details={"preview_id": preview_id, "expires_at": expires_at})
             if stage == 3 and last_copies and not confirm_last_copy:
@@ -1088,7 +1089,7 @@ class DeletionService:
         """
         _actor_of(actor)
         if as_copy:
-            _require_human(actor, "別名で戻すこと")
+            _require_human(actor, "別名で戻す")
         with self._lock:
             return self._restore(deletion_id, as_copy=as_copy, actor=actor,
                                  check_owner=(actor != "human"))
@@ -1099,7 +1100,7 @@ class DeletionService:
         ゴミ箱は人の口なので「他人の分」は無い（`not_yours` は掛けない）。
         """
         _actor_of(actor)
-        _require_human(actor, "ゴミ箱から戻すこと")
+        _require_human(actor, "ゴミ箱から戻す")
         with self._lock:
             return self._restore(deletion_id, as_copy=False, actor=actor, check_owner=False)
 
@@ -1114,7 +1115,7 @@ class DeletionService:
         **（C-2）消せなかったとき（`PermissionError` を含む `OSError`）は 409 `purge_failed`**
         （500 にしない。「消せませんでした」と正直に返す）。
         """
-        _require_human(actor, "いま消すこと")
+        _require_human(actor, "いま消す")
         if not confirm:
             raise ReviewError(422, "confirm: true が要ります", code="confirm_required",
                               details={"deletion_id": deletion_id})
@@ -1133,8 +1134,8 @@ class DeletionService:
             if not os.path.exists(str(row["hold_path"] or "")):
                 # **（B-1）台帳を先に書く順で増えた道**: 移動の前に落ちた行。ここで登録だけ
                 # 消すと「消した」と言いながらファイルが元の場所に残るので、正直に断る
-                raise ReviewError(409, "保留領域に実体がありません（元の場所に在るかもしれません）。"
-                                       "「戻す」を試してください",
+                raise ReviewError(409, "保留領域に実体がありません（元の場所にあるかもしれません）。"
+                                       "「取り消す」を試してください",
                                   code="not_in_hold",
                                   details={"deletion_id": deletion_id, "hold_path": row["hold_path"]})
             try:
@@ -1444,7 +1445,7 @@ class DeletionService:
                               details={"client_token": client_token, "asked": got, "now": payload})
         if not row["result_json"]:
             if plus_seconds(str(row["at"]), STALE_REQUEST_SEC) >= self.clock.now():
-                raise ReviewError(409, "同じ client_token の処理が進んでいます",
+                raise ReviewError(409, "同じ client_token の削除が進んでいます",
                                   code="client_token_in_progress",
                                   details={"client_token": client_token})
             # **落ちた要求の行を捨てる**（残すと同じ token が永久に `in_progress` になる）
@@ -1539,7 +1540,7 @@ class DeletionService:
         明示の意思表示**なので、画面は印のある置き場でだけ段 3 のボタンを出す（§5）。
         既定は印なし（安全側）。**印を外すのもこの口**（`allow: false`）。
         """
-        _require_human(actor, "段 3 を許す印")
+        _require_human(actor, "段 3 を許す")
         if not isinstance(root_id, str) or not root_id.strip():
             raise ReviewError(422, "置き場の id が空です", code="bad_root",
                               details={"id": root_id})

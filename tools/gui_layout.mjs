@@ -1088,7 +1088,10 @@ try {
       if (wantStages !== null && pressed && pressed.stages !== wantStages) {
         bad.push(`段の数（期待 ${wantStages} なのに ${pressed.stages}。C-2）`);
       } else if (wantStages === 2 && pressed
-        && !/段 3 の印がありません/.test(pressed.stage3Note || '')) {
+        // **（ワーディング監査 W-20）** 前は「段 3 の印がありません」、いまは「段 3 の許可が
+        // ありません」（同じ段を 1 つの語で呼ぶ）。**どちらの文言でも通す**（検査は「理由の 1 行が
+        // 出るか」を見る物で、語そのものは `frontend-design.md` §6 が正）
+        && !/段 3 の(印|許可)がありません/.test(pressed.stage3Note || '')) {
         bad.push('段 3 を出さない理由の 1 行');
       }
       // P4-3: タグの欄（設計 §8.3 の 1〜3）
@@ -1278,7 +1281,9 @@ try {
       if (got.rows <= 0 && !got.empty) bad.push('行か空の文が出る');
       if (got.scripts !== 0) bad.push('パスの `<script>` を実行しない');
       if (!String(got.bodyClass).includes('pending')) bad.push('道が最近の削除になっている');
-      if (got.rows > 0 && !/3 実削除/.test(got.strip)) bad.push('段の印（3 実削除）');
+      // **（ワーディング監査 W-20）段 3 の呼び方は 1 つ**（`1 カタログから外す → 2 ゴミ箱 →
+      // 3 実体を消す`）。前の `3 実削除` は同じ段を 3 通りに呼んでいたので消えた
+      if (got.rows > 0 && !/3 実体を消す/.test(got.strip)) bad.push('段の印（3 実体を消す）');
       if (got.bodyOverflow !== 0) bad.push('本体が横に溢れない');
       if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
       if (got.rows > 0 && !got.entryVisible) bad.push('入口が見える（先頭の行）');
@@ -1310,7 +1315,7 @@ try {
         if (has3 !== wantStage3) {
           bad.push(`段 3 の出し分け（印あり=${wantStage3} なのに boxes=[${got.stageBoxes.join(',')}]）`);
         }
-        if (!wantStage3 && !/段 3 の印がありません/.test(got.stage3Note)) {
+        if (!wantStage3 && !/段 3 の(印|許可)がありません/.test(got.stage3Note)) {
           bad.push('段 3 を出さない理由の 1 行');
         }
       }
@@ -1442,8 +1447,12 @@ try {
         }
         if (!want.readOnly && want.failed && !got.failedVisible) bad.push('失敗がスクロール無しで見える');
         if (want.readOnly !== got.readonly) bad.push(`読み取り専用の見せ方（${want.readOnly}）`);
-        if (want.marks !== got.marks.filter((m) => m === '印あり').length) {
-          bad.push(`印ありの数=${want.marks}`);
+        // **（ワーディング監査 W-20）** 画面の印は「許可あり／許可なし」に変わった
+        // （前は「印あり／印なし」）。**どちらの語でも数える**（検査は「API の
+        // `allow_stage3` の数と画面の数が合うか」を見る物で、語は `frontend-design.md` §6 が正）
+        const marksShown = got.marks.filter((m) => m === '許可あり' || m === '印あり').length;
+        if (want.marks !== marksShown) {
+          bad.push(`印ありの数=${want.marks}（画面は ${marksShown}）`);
         }
       }
       if (!got.readonly) {

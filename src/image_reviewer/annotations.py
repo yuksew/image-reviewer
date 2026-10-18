@@ -199,7 +199,7 @@ class AnnotationService:
         else:
             # 座標なし＝画像 1 枚へのメモ。**何も書いていない**ときだけ 422（§0.7）
             if not text:
-                raise _fields_error({"body": "メモか印のどちらかが要ります"})
+                raise _fields_error({"body": "メモか注記のどちらかが要ります"})
             shape = None
 
         payload = {"asset_id": asset_id, "shape": shape, "body": text, "group_id": group_id,
@@ -398,7 +398,7 @@ class AnnotationService:
     def _require_own(self, row: sqlite3.Row, actor: str) -> None:
         """**自分の `actor` の注記だけ**（点検 C7。人の印をエージェントが消せない）。"""
         if row["actor"] != actor:
-            raise ReviewError(403, "他の人が付けた印は変えられません",
+            raise ReviewError(403, "他の人が付けた注記は変えられません",
                               details={"actor": actor, "annotation_actor": row["actor"]})
 
     def _check_group(self, con: sqlite3.Connection, asset_id: str, group_id: str) -> None:

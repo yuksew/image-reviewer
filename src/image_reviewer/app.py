@@ -439,7 +439,7 @@ def create_app() -> FastAPI:
         asset = _asset_or_404(asset_id)
         path = _primary_path(asset)
         if not path:
-            raise HTTPException(404, "実体が無い")
+            raise HTTPException(404, "実体がありません")
         from . import png_meta
 
         chunks = png_meta.read_png(path)
@@ -448,10 +448,10 @@ def create_app() -> FastAPI:
         key = "prompt" if format == "api" else "workflow"
         if format == "ui":
             if "workflow" not in chunks["text"]:
-                raise HTTPException(404, "UI 形式のグラフを持っていない（API 生成の画像）")
+                raise HTTPException(404, "UI 形式のグラフを持っていません（API 生成の画像）")
         raw = chunks["text"].get(key)
         if raw is None:
-            raise HTTPException(404, "グラフが無い")
+            raise HTTPException(404, "グラフがありません")
         try:
             payload = json.loads(raw.decode("utf-8", "replace"))
         except Exception as exc:  # noqa: BLE001

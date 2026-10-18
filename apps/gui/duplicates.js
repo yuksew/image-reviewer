@@ -121,24 +121,27 @@ export function allPicked() {
 export function headHtml() {
   const groups = state.totalGroups;
   const images = state.totalImages;
-  const bits = [`候補 ${groups} 群`, `${images} 枚`];
+  // **（ワーディング監査 W-16）メタ情報を中黒で並べたうえに文を繋がない**（§6.1 の規則 1）。
+  // 数は「（）」に入れ、隠している組の説明は「。」で切る
+  const bits = [`候補 ${groups} 群（${images} 枚）`];
   if (!state.unhashed) bits.push(`計算済み ${state.hashed} 枚`);
   // **（P8-3 の取り落とし調査）人が「別物として確定」した組は候補から外れる**ので、
   // その数を出す。出さないと「群が 1 つ足りない」が**帯の取りこぼしに見える**
   // （実データで実際にそう見えた。`docs/p8-3-band-miss.md`）。0 のときは出さない。
+  let text = bits.join('、');
   if (state.excludedPairs) {
-    bits.push(`別物として確定で ${state.excludedPairs} 組を隠しています`);
+    text += `。別物として確定した ${state.excludedPairs} 組は隠しています。`;
   }
-  return `<div class="dup-head">${bits.map(esc).join(' ・ ')}</div>`;
+  return `<div class="dup-head">${esc(text)}</div>`;
 }
 
 /** 完全重複（この環境では 0 群）。**空でも 1 行で説明する**（黙って空を返さない。§0.4）。 */
 export function exactHtml() {
   if (state.exact.count > 0) {
     return `<div class="dup-exact">完全重複が ${state.exact.count} 件あります。`
-      + `同じ中身が 2 か所以上にある物です。</div>`;
+      + `同じ中身が 2 か所以上にあるものです。</div>`;
   }
-  return '<div class="dup-exact">完全重複はありません。同じ中身が 2 か所以上にある物です。'
+  return '<div class="dup-exact">完全重複はありません。同じ中身が 2 か所以上にあるものです。'
     + '<span class="stat">準重複は下に出ます。</span></div>';
 }
 
@@ -162,7 +165,7 @@ export function computeHtml() {
   // **（監査 G-4）枚数は実際の値（`unhashed`）から組む。秒数は埋め込まない**——
   // 前の版は「263 枚で 2.6 秒」と書いてあり、**別の置き場では嘘**になった
   return '<div class="dup-compute">'
-    + `<span class="dup-cmsg">まだ計算していない枚が ${state.unhashed} 枚あります。</span>`
+    + `<span class="dup-cmsg">まだ計算していない画像が ${state.unhashed} 枚あります。</span>`
     + '<button class="dup-do-compute">計算する</button>'
     + '<span class="stat">絵を読んで指紋を作ります。画面は止まりません。</span></div>';
 }
@@ -188,7 +191,7 @@ export function groupHtml(group, i) {
       + `<span class="dup-no num">${position + 1}</span>`
       + `<img loading="lazy" decoding="async" src="/api/assets/${esc(item.id)}/thumb?size=256" alt="">`
       + `<span class="dup-meta num">${esc(item.width)} × ${esc(item.height)}`
-      + ` ・ ${esc(fmtBytes(item.size))} ・ ${esc(fmtDay(item.first_seen_at))}</span>`
+      + `、${esc(fmtBytes(item.size))}、${esc(fmtDay(item.first_seen_at))}</span>`
       + `<span class="dup-path mono">${esc(item.path || item.id)}</span>`
       + marks.join('')
       + '</div>';
@@ -198,7 +201,7 @@ export function groupHtml(group, i) {
       <span class="dup-title">同じ絵が ${items.length} 枚</span>
       <span class="dup-dist num">距離 ${esc(group.max_distance_within)}</span>
       <span class="dup-sug">おすすめ: ${esc(labelOf(items.findIndex((it) => it.id === group.suggested_id) + 1))}`
-      + ` ・ ${esc(group.reason)}</span>
+      + `（${esc(group.reason)}）</span>
       <span class="spacer"></span>
       <button class="dup-make" data-g="${i}"${picked < 2 ? ' disabled' : ''}>まとまりにする</button>
       <button class="dup-exclude" data-g="${i}"${picked !== 2 ? ' disabled' : ''}>別物として確定</button>
@@ -216,7 +219,7 @@ export function exclusionsHtml() {
         <img loading="lazy" src="/api/assets/${esc(row.b_id)}/thumb?size=256" alt="">
         <span class="dup-ex-ids mono">${esc(row.a_id.slice(0, 8))} / ${esc(row.b_id.slice(0, 8))}</span>
         <span class="dup-ex-reason">${esc(row.reason || '理由なし')}</span>
-        <span class="stat">${esc(row.actor === 'agent' ? 'エージェント' : '人')} ・ ${esc(fmtDay(row.at))}</span>
+        <span class="stat">${esc(row.actor === 'agent' ? 'エージェント' : '人')}、${esc(fmtDay(row.at))}</span>
         <span class="spacer"></span>
         <button class="dup-unexclude" data-a="${esc(row.a_id)}" data-b="${esc(row.b_id)}">解除</button>
       </div>`).join('')
@@ -230,7 +233,7 @@ export function listHtml() {
   const groups = state.groups.length
     ? state.groups.map((group, i) => groupHtml(group, i)).join('')
     : '<div class="note">この距離の候補はありません。'
-      + 'しきい値を上げる（≤ 10）と、似ている物まで出ます。</div>';
+      + 'しきい値を上げる（≤ 10）と、似ているものまで出ます。</div>';
   return `${exactHtml()}${computeHtml()}${headHtml()}<div class="dup-groups">${groups}</div>`
     + exclusionsHtml();
 }
@@ -294,7 +297,7 @@ function render() {
   const brief = $('dup-brief');
   if (brief) {
     brief.textContent = `距離 ≤ ${state.max}`
-      + (state.totalGroups ? ` ・ ${state.totalGroups} 群` : '');
+      + (state.totalGroups ? `、${state.totalGroups} 群` : '');
   }
 }
 
@@ -316,7 +319,7 @@ async function makeGroup(i) {
   const body = await res.json().catch(() => ({}));
   if (!res.ok) { state.msg = body.detail || `まとまりを作れません（${res.status}）`; state.bad = true; render(); return; }
   state.made = body.id;
-  state.msg = 'まとまりを作りました。代表を選ぶのはまとまりレビューで行います。';
+  state.msg = 'まとまりを作りました。代表はまとまりレビューで選びます。';
   state.bad = false;
   render();
 }

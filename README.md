@@ -1,36 +1,35 @@
 # image-reviewer
 
-ローカルの画像を **登録 → カタログで見る → タグと生成の来歴を見る → まとまりごとに比べて
-キープ / ボツを決める** ツール。`127.0.0.1` で動く Web アプリ。
+ローカルの画像を登録し、カタログで見て、タグと生成の来歴を読み、まとまりごとに比べて
+キープ / ボツを決めるツール。`127.0.0.1` で動く Web アプリ。
 
 **他のツールとは連携しない**（コードもデータも語彙も合わせない）。接続先は ComfyUI だけ。
 
 > **現在のフォルダ名は `C:\work\image-reviwer`（`reviewer` ではなく `reviwer`）。**
-> `image-reviewer` に改名する方針は決まっているが、**このセッションからは改名できない**
+> `image-reviewer` に改名する方針は決まっているが、**作業中の環境からは改名できない**
 > （書き込み権限がこのパスに固定されているため、`C:\work\image-reviewer` の作成が拒否される）。
 > 手順は [`docs/design.md`](docs/design.md) §16.2 の 1 を参照。文書内の名前は既に `image-reviewer` にしてある。
 
 - 状態: **P5（判断と比較）・P6（要求と注記）・P4（タグと語釈）・P8（重複・削除・バックアップ）・
-  P8-6（参照切れの再リンク）・P9（仕上げ）まで動く。この段で §12.1 の性能の目標を全部実測で埋めた
-  （未計測 0。届かなかったのは一覧 API の 1 行だけで、理由と必要な条件は
-  [`docs/design.md`](docs/design.md) §12.1 と [`docs/p9-implementation.md`](docs/p9-implementation.md) にある）。
-  テスト 518 件**（`uv run --no-sync pytest -q` を自分で **5 回**回して実測。**5 回とも緑**。
-  `gui_smoke` **322 検査**（ok / NG 0）・
-  `gui_layout` **10 画面＋`pending --ids` の 11 本**もすべて ok）。各段は
-  設計 → Fable の点検 → 小段ごとの実装 → **Fable が実行込みで監査** → 指摘の反映、で進めている
-  （P9 は [`docs/p9-implementation.md`](docs/p9-implementation.md)、
-  段の全体は [`docs/handoff.md`](docs/handoff.md)**）。
+  P8-6（参照切れの再リンク）・P9（仕上げ）まで動く。**
+- **`docs/design.md` §12.1 の性能の目標は全部実測で埋めた**（未計測 0）。届かなかったのは一覧 API の
+  1 行だけで、理由と必要な条件は [`docs/design.md`](docs/design.md) §12.1 と
+  [`docs/p9-implementation.md`](docs/p9-implementation.md) にある。
+- **テスト 520 件**（`uv run --no-sync pytest -q` を自分で **4 回**回して実測。**4 回とも緑**）。
+- **`gui_smoke` 343 検査**（ok / NG 0。**ワーディング監査の直しを入れた時点**）。
+- **`gui_layout` 10 画面＋`pending --ids` の 11 本**もすべて ok。実データで測る画面は**複製**で回す。
 - **P8 の小段（P8-0〜P8-5）は全部通り、監査はどれも「合格（条件つき）」**（P8-3 の再確認は「合格（条件なし）」）。
-  **P8-5（設定と文言の仕上げ）の条件 3 件だけは未反映**——「段 3 を許す」印のボタンが二度押しで 2 回 POST される・
-  `gui_layout --screen asset` が印の無い置き場で必ず NG・版が新しい DB で設定の書き込みボタンが押せるまま
+  **P8-5（設定と文言の仕上げ）の条件 3 件だけは未反映**——「段 3 を許す」ボタンが二度押しで 2 回 POST される・
+  `gui_layout --screen asset` が許可の無い置き場で必ず NG・版が新しい DB で設定の書き込みボタンが押せるまま
   （[`docs/p8-5-audit-report.md`](docs/p8-5-audit-report.md)。直し方は [`docs/handoff.md`](docs/handoff.md) §3 の 0）。
-- **参照切れの再リンク（P8 の合格の線 9）は P8-6 で作った**（2026-10-18。P8 の途中で P8-3 が「重複と削除の
-  画面」の段に置き換わり、線 9 だけが残っていた）。`POST /api/locations/relink`（**人だけ**）と
+- **参照切れの再リンク（P8 の合格の線 9）は P8-6 で作った**（2026-10-18）。P8 の途中で P8-3 が「重複と削除の
+  画面」の段に置き換わり、線 9 だけが残っていた。`POST /api/locations/relink`（**人だけ**）と
   `GET /api/locations/missing`（**読むだけ**）の 2 つの口で、**中身の `sha256` が一致したときだけ繋ぐ**
   （**pHash は使わない**）。**画面は無い（口だけ）**。`docs/p8-6-relink.md`。
-- **条件の記録（P7。R12）は作ったが廃止した**（2026-10-17、利用者の判断。PNG を ComfyUI にドラッグすればワークフローが戻るので記録は重複で、
-  ja2en の英訳ももう一度実行すれば取れるため。消した物と控えは [`docs/p7-decision.md`](docs/p7-decision.md)、記録は `docs/p7-*.md` に残す）。
-- 進め方: **DeepSeek が設計書を書く → Claude Code の Fable が点検 → DeepSeek が実装 → Fable が監査**
+- **条件の記録（P7。R12）は作ったが廃止した**（2026-10-17、利用者の判断。PNG を ComfyUI にドラッグすれば
+  ワークフローが戻るので記録は重複で、ja2en の英訳ももう一度実行すれば取れるため。消した物と控えは
+  [`docs/p7-decision.md`](docs/p7-decision.md)、記録は `docs/p7-*.md` に残す）。
+- 進め方: **DeepSeek が設計書を書く → Claude Code の Fable が点検 → DeepSeek が実装 → Fable が監査**。
 
 ## 動かす（プロトタイプ）
 
@@ -42,8 +41,8 @@ uv sync
 uv sync --extra tagger                      # 内蔵タガー（onnxruntime。任意。入れると `auto` が内蔵を選ぶ）
 uv run image-reviewer scan --root 'C:\work\illust-authoring\.store\anima-dev'
 uv run image-reviewer serve --port 8790     # → http://127.0.0.1:8790
-uv run --no-sync pytest -q                  # 518 件（P9 で 513 → 518。5 回回して緑）
-node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。322 検査）
+uv run --no-sync pytest -q                  # 520 件（P9 の監査の直しで 518 → 520。4 回回して緑）
+node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。343 検査）
 # 画面の計測（本物の Chrome）は**複製で立てたサーバ**へ。実データの 8790 では回さない（§「gui_layout は…」）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --count 8          # 比較（3 窓）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen requests  # 要求の一覧
@@ -55,7 +54,7 @@ node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen duplicates # 重
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen pending    # 最近の削除（P8）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen pending --ids <id>,<id>  # 削除の確認つき（P8）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen library    # 下部バーの削除の入口（P8）
-node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen settings   # 設定（バックアップと段 3 の印。P8）
+node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen settings   # 設定（バックアップと段 3 の許可。P8）
 uv run python tools/probe_p4.py --engine comfyui   # タグ付けの線 1・2・7（実機）
 uv run python tools/probe_p4.py --gloss            # 語釈の線 4・5・6（実機）
 uv run python tools/probe_p8.py --duplicates       # 重複の検出（P8 の線 2〜4。総当たりと突き合わせる）
@@ -73,15 +72,21 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
   8791 などで立てる）。**検査が要る前提の行**（語・除外の理由・段 3 の保留・バックアップの失敗）は
   `uv run --no-sync python -X utf8 tools/gui_layout_seed.py --data <複製> --tags --exclusion --pending --stage3 --backup-error --backup-dir <複製の外>`
   が**複製の中に**作る（**実データは断る**）。
-- **`--screen asset` は「段が 3 つ」を前提にしている。** 段 3 の印が無い置き場の枚を渡すと**必ず NG** になるので、
-  `--stage3` を立てた複製で回す（**印なしの形は未対応**。P8-5 の監査 C-2。直し方は `docs/handoff.md` §3 の 0）。
+- **`--screen asset` は「段が 3 つ」を前提にしている。** 段 3 の許可が無い置き場の枚を渡すと**必ず NG** になるので、
+  `--stage3` を立てた複製で回す（**許可なしの形は未対応**。P8-5 の監査 C-2。直し方は `docs/handoff.md` §3 の 0）。
 - **`--screen pending --ids` には「生きている枚」を渡す。** 段 1〜3 で外した枚（`asset.deleted_at`）を渡すと、
   画面は `GET /api/assets` からその枚のパスを引けず、段 3 の 1 行が
   **「置き場を確かめられないので段 3 は出していません」**（＝正しい動作）になって、
-  「段 3 の印がありません」を見る検査が NG になる（**P9 で実際に踏んだ**）。
-- **CLI（`backup` / `scan` / `rebuild-metadata`）は `IMAGE_REVIEWER_DATA` が無ければ実データ `.data` を直接開きます**
-  （利用者の道具なので正しい入口です）。**壊す試験や計測をしたいときは、必ず複製を作って
-  `IMAGE_REVIEWER_DATA=<複製>` を付けてください**（画像を動かす試験は特に）。`serve` も同じ env で複製へ向けられます。
+  「段 3 の許可がありません」を見る検査が NG になる（**P9 で実際に踏んだ**）。
+- **`--screen tags` は語が 0 件だと必ず NG になる**（実データの `tag` / `asset_tag` は **0 件**）。
+  `gui_layout_seed.py --tags` を**複製に**当ててから回す（**P9 の監査の直しで実際に踏んだ**。
+  `tag=0` の複製では 3 窓とも `rows=0 ← 語の行が出る` で落ちる）。
+- **`--screen pending` は本物の走査（`POST /api/scan`）を 1 回打つ**（`REAL_SCAN_PROBE`）。
+  複製の DB に、置き場にある未登録の画像が入る（**画像のファイルは動かない**。行が増えるだけ）。
+  実データには向けない（**必ず複製**）。
+- **CLI（`backup` / `scan` / `rebuild-metadata`）は `IMAGE_REVIEWER_DATA` が無ければ実データ `.data` を直接開く**
+  （利用者の道具なので正しい入口である）。**壊す試験や計測をするときは、必ず複製を作って
+  `IMAGE_REVIEWER_DATA=<複製>` を付ける**（画像を動かす試験は特に）。`serve` も同じ env で複製へ向けられる。
 
 - **`uv sync` はサーバを止めてから打つ。** 動かしたままだと `os error 32`（使用中のファイルを置き換えられない）
   で失敗する。
@@ -89,33 +94,43 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
   `uv` が先に終わり、python（uvicorn）の `lifespan` の書き出しがその後に走る（監査 D3）。
   待ちたくないときは `uv run python -m image_reviewer.cli serve --port 8790` で上げる。
 
-入っているのは**閲覧と来歴の表示、判断（キープ / ボツ。まとまりごとの決定と理由まで）、比較（並べる /
-来歴の差分表 / 同期ズーム / 差分ヒートマップ / 似ている順）、エージェントからの要求（受付・一覧・
-断る・判断で閉じる）、注記（矩形・楕円・画像 1 枚へのメモ・座標 JSON・切り出し PNG）、
-タグ（内蔵タガーと ComfyUI 経由。出所つき・手で足す/外す・`#/tags` の一覧と検索・`#/jobs` の進行）、
-日本語の語釈（見えている語だけ訳す・人が直せる・`edited` を守る）、
-**重複の整理**（`#/duplicates`。pHash の距離 **≤ 6 を既定**に ≤ 3 / ≤ 6 / ≤ 10 を切り替え。
-**代表の推薦**と理由・「別物として確定」と**解除**・まとまりにする・削除へ回す）、
-**削除と取り消し**（`#/pending-deletes`。**段 1 印 / 段 2 ゴミ箱 / 段 3 実削除**の 3 段階。**実削除は 5 分以内なら戻せる**。
-一括削除は**凍結 → 実行**。**誰が消したか**を残し、**エージェントも消せるが 1 回 200 枚まで**）、
-**バックアップと復元**（`#/settings` と上部バーの 1 行。日次スナップショット・7 世代・
-`backup` / `restore` / `rebuild-metadata`）、
-**参照切れの再リンク**（**口だけ**。`POST /api/locations/relink` は**人だけ**で、
-**中身の `sha256` が一致したときだけ繋ぐ**。`GET /api/locations/missing` で一覧が引ける）**まで**。
+入っている物:
+
+- **閲覧と来歴の表示**（カタログの一覧と 1 枚の詳細）。
+- **判断**（キープ / ボツ。まとまりごとの決定と理由まで）。
+- **比較**（並べる / 来歴の差分表 / 同期ズーム / 差分ヒートマップ / 似ている順）。
+- **エージェントからの要求**（受付・一覧・断る・判断で閉じる）。
+- **注記**（矩形・楕円・画像 1 枚へのメモ・座標 JSON・切り出し PNG）。
+- **タグ**（内蔵タガーと ComfyUI 経由。出どころつき・手で足す / 外す・`#/tags` の一覧と検索・`#/jobs` の進行）。
+- **日本語の語釈**（見えている語だけ訳す・人が直せる・**人が直した語釈は訳し直しで上書きしない**）。
+- **重複の整理**（`#/duplicates`。pHash の距離 **≤ 6 を既定**に ≤ 3 / ≤ 6 / ≤ 10 を切り替え。
+  **代表の推薦**と理由・「別物として確定」と**解除**・まとまりにする・削除へ回す）。
+- **削除と取り消し**（`#/pending-deletes`。**段 1 カタログから外す / 段 2 ゴミ箱 / 段 3 実体を消す**の 3 段階。
+  **実体を消した後も 5 分以内なら戻せる**。一括削除は**凍結 → 実行**。**誰が消したか**を残し、
+  **エージェントも消せるが 1 回 200 枚まで**）。
+- **バックアップと復元**（`#/settings` と上部バーの 1 行。日次スナップショット・7 世代・
+  `backup` / `restore` / `rebuild-metadata`）。
+- **参照切れの再リンク**（**口だけ**。`POST /api/locations/relink` は**人だけ**で、
+  **中身の `sha256` が一致したときだけ繋ぐ**。`GET /api/locations/missing` で一覧が引ける）。
 
 - **バックアップは `<data>` の外（既定 `%USERPROFILE%\image-reviewer-backups`）に日次で取る。**
-- **この環境では置き場を `C:\work\image-reviwer\.backup\daily\` に設定しています**（2026-10-18・利用者の決定）。既定の `%USERPROFILE%\image-reviewer-backups` は**アプリのプロセスから作れなかった**（`WinError 5`。同じ持ち主のシェルからは作れた＝原因は未特定）。`#/settings` の「置き場を変える」で戻せます。**同じドライブなので、ドライブが壊れた場合は両方失います**
+- **この環境では置き場を `C:\work\image-reviwer\.backup\daily\` に設定してある**（2026-10-18・利用者の決定）。
+  既定の `%USERPROFILE%\image-reviewer-backups` は**アプリのプロセスから作れなかった**（`WinError 5`。
+  同じ持ち主のシェルからは作れた＝原因は未特定）。`#/settings` の「置き場を変える」で戻せる。
+  **同じドライブなので、ドライブが壊れた場合は両方失う。**
   `<data>` ごと消しても、そこから戻せる（`image-reviewer restore <dir>`。`<data>` の中は置き場にできない）。
   取れなかったときは**上部バーと `#/settings` に失敗の全文**が出る（黙って失敗しない）。
-- **未実装**: **トレイ（タスクトレイ常駐。常駐の実装がリポジトリに無い）**・**P2（カタログ。仮想フォルダ・
-  スマートフォルダ・ドラッグ&ドロップ / クリップボード / URL の取込）**・**P3 の残り（`userdata` への設置・
-  タグの統合と改名・本格的な検索・グラフの ComfyUI への設置）**・**プリセットの画面**・
-  **参照切れの再リンクの画面（口だけは P8-6 で作った。`POST /api/locations/relink`・
-  `GET /api/locations/missing`。`docs/p8-6-relink.md`）**・
-  **一覧 API のキーセット改ページ（P9 の実測で p95 244.7 ms。目標 20 ms に届いていない。
-  1 万枚が現実になるまで困らないので、入れる段を別に立てる。`docs/design.md` §12.1）**・
-  **一覧の仮想グリッドとページ送り（いまは `limit=2000` で 1 回引いて全部描く。1 万枚では
-  2000 枚で切れるので「先頭 2000 枚を表示」と出している）**。
+- **未実装**:
+  - **トレイ（タスクトレイ常駐）**——常駐の実装がリポジトリに無い。
+  - **P2（カタログ。仮想フォルダ・スマートフォルダ・ドラッグ&ドロップ / クリップボード / URL の取込）**。
+  - **P3 の残り**（`userdata` への設置・タグの統合と改名・本格的な検索・グラフの ComfyUI への設置）。
+  - **プリセットの画面**。
+  - **参照切れの再リンクの画面**（口だけは P8-6 で作った。`POST /api/locations/relink`・
+    `GET /api/locations/missing`。`docs/p8-6-relink.md`）。
+  - **一覧 API のキーセット改ページ**（P9 の実測で p95 244.7 ms。目標 20 ms に届いていない。
+    1 万枚が現実になるまで困らないので、入れる段を別に立てる。`docs/design.md` §12.1）。
+  - **一覧の仮想グリッドとページ送り**（いまは `limit=2000` で 1 回引いて全部描く。1 万枚では
+    2000 枚で切れるので「先頭 2000 枚を表示」と出している）。
 - **exe 化（PyInstaller）は「今は作らない」**（P9 の推奨）。**作れることは実測した**
   （PyInstaller 6.22.3 が Python 3.14 で動き、`--onedir` が 23.7 秒で 131.9 MB。
   起動は 0.53 秒で、いまの `uv` 経由（1.05 秒）より速い）が、**`apps/gui` の解決が 1 か所足りず
@@ -167,13 +182,15 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/p8-review-triage.md`](docs/p8-review-triage.md) | P8 の指摘の仕分け（**全部採用**。実データの数え直しつき） | — |
 | [`docs/p8-0-implementation.md`](docs/p8-0-implementation.md) | **P8-0 の実装の記録**（v6 の表と `backup-manifest` の契約。機能は足さない） | — |
 | [`docs/p8-1-implementation.md`](docs/p8-1-implementation.md) | **P8-1 の実装の記録**（pHash の背景ジョブ・帯・完全重複と準重複・代表の推薦・除外と解除） | — |
-| [`docs/p8-2-implementation.md`](docs/p8-2-implementation.md) · [`docs/p8-3-implementation.md`](docs/p8-3-implementation.md) · [`docs/p8-4-implementation.md`](docs/p8-4-implementation.md) · [`docs/p8-5-implementation.md`](docs/p8-5-implementation.md) | **P8-2〜P8-5 の実装の記録**（削除の 3 段階と凍結 / 重複と削除の画面 / バックアップと復元 / 設定と文言の仕上げ） | — |
+| [`docs/p8-2-implementation.md`](docs/p8-2-implementation.md)、[`docs/p8-3-implementation.md`](docs/p8-3-implementation.md)、[`docs/p8-4-implementation.md`](docs/p8-4-implementation.md)、[`docs/p8-5-implementation.md`](docs/p8-5-implementation.md) | **P8-2〜P8-5 の実装の記録**（削除の 3 段階と凍結 / 重複と削除の画面 / バックアップと復元 / 設定と文言の仕上げ） | — |
 | [`docs/p8-6-relink.md`](docs/p8-6-relink.md) | **P8-6（参照切れの再リンク）の実装の記録**（`POST /api/locations/relink` と `GET /api/locations/missing`・`location_history` の 3 列・`create_app()` の硬化・**事故 3 件目**・設計の穴 6 件・申し送り） | — |
 | [`docs/p8-audit-brief-p8-0.md`](docs/p8-audit-brief-p8-0.md)（1・2・4 も同形） | P8 の監査の指示書 | — |
-| [`docs/p8-0-audit-report.md`](docs/p8-0-audit-report.md) · [`docs/p8-1-audit-report.md`](docs/p8-1-audit-report.md) · [`docs/p8-2-audit-report.md`](docs/p8-2-audit-report.md) · [`docs/p8-3-audit-report.md`](docs/p8-3-audit-report.md) · [`docs/p8-4-audit-report.md`](docs/p8-4-audit-report.md) · [`docs/p8-5-audit-report.md`](docs/p8-5-audit-report.md) | **P8 の監査報告**（**実行込み**。判定はどれも「合格（条件つき）」→ 指摘は全部反映。**P8-5 の条件 3 件だけ未反映**） | — |
-| [`docs/p8-2-audit-recheck.md`](docs/p8-2-audit-recheck.md) · [`docs/p8-3-audit-recheck.md`](docs/p8-3-audit-recheck.md) · [`docs/p8-4-audit-recheck.md`](docs/p8-4-audit-recheck.md) | 監査の**再確認**（直した物が実行で直っているか。P8-3 は「合格（条件なし）」） | — |
-| [`docs/p8-0-audit-triage.md`](docs/p8-0-audit-triage.md) · [`docs/p8-1-audit-triage.md`](docs/p8-1-audit-triage.md) · [`docs/p8-2-audit-triage.md`](docs/p8-2-audit-triage.md) · [`docs/p8-3-audit-triage.md`](docs/p8-3-audit-triage.md) · [`docs/p8-4-audit-triage.md`](docs/p8-4-audit-triage.md) · [`docs/p8-2-audit-recheck-triage.md`](docs/p8-2-audit-recheck-triage.md) | 監査の指摘の仕分け（1 行ずつ理由つき） | — |
+| [`docs/p8-0-audit-report.md`](docs/p8-0-audit-report.md)、[`docs/p8-1-audit-report.md`](docs/p8-1-audit-report.md)、[`docs/p8-2-audit-report.md`](docs/p8-2-audit-report.md)、[`docs/p8-3-audit-report.md`](docs/p8-3-audit-report.md)、[`docs/p8-4-audit-report.md`](docs/p8-4-audit-report.md)、[`docs/p8-5-audit-report.md`](docs/p8-5-audit-report.md) | **P8 の監査報告**（**実行込み**。判定はどれも「合格（条件つき）」→ 指摘は全部反映。**P8-5 の条件 3 件だけ未反映**） | — |
+| [`docs/p8-2-audit-recheck.md`](docs/p8-2-audit-recheck.md)、[`docs/p8-3-audit-recheck.md`](docs/p8-3-audit-recheck.md)、[`docs/p8-4-audit-recheck.md`](docs/p8-4-audit-recheck.md) | 監査の**再確認**（直した物が実行で直っているか。P8-3 は「合格（条件なし）」） | — |
+| [`docs/p8-0-audit-triage.md`](docs/p8-0-audit-triage.md)、[`docs/p8-1-audit-triage.md`](docs/p8-1-audit-triage.md)、[`docs/p8-2-audit-triage.md`](docs/p8-2-audit-triage.md)、[`docs/p8-3-audit-triage.md`](docs/p8-3-audit-triage.md)、[`docs/p8-4-audit-triage.md`](docs/p8-4-audit-triage.md)、[`docs/p8-2-audit-recheck-triage.md`](docs/p8-2-audit-recheck-triage.md) | 監査の指摘の仕分け（1 行ずつ理由つき） | — |
 | [`docs/p8-3-band-miss.md`](docs/p8-3-band-miss.md) | **帯の取りこぼしの調査**（8bit × 8 本 → **4bit × 16 本**に作り直した根拠。距離 0〜64 の総当たりとの一致） | — |
+| [`docs/p9-implementation.md`](docs/p9-implementation.md)、[`docs/p9-audit-report.md`](docs/p9-audit-report.md)、[`docs/p9-audit-triage.md`](docs/p9-audit-triage.md) | **P9 の記録**（§12.1 の実測・exe 化の判断）と、その**監査報告**（C-1〜C-3・D 10 件・G 6 件）と**仕分け**（指摘ごとに 1 行。C-1 は新しい読み取り専用の接続で `quick_check`） | — |
+| [`docs/wording-audit-report.md`](docs/wording-audit-report.md)、[`docs/wording-fix.md`](docs/wording-fix.md) | **ワーディング監査**（利用者に見える日本語 約 1,200 行を 1 行ずつ見た報告。判定は「自然」で、原因は中国語ではなく**癖 3 つ**）と、その**修正の記録**（規則 3 つ・直した 141 件・食い違い 24 行の裁定・用語の対応表・残した物） | — |
 | [`schemas/backup-manifest.schema.json`](schemas/backup-manifest.schema.json) | **日次スナップショットの `manifest.json` の契約**（`restore` が復元の前に読む。`abi: 0.1`） | — |
 
 - P5 の点検・監査の**生ログ（`docs/p5-review-run.jsonl` / `p5-audit-run.jsonl` / `p5-2-audit-run.jsonl` /
@@ -200,11 +217,11 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | 他のツールから結果を読む | REST `GET /api/export/review.json` ＋ `<data>/export/review.json`（版付き契約） |
 | タグの無い画像にタグを付ける | **この環境の既定は ComfyUI の `IllustTagger`**（`settings` の `tagger.engine=comfyui`・`tagger.node=illust`。0.27 秒/枚）。内蔵 WD14（`onnxruntime-gpu`、`tagger.engine=auto` で内蔵優先）も選べる（**いまは CPU 版しか入っていないので 1.30 秒/枚**） |
 | 重複を整理する | 内容ハッシュ（完全重複）と知覚ハッシュ（準重複。**距離 ≤ 6 が既定**）。**代表は推薦するだけ**で自動では外さない。「**別物として確定**」は後から解除できる |
-| 本当に消す（3 段階） | **段 1 印 → 段 2 ゴミ箱 → 段 3 実削除**。実削除は**5 分間取り消せる**（元の場所が埋まっていても**上書きしない**）。一括は**凍結 → 実行**（凍結した一覧だけを消す）。**エージェントも消せる**（1 回 200 枚まで・**誰が消したか**を残す） |
+| 本当に消す（3 段階） | **段 1 カタログから外す → 段 2 ゴミ箱 → 段 3 実体を消す**。実体を消した後も**5 分間取り消せる**（元の場所が埋まっていても**上書きしない**）。一括は**凍結 → 実行**（凍結した一覧だけを消す）。**エージェントも消せる**（1 回 200 枚まで・**誰が消したか**を残す） |
 | 取っておく（バックアップ） | `<data>` の外へ**日次**（変わらないファイルは `os.link` で共有＝増分・**7 世代**）。`backup` / `restore` / `rebuild-metadata`。**壊れた写しは採用しない**（写しを開いて `quick_check` → `integrity_check`） |
 | 速く動く | 実測に基づく目標値（下記） |
 
-## 設計を決めた実機の事実
+## 実機で確かめたこと
 
 1. **英訳結果は PNG に残らない。** ComfyUI の `TextGenerate`（利用者の言う「TextGenerator」の実体。
    本体同梱の `comfy_extras/nodes_textgen.py`）の出力は実行時の値で、`/history` にもメモリ上しか残らない。
@@ -227,7 +244,8 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | SHA-256 | 399 MB/s（300 枚で計測） | **28 秒**（11.1 GB = 1.11 MB/枚） |
 | サムネイル生成（WebP 256px、1 スレッド） | 36 枚/秒 | 4.6 分 |
 
-→ メタデータ抽出は性能上の問題にならない。**ハッシュとサムネイルが実費**で、どちらも目標に収まる。
+→ メタデータ抽出は性能上の問題にならない。**本当に時間がかかるのはハッシュとサムネイル**で、
+どちらも目標に収まる。
 
 **P8 で測った物**（設計 [`docs/design.md`](docs/design.md) §12.3）: pHash の全件計算 **14.8 ms/枚**（復号込み。
 1 万枚で約 2.5 分）／準重複の検出（263 枚）**帯の候補づくり 46〜52 ms**（**距離 0〜64 のすべてで総当たりと一致・
@@ -240,7 +258,7 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 **いま入っているもの**: Python 3.12 以上（実測 3.14.7）/ uv / FastAPI / uvicorn / SQLite(WAL) / Pillow / numpy
 （依存は `fastapi` / `uvicorn` / `pillow` / `numpy`。テストの `httpx` は dev だけ）。
 前面は**素の JavaScript**（`apps/gui/*.js`。フレームワークなし）。
-既定ポート **8790**。データ置き場は `<リポジトリ>/.data`。
+既定ポート **8790**。アプリの置き場は `<リポジトリ>/.data`。
 
 **目標（未着手）**: `onnxruntime-gpu`（内蔵タガー）、`pystray` と**タスクトレイ常駐**、
 ショートカット起動、前面の **TypeScript + Vite**（開発サーバは **5273**）。
@@ -260,13 +278,22 @@ uv run image-reviewer serve --port 8790
 ## 次にすること
 
 **P9（仕上げ）は完了**（2026-10-18。[`docs/p9-implementation.md`](docs/p9-implementation.md)）。
+**P9 の監査（[`docs/p9-audit-report.md`](docs/p9-audit-report.md)。判定「合格（条件つき）」）の
+指摘も全部直した**（2026-10-19。[`docs/p9-audit-triage.md`](docs/p9-audit-triage.md)）——
+**C-1**（走ったまま壊れた DB の入口が、**書き込んだ接続のページキャッシュ**越しに見ていて
+小さい DB では見落としていた → **新しい読み取り専用の接続**で `quick_check`）・
+**C-2**（画面の「枚」が 262 と 455 で食い違っていた → **生きた枚**に統一）・
+**C-3**（「同時 8 本」は実装に無い見込み・`state=kept` は 0 件への絞り込みだった）。
 **`docs/design.md` §12.1 の「目標」の行は全部実測で埋まった**（未計測 0）。
 新しく作った道具は `tools/make_synthetic_db.py`（1 万枚の合成 DB）と `tools/probe_p9.py`（サーバ内の計測）。
 **この段で見つけて直した物**（P8-6 の申し送りと、計測の途中で見つかった物）:
-①`PRAGMA temp_store = MEMORY` が実装に無く、**1 万枚の一覧が 500 になっていた**ので入れた
-②`PRAGMA cache_size = -65536` は**入れなかった**（走ったまま壊れた DB の検知が壊れるため）
-③`sqlite_error_handler` が**壊れていない DB に「バックアップから戻してください」と言っていた**（語彙を分けた）
-④一覧が `limit=2000` で切れるのに**上部が全枚数と言っていた**ので「先頭 2000 枚を表示」と出した。
+
+1. `PRAGMA temp_store = MEMORY` が実装に無く、**1 万枚の一覧が 500 になっていた**ので入れた。
+2. `PRAGMA cache_size = -65536` は**入れなかった**（**実利が無い**。監査 C-1 で理由を書き直した——
+   「安全のため」では**なかった**。既定でも小さい DB の壊れは見落としていた）。
+3. `sqlite_error_handler` が**壊れていない DB に「バックアップから戻してください」と言っていた**（語彙を分けた）。
+4. 一覧が `limit=2000` で切れるのに**上部が全枚数と言っていた**ので「先頭 2000 枚を表示」と出した。
+
 **届かなかったのは一覧 API の 1 行だけ**（p95 244.7 ms / 目標 20 ms。**目標は下げていない**）。
 
 1. **次にやるなら**（**どれも利用者の判断**）:
@@ -289,7 +316,8 @@ uv run image-reviewer serve --port 8790
      `POST /api/export/review.json` だけ（`GET` は返すだけで書かない）。
    - **色ヒストグラム距離は未実装**（[`docs/comparison.md`](docs/comparison.md) §4）。
    - **`asset.phash` / `dhash` に版が無い。** 縮小の仕方や入力を変えたときは `NULL` に戻す手当てが要る。
-3. **利用者に確かめてほしいこと（バックアップ）**: いまの 8790 は**エージェントの sandbox の中で立っている**ため、
-   既定の `%USERPROFILE%\image-reviewer-backups` に書けず、**日次が 0 個**である（`GET /api/backup` の
-   `last_error` に `WinError 5` が出ている。P8-4 の再確認 B-1'）。**利用者が自分の端末（sandbox の外）で
-   8790 を立て直す**と取れるようになる（`count` が 1 以上になったことを 1 度確かめる）。
+- **バックアップは取れている（2026-10-19 に確かめた）。** 置き場は `.backup\daily\` で、そこに **3 世代**ある
+  （`20261018` / `20261018-171143` / **`20261019`**。最新は 2026-10-19 00:00:15 に取れている）。
+  `GET /api/backup` の `count` が 1 以上になることを確かめてある。
+  **以前ここに書いていた「日次が 0 個である（`WinError 5`）」は古い事実**（P8-4 の再確認 B-1' の時点の話）。
+  利用者が自分の端末から 8790 を立て直した後、**日次が取れていることを確かめた**。

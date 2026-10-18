@@ -445,7 +445,7 @@ class Store:
             if self._con.execute(
                 "SELECT 1 FROM asset WHERE id = ?", (asset_id,)
             ).fetchone() is None:
-                raise KeyError(f"asset が無い: {asset_id}")
+                raise KeyError(f"asset がありません: {asset_id}")
             if self._con.execute(
                 "SELECT 1 FROM asset_meta WHERE asset_id = ?", (asset_id,)
             ).fetchone() is None:
@@ -476,7 +476,7 @@ class Store:
             if self._con.execute(
                 "SELECT 1 FROM asset WHERE id = ?", (asset_id,)
             ).fetchone() is None:
-                raise KeyError(f"asset が無い: {asset_id}")
+                raise KeyError(f"asset がありません: {asset_id}")
             self._con.execute("UPDATE asset SET phash = ?, dhash = ? WHERE id = ?",
                               (phash, dhash, asset_id))
             # **（P8-1。設計 §0.5）帯も一緒に入れ直す。** 帯は「近い pHash を引く」ための索引で、
@@ -504,7 +504,7 @@ class Store:
             if self._con.execute(
                 "SELECT 1 FROM asset WHERE id = ?", (asset_id,)
             ).fetchone() is None:
-                raise KeyError(f"asset が無い: {asset_id}")
+                raise KeyError(f"asset がありません: {asset_id}")
             if state == "unreviewed":
                 self._con.execute(
                     "UPDATE asset SET review_state = 'unreviewed', review_reason_code_id = NULL,"

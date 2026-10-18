@@ -325,14 +325,14 @@ check(diffHtml.includes('tr class="row changed"'), '違う行を描いている'
 check(!diffHtml.includes('tr class="row same"'), '既定では同じ行を描かない（畳む）');
 check(diffHtml.includes('同じ 1 行は畳んであります'), '畳んだ行数を出している');
 check(diffHtml.includes('tr class="row incomplete"'), '分からない枚がある行も描いている（監査 B2）');
-check(diffHtml.includes('badge incomplete') && diffHtml.includes('一部不明'),
+check(diffHtml.includes('badge incomplete') && diffHtml.includes('一部が分からない'),
   '分からない枚がある行に印が出る（監査 B2）');
 check(diffHtml.includes('class="cell unknown"') && diffHtml.includes('分からない'),
   '分からないセルを「分からない」と描く（監査 B2）');
 check(diffHtml.includes('前置語: (masterpiece'), '分かっている前置語を添えている（監査 B2）');
 check(!/class="cell unknown"[^>]*>—</.test(diffHtml), '分からないセルを「無い（—）」と描かない');
-check(diffHtml.includes('訳が未捕獲（分からない）'), '語の差分に「分からない」を出す');
-check(diffHtml.includes('訳が未捕獲の枚がある'), '語の差分の要約が「同じ」と言わない');
+check(diffHtml.includes('訳を捕獲していない（分かりません）'), '語の差分に「分からない」を出す');
+check(diffHtml.includes('訳を捕獲していない画像がある'), '語の差分の要約が「同じ」と言わない');
 // 監査 C1（数値の書体）: 数値のセルだけ `num` を付ける（等幅版の一族を当てるため）
 check(/class="cell changed num"/.test(diffHtml),
   'seed のセルに num を付ける（監査 C1。`seed` は kind が text でも数値）');
@@ -844,7 +844,7 @@ check(writes.length === 0 && nothing.calls === 0,
   'id が分からない語では模型を回さない（押さなければ 0 回。§8.2-4）');
 
 check(tagsUi.panelHtml(TAG_PANEL).includes('訳す（20 語まで）'), 'まとめて訳すの口を出す');
-check(tagsUi.panelHtml(TAG_PANEL).includes('タガーは下ごしらえです'),
+check(tagsUi.panelHtml(TAG_PANEL).includes('タガーは下ごしらえで、手の破綻までは読めません。'),
   'タガーの限界の 1 行を出す（§5.1）');
 check(tagsUi.briefHtml(TAG_PANEL).includes('語釈待ち 3 語'),
   `語釈待ちの数を出す: ${tagsUi.briefHtml(TAG_PANEL)}`);
@@ -855,8 +855,8 @@ const running = { id: 'j1', kind: 'tag', state: 'running', progress: { done: 3, 
                   items_failed: [{ ref: 'a1', error: '実体がありません' }] };
 const jobHtml = jobsUi.jobHtml(running);
 check(jobHtml.includes('3 / 10'), 'ジョブの進行を出す（§8.2-8）');
-check(jobHtml.includes('残り 約'), '残り時間を出す（§8.2-8）');
-check(jobHtml.includes('実行中') && jobHtml.includes('中断'), '実行中は中断を出す');
+check(jobHtml.includes('残り約'), '残り時間を出す（§8.2-8）');
+check(jobHtml.includes('進行中') && jobHtml.includes('中断'), '進行中は中断を出す');
 check(jobsUi.jobHtml({ ...running, state: 'cancelled' }).includes('中断'),
   '`cancelled` の印を出す（§8.2-8）');
 check(jobsUi.jobHtml(running).includes('実体がありません'), '失敗の理由を出す（§5.3）');
@@ -928,7 +928,7 @@ const DUP_NEAR = {
   max_distance: 6, hashed: 91, unhashed: 2, total_groups: 1, total_images: 3,
   excluded_pairs: 1,
   groups: [{
-    suggested_id: 'a2', reason: '画素数が最大', max_distance_within: 3, count: 3,
+    suggested_id: 'a2', reason: '画素数がいちばん多い', max_distance_within: 3, count: 3,
     items: [DUP_ITEM('a1', { verdict: 'reject' }), DUP_ITEM('a2', { verdict: 'keep' }),
             DUP_ITEM('a3', { path: '<script>alert(1)</script>' })],
   }],
@@ -1003,6 +1003,7 @@ const PREVIEW_BODY = {
 let DUP_BODY = DUP_NEAR;
 let PREVIEW_NOW = PREVIEW_BODY;
 let BULK_FAILS = null;                       // 409 の本文を入れると失敗の道を見られる
+let BULK_STAGE = 1;                          // 実行の応答の `stage`（P9 の監査 G-5 の検査用）
 let UNDO_FAILS = null;                       // **（監査 C-3）** 取り消しの失敗の道
 let PENDING_NOW = PENDING_BODY;              // 409 の後の読み直しを見るために差し替える
 const res = (body, status = 200) => ({
@@ -1036,8 +1037,8 @@ globalThis.fetch = async (url, options) => {
   }
   if (u.startsWith('/api/locations/bulk-delete')) {
     if (BULK_FAILS) return res(BULK_FAILS, 409);
-    return res({ preview_id: 'pv1', stage: 1, deleted: [], skipped: [], count: 2, bytes: 2_900_000,
-                 requested: 2, replayed: false });
+    return res({ preview_id: 'pv1', stage: BULK_STAGE, deleted: [], skipped: [], count: 2,
+                 bytes: 2_900_000, requested: 2, replayed: false });
   }
   if (u.startsWith('/api/pending-deletes') && u.endsWith('/undo')) {
     if (UNDO_FAILS) return res(UNDO_FAILS, 409);          // **（監査 C-3）** 失敗の道
@@ -1166,7 +1167,9 @@ globalThis.fetch = async (url, options) => {
   if (u.startsWith('/api/assets')) {
     asked.push(u);
     if (ASSETS_FAILS) return res({ detail: '読めません' }, 503);
-    return res({ items: Object.entries(ASSET_PATHS).map(([id, path]) => ({ id, path })) });
+    // **本物の形**（`GET /api/assets` は `total`＝生きた枚を返す。P9 の監査 C-2 で足した）
+    return res({ items: Object.entries(ASSET_PATHS).map(([id, path]) => ({ id, path })),
+                 total: Object.keys(ASSET_PATHS).length, next_cursor: null });
   }
   if (u.startsWith('/api/health/db')) {
     asked.push(u);
@@ -1220,14 +1223,14 @@ await dupUi.showDuplicates('?max=6');
 const dupHtml = String(el('dup-list').innerHTML || '');
 check(dupHtml.includes('同じ絵が 3 枚'), '群の枚数を出す');
 check(dupHtml.includes('距離 3'), '群の中の最大距離を出す（点検 C3）');
-check(dupHtml.includes('おすすめ: 2 番') && dupHtml.includes('画素数が最大'),
+check(dupHtml.includes('おすすめ: 2 番') && dupHtml.includes('画素数がいちばん多い'),
   `おすすめと理由を出す（Q4）: ${(dupHtml.match(/おすすめ[^<]*/) || [])[0]}`);
 check(dupHtml.includes('1024 × 1024') && dupHtml.includes('1.3 MB') && dupHtml.includes('2026-10-01'),
   '寸法・サイズ・日時を出す');
 check(dupHtml.includes('/api/assets/a1/thumb?size=256'), 'サムネイルを出す');
-check(dupHtml.includes('完全重複はありません。同じ中身が 2 か所以上にある物です。'),
+check(dupHtml.includes('完全重複はありません。同じ中身が 2 か所以上にあるものです。'),
   '完全重複が 0 のときの 1 行を出す（§0.4・§5）');
-check(dupHtml.includes('まだ計算していない枚が 2 枚あります。') && dupHtml.includes('計算する'),
+check(dupHtml.includes('まだ計算していない画像が 2 枚あります。') && dupHtml.includes('計算する'),
   `未計算の枚と「計算する」を出す: ${(dupHtml.match(/まだ計算[^<]*/) || [])[0]}`);
 // **（監査 G-4）固定の数を文言に埋めない**（別の置き場では嘘になる）
 check(!/263 枚で 2\.6 秒/.test(dupHtml) && dupHtml.includes('絵を読んで指紋を作ります'),
@@ -1236,7 +1239,7 @@ check(dupHtml.includes('&lt;script&gt;alert(1)&lt;/script&gt;') && !dupHtml.incl
   'パスの `<script>` を生のまま出さない');
 // **（P8-3 の取り落とし調査）**「別物として確定」で隠れている組の数を出す。出さないと
 // **群が 1 つ足りないのが帯の取りこぼしに見える**（実データで実際にそう見えた）
-check(dupHtml.includes('別物として確定で 1 組を隠しています'),
+check(dupHtml.includes('別物として確定した 1 組は隠しています。'),
   `隠れている組の数を出す: ${(dupHtml.match(/別物として確定[^<]*/) || [])[0]}`);
 DUP_BODY = { ...DUP_NEAR, excluded_pairs: 0 };
 await dupUi.showDuplicates('?max=6');
@@ -1341,9 +1344,9 @@ const stepped = pdUi.stepRemain([{ remaining_sec: 5 }, { remaining_sec: null }])
 check(stepped[0].remaining_sec === 4 && stepped[1].remaining_sec === null,
   '毎秒の見た目だけを減らす（`GET` は書かない）');
 const strip3 = pdUi.stageStrip(3);
-check(strip3.includes('1 印') && strip3.includes('2 ゴミ箱') && strip3.includes('3 実削除'),
+check(strip3.includes('1 カタログから外す') && strip3.includes('2 ゴミ箱') && strip3.includes('3 実体を消す'),
   `3 段階の進行を出す: ${strip3.replace(/</g, '‹')}`);
-check(/class="pd-step on">3 実削除/.test(strip3), 'いまの段に印を付ける');
+check(/class="pd-step on">3 実体を消す/.test(strip3), 'いまの段に印を付ける');
 check(!/class="pd-step on">1 印/.test(strip3), '前の段には印を付けない');
 
 // 8. 行の描画（誰が・残り時間・戻せない理由）
@@ -1357,7 +1360,7 @@ check(pdUi.fmtWhen('2026-10-18T03:15:00Z') !== '—' && /^\d{4}-\d{2}-\d{2} \d{2
 check(!/pd-step on/.test(pdUi.legendHtml()), '凡例の段には印を付けない（行と見分ける）');
 const runHtml = String(el('pd-running').innerHTML || '');
 check(runHtml.includes('あと 3:12'), '残り時間を出す');
-check(runHtml.includes('エージェント') && runHtml.includes('・ 人 ・'),
+check(runHtml.includes('エージェント') && runHtml.includes('、人、'),
   '誰が消したかを語で出す（Q2 の帰結 b）');
 // **（監査 G-3）戻せなかった理由を 4 通りに分ける**（前の版は `target_exists` でも
 // 「保留していたファイルが見つかりません」と出ていた）
@@ -1468,7 +1471,7 @@ let confirmHtml = String(el('pd-confirm').innerHTML || '');
 check(confirmHtml.includes('選んだ 2 枚') && confirmHtml.includes('消す物を確かめる'),
   '渡された枚と「消す物を確かめる」を出す');
 check(confirmHtml.includes('段 1 カタログから外す') && confirmHtml.includes('段 2 ゴミ箱へ移す')
-  && confirmHtml.includes('段 3 完全に消す用意をする'), '段を 3 つ出す');
+  && confirmHtml.includes('段 3 実体を消す用意をする'), '段を 3 つ出す');
 check(pdUi.stageTaken() === 1, '既定は段 1（いきなり消さない）');
 check(pdUi.askStage(3) === true && pdUi.stageTaken() === 3, '段を選べる');
 pdUi.askStage(1);
@@ -1482,7 +1485,7 @@ const pvBody = JSON.parse(String(pvPosts[0]?.body || '{}'));
 check(pvBody.stage === 1 && pvBody.scope.asset_ids.join(',') === 'a1,a2',
   `段と枚を送る: ${JSON.stringify(pvBody)}`);
 confirmHtml = String(el('pd-confirm').innerHTML || '');
-check(confirmHtml.includes('2 枚 ・ 2.8 MB'), `凍結した件数と合計バイトを出す: ${(confirmHtml.match(/2 枚[^<]*/) || [])[0]}`);
+check(confirmHtml.includes('2 枚、2.8 MB'), `凍結した件数と合計バイトを出す: ${(confirmHtml.match(/2 枚[^<]*/) || [])[0]}`);
 check(confirmHtml.includes('D:\\lib\\A1.png'), '対象の一覧そのもの（パスとサイズ）を出す');
 check(confirmHtml.includes('カタログから外すだけです') && confirmHtml.includes('容量は空きません'),
   'いつ空くかを出す（段 1 は空かない。§8.1 の 16）');
@@ -1497,6 +1500,22 @@ check(blBody.confirm === true && blBody.preview_id === 'pv1', `confirm と previ
 check(blBody.client_token && blBody.client_token.length > 8, '二重に消さない鍵を付ける（§0.13）');
 check(String(el('pd-confirm').innerHTML || '').includes('2 枚を消す用意をしました。'),
   '消す用意ができたことを知らせる');
+// **（P9 の監査 G-5）段 1・3 の直後に「いま取る」の道を 1 行で案内する**（自動では取らない）
+check(String(el('pd-confirm').innerHTML || '').includes('いま取る'),
+  `段 1 の直後に控えの道を案内する（G-5）: ${(String(el('pd-confirm').innerHTML || '').match(/控えは[^<]*/) || [])[0]}`);
+check(String(el('pd-confirm').innerHTML || '').includes('#/settings'),
+  '案内は設定（「いま取る」のある画面）へ行く');
+BULK_STAGE = 2;                                    // 段 2（ゴミ箱）では案内しない
+await pdUi.showPending('?ids=a1,a2');
+pdUi.askStage(2);
+await pdUi.preview();
+el('pd-confirm').dispatch('click', { target: hitOf('.pd-exec', {}) });
+await tick();
+await tick();
+check(!String(el('pd-confirm').innerHTML || '').includes('いま取る'),
+  '段 2（ゴミ箱へ移す）では控えの案内を出さない（戻せるので急がない）');
+BULK_STAGE = 1;
+pdUi.askStage(1);
 
 // 14. 最後の 1 つは重い確認（段 3 のときだけ。§8.1 の 43）
 PREVIEW_NOW = { ...PREVIEW_BODY, stage: 3, last_copies: 1, not_allowed_count: 1,
@@ -1509,11 +1528,11 @@ check(confirmHtml.includes('最後の 1 つが 1 枚あります') && confirmHtm
   '最後の 1 つは重い確認を出す');
 // **（監査 G-4）段 3 の前置きは実際の置き場から組む**（固定のツール名を埋め込まない）。
 // 印が無いのは `D:\lib` だけなので、そこだけ出す（`C:\other` には印がある）
-check(confirmHtml.includes('この置き場は段 3 の印が付いていません（D:\\lib）'),
+check(confirmHtml.includes('この置き場は段 3 の許可が付いていません（D:\\lib）'),
   `段 3 の前置きを実際の置き場から組む（監査 G-4）: ${(confirmHtml.match(/この置き場[^<]*/) || [])[0]}`);
 check(!confirmHtml.includes('illust-authoring') && !confirmHtml.includes('C:\\other'),
   '固定の名前を埋め込まない（印のある置き場は黙る。監査 G-4）');
-check(confirmHtml.includes('印の無い置き場の 1 枚'), '段 3 にできない枚を出す（D-2）');
+check(confirmHtml.includes('許可の無い置き場の 1 枚'), '段 3 にできない枚を出す（D-2）');
 writes.length = 0;
 el('pd-confirm').dispatch('click', { target: hitOf('.pd-exec', {}) });
 await tick();
@@ -1563,7 +1582,7 @@ check(String(el('pd-running').innerHTML || '').includes('あと 3:12'), '本体�
 // 数えていたので、**段 1 で外した 88 枚があっても入口が出ず、戻す導線が見えなかった**。
 // `pending()` は P8-5 で段 1〜3 を返しているので、入口もそれに合わせる。
 badge.renderDeleteBadge(PENDING_BODY.items);
-check(el('stat-deletes').textContent === '最近の削除 5 ・ あと 0:10',
+check(el('stat-deletes').textContent === '最近の削除 5（あと 0:10）',
   `入口に件数と残り時間（いちばん短い物）を出す: ${el('stat-deletes').textContent}`);
 check(el('stat-deletes').hidden === false, 'まだ戻せる行があるときは出す');
 // **段 1 の行だけ**（窓が無い）でも出す。件数は出し、**残り時間は出さない**（窓が無いので嘘になる）
@@ -1643,6 +1662,19 @@ check(el('stat-backup').textContent === '読み取り専用です', '読み取�
 badge.renderBackupBadge(null, { status: 503 });
 check(el('stat-backup').textContent === '読み取り専用です' && el('stat-backup').hidden === false,
   '状態が読めない（503）ときも同じ場所に出す（P8-4 の再確認 D-2・G-4）');
+// **（P9 の監査 D-1 / D-2）一時的な 503 を「読み取り専用」と言わない。**
+// `disk i/o error`（503 `io_error`）と `database is locked`（503 `busy`）は**もう一度で直る**
+badge.renderBackupBadge({ code: 'io_error', detail: 'DB の読み書きで一時的なエラーが起きました' },
+                        { status: 503 });
+check(el('stat-backup').textContent === 'バックアップに失敗しています'
+  && !String(el('stat-backup').title).includes('読み取り専用'),
+  `一時的な 503 は読み取り専用と言わない（D-1）: ${el('stat-backup').textContent}`);
+badge.renderBackupBadge({ code: 'busy', detail: 'DB がいま混んでいます' }, { status: 503 });
+check(el('stat-backup').textContent === 'バックアップに失敗しています',
+  `混んでいるだけの 503 も同じ（D-2）: ${el('stat-backup').textContent}`);
+check(badge.isReadOnlyStatus(503, { code: 'db_error' }) === true
+  && badge.isReadOnlyStatus(503, { code: 'busy' }) === false,
+  '読み取り専用の語彙は 1 か所（db_error / read_only / code なし）');
 badge.renderBackupBadge(null);
 check(el('stat-backup').hidden === true, '取れないだけなら出さない（古いサーバでも止めない）');
 // 印は**上部バー**にあり、押すと `#/settings` へ行く（**下の画面に埋めない**）
@@ -1665,10 +1697,10 @@ check(el('stat-scan').hidden === true, '取れないときは出さない（古�
 // 19. 設定の画面: バックアップの状態（**最後の失敗の全文**。B-1'）
 check(stUi.lastTakenAt(BACKUP_NOW) === '2026-10-18T03:15:00Z',
   `最後に取った時刻は daily / manual だけから（pre-topup を数えない。D-5）: ${stUi.lastTakenAt(BACKUP_NOW)}`);
-check(stUi.kindText('pre-topup') === '表の形を変える前の控え'
-  && stUi.kindText('daily') === '日次' && stUi.kindText('manual') === '取り直す'
+check(stUi.kindText('pre-topup') === '表の形を変える前'
+  && stUi.kindText('daily') === '日次' && stUi.kindText('manual') === '取り直し'
   && stUi.kindText('nazo') === 'その他',
-  '控えの種類は利用者の言葉で出す（`kind` をそのまま出さない。文言表は「取り直す」。D-1）');
+  '控えの種類は利用者の言葉で出す（`kind` をそのまま出さない。文言表は「取り直し」。D-1）');
 writes.length = 0;
 settingsWrites.length = 0;
 await stUi.showSettings();
@@ -1679,14 +1711,14 @@ check(bkHtml.includes('C:\\work\\image-reviwer\\.backup\\daily') && bkHtml.inclu
   '置き場と、それが設定の値か既定かを出す');
 check(bkHtml.includes('今日の分は取れています。'), '今日の分の状態を出す（文言表の文。D-2）');
 check(!bkHtml.includes('（次は'), '「今日の分」に括弧を重ねない（API の `next_run_note` は出さない。D-2）');
-check(bkHtml.includes('3 個の控えがあります（直近 7 個を残します）'), '控えの数と残す数を出す');
+check(bkHtml.includes('バックアップが 3 世代あります（直近 7 世代を残します）'), '控えの数と残す数を出す');
 check(bkHtml.includes("[WinError 5] アクセスが拒否されました: "
   + "'C:\\Users\\yukse\\image-reviewer-backups'"),
   `最後の失敗を**全文**で出す（B-1'）: ${(bkHtml.match(/st-failed[\s\S]{0,60}/) || [])[0]}`);
 check(bkHtml.includes('置き場を作れないときは、書き込める場所に変えてください。'),
   '次にできることを 1 行で出す');
 check(bkHtml.includes('20261018-121500') && bkHtml.includes('日次') && bkHtml.includes('取り直す')
-  && bkHtml.includes('表の形を変える前の控え'), '直近の一覧を種類つきで出す');
+  && bkHtml.includes('表の形を変える前'), '直近の一覧を種類つきで出す');
 check(/class="st-now"[^>]*>取り直す</.test(bkHtml),
   `ボタンは「取り直す」（文言表が正。D-1）: ${(bkHtml.match(/class="st-now"[^>]*>[^<]*/) || [])[0]}`);
 check(bkHtml.includes('placeholder="絶対パス"'), '置き場の入力に「絶対パス」と書く（D-9）');
@@ -1705,20 +1737,20 @@ BACKUP_NOW = { ...BACKUP_BODY, snapshots: [...BACKUP_BODY.snapshots,
   { name: '20261018-130000', kind: 'manual', created_at: '2026-10-18T04:00:00Z',
     bytes: 1000, ok: false }] };
 await stUi.showSettings();
-check(String(el('st-backup').innerHTML || '').includes('控えを読めません'),
-  '読めない控えは「控えを読めません」と出す（D-6）');
+check(String(el('st-backup').innerHTML || '').includes('バックアップを読めません'),
+  '読めないバックアップは「バックアップを読めません」と出す（D-6）');
 BACKUP_NOW = BACKUP_BODY;
 await stUi.showSettings();
 
 // 20. 設定の画面: 置き場ごとの「段 3 を許す」印（Q8）
 let rtHtml = String(el('st-roots').innerHTML || '');
-check(rtHtml.includes('印あり') && rtHtml.includes('印なし'), '置き場ごとに印の状態を出す');
-check(rtHtml.includes('印を外す') && rtHtml.includes('この置き場で段 3 を許す'),
+check(rtHtml.includes('許可あり') && rtHtml.includes('許可なし'), '置き場ごとに段 3 の許可の状態を出す');
+check(rtHtml.includes('許可を外す') && rtHtml.includes('この置き場で段 3 を許す'),
   '付け外しのボタンを分ける');
-check(rtHtml.includes('印の無い置き場では段 3（実ファイルの削除）を選べません。段 1・2 はいつでも使えます。'),
-  '印の意味を 1 行で書く');
-check(el('st-brief').textContent === '3 個の控え ・ 段 3 の印 1 / 2',
-  `見出しに控えと印の数を出す: ${el('st-brief').textContent}`);
+check(rtHtml.includes('許可の無い置き場では段 3（実体を消す）を選べません。段 1・2 はいつでも使えます。'),
+  '許可の意味を 1 行で書く');
+check(el('st-brief').textContent === 'バックアップ 3 世代、段 3 の許可 1 / 2',
+  `見出しにバックアップと許可の数を出す: ${el('st-brief').textContent}`);
 
 // 21. **押す検査**: 印を付ける（1 回だけ・allow: true・**人だと名乗る**）
 writes.length = 0;
@@ -1819,8 +1851,8 @@ check(el('st-brief').textContent === '読み取り専用', `見出しも読み�
 const roAllow = buttonIn('st-roots', 'st-allow');
 check(roAllow.seen && roAllow.disabled,
   `読み取り専用では印のボタンも押せなくする（§6「書き込みのボタンは押せなくする」）: ${JSON.stringify(roAllow)}`);
-check(String(el('st-roots').innerHTML || '').includes('読み取り専用で開いているので、印は変えられません。'),
-  '印が変えられない理由を 1 行で出す');
+check(String(el('st-roots').innerHTML || '').includes('読み取り専用で開いているので、許可は変えられません。'),
+  '許可が変えられない理由を 1 行で出す');
 
 // 25b. **版が新しい DB**（`GET /api/backup` は 200 だが `read_only`。§6・C-3）
 BACKUP_STATUS = 200;
@@ -1856,10 +1888,10 @@ await pdUi.showPending('?ids=a1,a2');
 let pdConfirm = String(el('pd-confirm').innerHTML || '');
 check(!pdConfirm.includes('value="3"') && pdConfirm.includes('value="1"')
   && pdConfirm.includes('value="2"'),
-  '印の無い置き場では段 3 を出さない（段 1・2 だけ。Q8・E-3）');
-check(pdConfirm.includes('この置き場には段 3 の印がありません。段 1・2 だけ選べます。印は設定で付けられます。'),
+  '許可の無い置き場では段 3 を出さない（段 1・2 だけ。Q8・E-3）');
+check(pdConfirm.includes('この置き場には段 3 の許可がありません。段 1・2 だけ選べます。許可は設定で付けられます。'),
   `断りの 1 行を出す: ${(pdConfirm.match(/この置き場[^<]*/) || [])[0]}`);
-check(pdConfirm.includes('href="#/settings"'), '印を付ける場所（設定）へ行ける');
+check(pdConfirm.includes('href="#/settings"'), '許可を付ける場所（設定）へ行ける');
 check(pdUi.askStage(3) === false && pdUi.stageTaken() === 1,
   '出していない段は押しても選ばない（段 1 のまま）');
 
@@ -1867,8 +1899,8 @@ check(pdUi.askStage(3) === false && pdUi.stageTaken() === 1,
 ASSET_PATHS = { a1: 'C:\\other\\A1.png', a2: 'C:\\other\\A2.png' };   // `C:\other` は印あり
 await pdUi.showPending('?ids=a1,a2');
 pdConfirm = String(el('pd-confirm').innerHTML || '');
-check(pdConfirm.includes('value="3"') && !pdConfirm.includes('段 3 の印がありません'),
-  '印のある置き場では段 3 を出す');
+check(pdConfirm.includes('value="3"') && !pdConfirm.includes('段 3 の許可がありません'),
+  '許可のある置き場では段 3 を出す');
 check(pdUi.askStage(3) === true, '印のある置き場では段 3 を選べる');
 pdUi.askStage(1);
 
@@ -1920,6 +1952,62 @@ check(teRow.includes('>いま消す<') && teRow.includes('>別名で戻す<'), '
 const otherRow = pdUi.rowHtml({ ...PENDING_BODY.items[1], stuck_reason: 'move_failed' });
 check(otherRow.includes('「別名で戻す」か「いま消す」を選べます。'),
   '他の理由では今までどおり両方を案内する');
+
+// 31. **（P9 の監査 C-2）画面に出す「枚」は 1 つの規則**（生きた枚）。
+//     実データ: `/api/stats` の `assets` = 455（段 1〜3 で外した 193 枚を含む）、
+//     `GET /api/assets` の `total` = 262（生きた枚）。前は上部だけが 262 で、
+//     「すべて」(`#c-all`) と下部バーが 455 だった（同じ画面に 2 つの数）。
+const countsUi = await import('../apps/gui/counts.js');
+const REAL_STATS = { assets: 455, with_provenance: 375, without_provenance: 80, missing: 0 };
+const live = countsUi.liveTotal(REAL_STATS, 262);
+check(live === 262, `上部と「すべて」は生きた枚: ${live}（455 と混ざらない）`);
+check(countsUi.briefText(live, 262) === '262 枚', `切れていないときは素の枚数: ${countsUi.briefText(live, 262)}`);
+check(countsUi.liveTotal(REAL_STATS, undefined) === 455,
+  '`total` が無い古いサーバでは /api/stats に落とす（画面を止めない）');
+// 一覧が全部そろっていれば内訳も生きた枚から（375+80=455 を持ち込まない）
+const liveItems = Array.from({ length: 262 }, (_, i) => ({ id: `x${i}`, has_provenance: i < 200 }));
+const prov = countsUi.provenanceCounts(liveItems, 262, REAL_STATS);
+check(prov.with === 200 && prov.without === 62,
+  `来歴あり／なしも生きた枚の内訳: ${prov.with} / ${prov.without}（stats の 375/80 を使わない）`);
+check(countsUi.briefText(10000, 2000) === '10000 枚（先頭 2000 枚を表示）',
+  `切れているときだけ添える: ${countsUi.briefText(10000, 2000)}`);
+
+// 32. **（ワーディング監査 G-12）左の列の「来歴あり」「来歴なし」は押したら絞る。**
+//     前は `data-filter="with" / "without"` を持っていて**押せるのに何も絞られなかった**
+//     （`visibleAssets()` が `kind:` と `model:` しか見ていなかった）。**軸の決め方を
+//     純関数（`filters.js`）にして、押したときの結果をここで固定する。**
+//     `app.js` は読み込まない（作り物の DOM では `route()` が走ってしまう）ので、
+//     絞り込みそのものを検査する——**押す検査は `gui_layout`（本物の Chrome）**が持つ。
+const filtersUi = await import('../apps/gui/filters.js');
+const FILTER_ITEMS = [
+  { id: 'f1', has_provenance: true, kind: 'generated', model: 'anima' },
+  { id: 'f2', has_provenance: false, kind: 'photo', model: 'unknown' },
+  { id: 'f3', has_provenance: false, kind: 'photo', model: 'unknown' },
+];
+check(filtersUi.railSelection('without', 'all').provenance === 'without'
+  && filtersUi.railSelection('without', 'all').filter === 'all',
+  `「来歴なし」を押すと来歴の軸が動く: ${JSON.stringify(filtersUi.railSelection('without', 'all'))}`);
+check(filtersUi.visibleAssets(FILTER_ITEMS, filtersUi.railSelection('without', 'all')).length === 2,
+  `「来歴なし」で 2 枚に絞る（前は 3 枚のまま）: ${
+    filtersUi.visibleAssets(FILTER_ITEMS, filtersUi.railSelection('without', 'all')).length}`);
+check(filtersUi.visibleAssets(FILTER_ITEMS, filtersUi.railSelection('with', 'all')).length === 1,
+  '「来歴あり」で 1 枚に絞る');
+check(filtersUi.visibleAssets(FILTER_ITEMS, filtersUi.railSelection('kind:photo', 'all')).length === 2,
+  '種別の行は今までどおり絞る（kind）');
+check(filtersUi.visibleAssets(FILTER_ITEMS, filtersUi.railSelection('model:anima', 'all')).length === 1,
+  'モデルの行も今までどおり絞る（model）');
+check(filtersUi.railSelection('kind:photo', 'without').provenance === 'all',
+  '左の列は 1 つだけ選べる（他の軸は外す）');
+// **（ワーディング監査 W-3）絞り込みで 0 枚のときに「まだ画像がありません」と言わない**
+check(filtersUi.emptyText(true).includes('条件に合う画像がありません')
+  && filtersUi.emptyText(true).includes('絞り込みを外すと全部が見えます'),
+  `絞り込みで 0 枚のときの文（W-3）: ${filtersUi.emptyText(true)}`);
+check(filtersUi.emptyText(false).includes('この入れ物にはまだ画像がありません'),
+  '絞り込みでないときは今までどおり（走査していない）');
+check(filtersUi.isFiltering('all', 'all') === false && filtersUi.isFiltering('all', 'without') === true,
+  '来歴の軸だけでも「絞り込み中」と数える');
+check(filtersUi.visibleAssets(FILTER_ITEMS, { filter: 'all', provenance: 'all' }).length === 3,
+  '軸が全部「すべて」なら全枚');
 
 console.log(failures.length ? `\n${failures.length} 件 NG` : '\nすべて ok');
 process.exit(failures.length ? 1 : 0);

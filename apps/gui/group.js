@@ -27,7 +27,7 @@ const KEEP_REASONS = '/api/reason-codes?applies_to=keep';
 const $ = (id) => document.getElementById(id);
 
 // 決定の語（画面は日本語。`selected` / `all_rejected` をそのまま出さない。監査 C5）
-const DECISION_LABEL = { selected: '1 枚に決めた', all_rejected: '全部ボツ' };
+const DECISION_LABEL = { selected: '1 枚を選んだ', all_rejected: '全部ボツ' };
 
 const state = {
   group: null,
@@ -57,7 +57,8 @@ export function itemLabel(row, index) {
   const at = (row.position ?? index) + 1;
   const word = { kept: 'キープ', rejected: 'ボツ' }[row.review_state] || '未判断';
   const reason = row.reason_label ? `（${row.reason_label}）` : '';
-  return `${at} 番 ・ ${word}${reason}`;
+  // **（ワーディング監査 W-19）** 半角の中点 `·` は使わない（全角の「・」か「、」。規則 1）
+  return `${at} 番、${word}${reason}`;
 }
 
 function render() {
@@ -69,15 +70,21 @@ function render() {
   const ai = state.request && state.request.ai && state.request.ai.pick_asset_id
     ? state.request.ai.pick_asset_id : null;
   const aiIndex = ai ? state.items.findIndex((row) => row.asset_id === ai) + 1 : 0;
-  $('group-brief').textContent = [
+  // **（ワーディング監査 W-17）** 中黒で 5 つのメタ情報を並べない（規則 1）。
+  // 「3 枚、1 枚選ぶ、未決定。」までを 1 文にし、要求と AI の推しは後ろに置く
+  const head = [
     `${state.items.length} 枚`,
-    group.policy === 'pick_one' ? '1 枚選ぶ' : group.policy === 'all_reject_only' ? 'ボツのみ' : '複数選べる（P6 の画面は 1 枚）',
+    // **（ワーディング監査 W-18）** 工程の番号（P6）を画面に出さない
+    group.policy === 'pick_one' ? '1 枚選ぶ' : group.policy === 'all_reject_only' ? 'ボツのみ' : '複数選べる（この画面では 1 枚）',
     group.state === 'decided'
       ? `決定済み（${DECISION_LABEL[group.decision] || group.decision || ''}）`   // 監査 C5: 日本語
       : '未決定',
-    state.request ? 'エージェントの要求' : null,
-    aiIndex ? `AI の推し: ${aiIndex} 番` : null,
-  ].filter(Boolean).join(' ・ ');
+  ].filter(Boolean).join('、');
+  let tail = '';
+  if (state.request && aiIndex) tail = `エージェントの要求（AI の推し: ${aiIndex} 番）`;
+  else if (state.request) tail = 'エージェントの要求';
+  else if (aiIndex) tail = `AI の推し: ${aiIndex} 番`;
+  $('group-brief').textContent = tail ? `${head}。${tail}` : head;
 
   // フィルムストリップ（隙間なく接する。選択中だけ `--accent` の上辺）
   if (strip) {
@@ -213,7 +220,7 @@ async function fillProv(assetId) {
       meta.seed != null ? `seed ${meta.seed}` : null,
       meta.steps != null ? `steps ${meta.steps}` : null,
       meta.cfg != null ? `cfg ${meta.cfg}` : null,
-    ].filter(Boolean).join(' · ');
+    ].filter(Boolean).join('、');
   } catch (error) {
     state.prov[assetId] = '';      // 引けなくても画面は出す（1 行が出ないだけ）
   } finally {
@@ -223,8 +230,16 @@ async function fillProv(assetId) {
   }
 }
 
+/** 理由の id から画面に出す語を引く（**記録後の帯に理由を出す**。§5-3・§6 の「決定」の行）。 */
+function reasonLabelOf(id) {
+  if (!id) return '';
+  const all = [...(state.reasons || []), ...(state.keepReasons || [])];
+  const hit = all.find((r) => r.id === id);
+  return hit ? hit.label : '';
+}
+
 // 判断を送る（`POST /api/groups/{id}/decide`。P5 の口。§5.1b）
-async function decide(items, groupReasonId) {
+async function decide(items, groupReasonId, shownReason = '') {
   if (state.busy) return;
   state.busy = true;
   state.note = null;
@@ -241,13 +256,14 @@ async function decide(items, groupReasonId) {
     const closed = body.closed_request_ids || [];
     const kept = (body.group && body.group.selected_asset_ids) || [];
     const at = kept.length ? state.items.findIndex((row) => row.asset_id === kept[0]) + 1 : 0;
-    state.note = closed.length
-      ? `要求を閉じました${at ? `（${at} 番に決めました）` : ''}。エージェントがここを読みます。`
-      : `記録しました${at ? `（${at} 番に決めました）` : ''}。`;
+    // **（§5-3）記録の帯に理由も出す。** 何を理由に決めたかが残らないと、後で見返せない
+    const why = shownReason ? `。理由: ${shownReason}` : '';
+    const note = closed.length
+      ? `要求を閉じました${at ? `（${at} 番に決めました）` : ''}${why}。エージェントがここを読みます。`
+      : `記録しました${at ? `（${at} 番に決めました）` : ''}${why}。`;
+    state.note = note;
     await load();
-    state.note = closed.length
-      ? `要求を閉じました${at ? `（${at} 番に決めました）` : ''}。エージェントがここを読みます。`
-      : `記録しました${at ? `（${at} 番に決めました）` : ''}。`;
+    state.note = note;
   } catch (error) {
     state.error = error.message;
   } finally {
@@ -310,24 +326,26 @@ export function wireGroup() {
     decideBtn.addEventListener('click', () => {
       if (!state.selected) return;
       if (!state.reasonId && state.items.length > 1) {
-        state.note = '理由を選んでください（ボツにする枚に理由が要ります）。';
+        state.note = '理由を選んでください（ボツにする画像に理由が要ります）。';
         render();
         return;
       }
       decide(state.items.length === 1
         ? [{ asset_id: state.selected, verdict: 'keep', reason_code_id: state.keepReasonId || null }]
-        : decideOnePayload(state.items, state.selected, state.reasonId, state.keepReasonId), null);
+        : decideOnePayload(state.items, state.selected, state.reasonId, state.keepReasonId),
+      null, reasonLabelOf(state.reasonId) || reasonLabelOf(state.keepReasonId));
     });
   }
   const allReject = $('group-allreject');
   if (allReject) {
     allReject.addEventListener('click', () => {
       if (!state.reasonId) {
-        state.note = '全部ボツには理由が要ります。理由を選んでください。';
+        // **（§5-4）枚数を出し、何をするのかを 1 文で言う**（§6 の「全部ボツ」の行）
+        state.note = `${state.items.length} 枚すべてをボツにするには理由が要ります。理由を選んでください。`;
         render();
         return;
       }
-      decide(allRejectPayload(state.items, state.reasonId), state.reasonId);
+      decide(allRejectPayload(state.items, state.reasonId), state.reasonId, reasonLabelOf(state.reasonId));
     });
   }
   const later = $('group-later');

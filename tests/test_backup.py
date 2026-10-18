@@ -180,6 +180,33 @@ def big_store(data_dir: Path) -> Store:
     return store
 
 
+def small_store(data_dir: Path, rows: int = 250) -> Store:
+    """**既定のページキャッシュ（2 MB）に収まる** DB を作る（P9 の監査 C-1 の形）。
+
+    監査の実測に合わせて 250 行（0.65 MB）。**`cache_size` は既定のまま**（`-2000`＝2 MB）で、
+    DB 全体がその接続のページキャッシュに載る。WAL のままでは主ファイルが 1 ページしか
+    無いので、`big_store` と同じく `wal_checkpoint(TRUNCATE)` で畳んでから潰す
+    （畳まないと、外から潰したページが WAL から読み直されて何も起きない）。
+    """
+    store = Store(data_dir)
+    blob = json.dumps({"text": "x" * 900})
+    with store.transaction() as con:
+        for i in range(rows):
+            con.execute(
+                "INSERT INTO asset(id, sha256, kind, kind_source, width, height, format,"
+                " first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (f"A{i:06d}", f"{i:064x}", "generated", "auto", 16, 16, "png", "t", "t"))
+            con.execute(
+                "INSERT INTO asset_meta(asset_id, meta_json, source, extracted_at)"
+                " VALUES (?,?,?,?)", (f"A{i:06d}", blob, "png", "t"))
+    with store.locked() as con:
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    size = (Path(data_dir) / "db.sqlite3").stat().st_size
+    assert 0.3 * 1024 * 1024 < size < 2 * 1024 * 1024, \
+        f"前提: DB が既定のページキャッシュ（2 MB）に収まる大きさでない: {size} バイト"
+    return store
+
+
 def digests_of(root: Path) -> dict:
     """**ファイルの中身の sha256**（`GET` が書かないことの検査。P8-1 の監査の穴）。"""
     import hashlib
@@ -862,6 +889,49 @@ def test_a_broken_source_does_not_replace_the_seven_healthy_snapshots(tmp_path, 
         store.close()
 
 
+def test_a_page_in_the_writers_cache_is_still_noticed(tmp_path, clock, backups, caplog):
+    """**（P9 の監査 C-1）書いた接続のキャッシュに載っているページの壊れも見つける。**
+
+    壊すと落ちる: `_refuse_if_broken()` が `store` の接続（**書き込み用**）で `quick_check`
+    すると、その接続は自分が書いたページをページキャッシュに持っていて**外から潰された
+    ページを読み直さない**ので、`tick()` は控えを取り `read_only` にならない
+    （監査の実測: 0.65 MB・250 行の DB で `ok: True` のまま。既定の `cache_size` でも起きる）。
+    新しい読み取り専用の接続（`quick_check_on_disk`）に変えると、この形でも断る。
+
+    250 行の DB を**同じ接続で書いて畳み**、`asset` の根ページを外から 0 で潰す。
+    **潰した後に、書き込み用の接続では `ok` のままであることを先に確かめる**
+    （そこが C-1 の本体。ここが `False` になる環境では、この試験は何も守っていない）。
+    """
+    store = small_store(tmp_path / "data")
+    try:
+        svc = BackupService(store, clock=clock, backup_dir=backups)
+        assert svc.tick()["taken"] is not None, "前提: 健全なうちは控えが取れる"
+        clock.advance(sec=86400)                       # 次の日（控えを取りに行く日）
+        zero_table_page(store.data_dir / "db.sqlite3", "asset")
+
+        with store.locked() as con:
+            cached = db.quick_check(con)
+        assert cached["ok"] is True, (
+            "前提: 書いた接続はキャッシュ越しに読むので壊れを見落とす"
+            f"（ここが False なら C-1 の形を作れていない）: {cached['detail']}")
+        assert check_db_file(store.data_dir / "db.sqlite3")["ok"] is False, \
+            "前提: 新しい接続なら盤の上の壊れを見つける"
+
+        before = [s["name"] for s in backup.list_snapshots(backups)]
+        got = svc.tick()
+        assert got["taken"] is None, "キャッシュに載った壊れを見落として控えを取った（C-1）"
+        assert got["error"], "壊れたことに気づいていない"
+        assert store.read_only is True, "壊れた DB に書き続けている（G-1）"
+        assert [s["name"] for s in backup.list_snapshots(backups)] == before, \
+            "断ったのに新しい世代が増えている"
+        assert svc.state()["last_error"]
+        # **（D-8）二重記録しない。** `read_only` にした後にもう一度書こうとすると
+        # `transaction()` の 503 でトレースバックが出る（ログの雑音）
+        assert "バックアップの失敗を記録できませんでした" not in caplog.text
+    finally:
+        store.close()
+
+
 def test_the_same_failure_is_not_written_again(store, clock, backups):
     """**（監査 D-4）同じ文言の失敗を 30 秒ごとに書き直さない。**
 
@@ -1380,7 +1450,6 @@ def test_a_broken_ledger_page_says_503_not_500(tmp_path, monkeypatch):
 @pytest.mark.parametrize("error,kind", [
     (sqlite3.OperationalError("unable to open database file"), "OperationalError"),
     (sqlite3.IntegrityError("UNIQUE constraint failed: asset_location.path"), "IntegrityError"),
-    (sqlite3.OperationalError("database is locked"), "OperationalError"),
 ])
 def test_an_error_that_is_not_corruption_is_not_reported_as_a_broken_db(
         tmp_path, monkeypatch, error, kind):
@@ -1400,6 +1469,9 @@ def test_an_error_that_is_not_corruption_is_not_reported_as_a_broken_db(
     壊すと落ちる: `_is_corruption()` の検査を外すと、この 3 つは 500 ではなく **503** になり、
     本文に「バックアップから戻してください」が出る（`IntegrityError` は取引の中の
     `SELECT` を外したときにも実際に飛ぶ。`p8-6-audit-triage.md` の C-3）。
+
+    **（P9 の監査 D-2）`database is locked` はここから外した**——「壊れている」ではなく
+    「混んでいる」なので 503 `busy` ＋ `Retry-After` にする（下の試験）。
     """
     data = tmp_path / "data"
     store = Store(data)
@@ -1420,6 +1492,47 @@ def test_an_error_that_is_not_corruption_is_not_reported_as_a_broken_db(
         assert body["details"]["kind"] == kind
         assert "壊れているとは限りません" in body["detail"]
         assert "バックアップ" not in got.text
+
+
+@pytest.mark.parametrize("error,code,kind,retry", [
+    (sqlite3.OperationalError("disk I/O error"), "io_error", "OperationalError", "5"),
+    (sqlite3.OperationalError("database is locked"), "busy", "OperationalError", "1"),
+])
+def test_a_temporary_db_error_says_try_again_without_restoring(
+        tmp_path, monkeypatch, error, code, kind, retry):
+    """**（P9 の監査 D-1 / D-2 / G-6）一時的なエラーで復元を勧めない。**
+
+    - `disk i/o error` は前まで `CORRUPTION_WORDS` に入っていたので **503 で
+      「バックアップから戻してください」**と言っていた。USB の抜け・ウイルス対策の掴みでも
+      起きる言い方なので、**復元を勧めるのは誤り**（監査 D-1。この語には試験が無く、
+      壊し試験 M7「語彙から外す」が**生き残っていた**）。
+    - `database is locked` は **500 `sqlite_error`**（内部エラー）だった。`busy_timeout` 15 秒の
+      後に出るので稀だが、**「混んでいる」**であって内部エラーではない（監査 D-2）。
+
+    壊すと落ちる: `_is_io_error()` / `_is_busy()` の枝を外すと、`disk i/o error` は 503
+    「バックアップから戻してください」（または 500）、`database is locked` は 500 に戻る。
+    """
+    data = tmp_path / "data"
+    store = Store(data)
+    try:
+        add_asset(store, make_png(data / "a.png"))
+    finally:
+        store.close()
+
+    app = app_client(monkeypatch, data, tmp_path / "backups")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        def boom():
+            raise error
+        monkeypatch.setattr(client.app.state.store, "assets", boom)
+        got = client.get("/api/assets", headers=HUMAN)
+        assert got.status_code == 503, f"{got.status_code} {got.text[:300]}"
+        body = got.json()
+        assert body["code"] == code
+        assert body["details"]["kind"] == kind
+        assert got.headers["Retry-After"] == retry
+        assert "もう一度" in body["detail"]
+        # **復元を勧めない**（壊れているとは限らない）。「戻してください」と言わない
+        assert "戻してください" not in got.text, got.text
 
 
 def test_a_corrupt_page_still_says_503_read_only(tmp_path, monkeypatch):

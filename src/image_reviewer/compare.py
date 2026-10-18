@@ -1188,8 +1188,9 @@ def heatmap_enabled(seed_a: Any, seed_b: Any,
     if _same_seed(seed_a, seed_b):
         return True, None
     if distance is None:
-        return False, ("同じ seed ではなく、pHash もまだ計算されていません"
-                       f"（サムネイルを開くと計算されます。距離 {HEATMAP_DISTANCE_THRESHOLD}"
+        # **（ワーディング監査 A-18）** 受け身をほどく（誰が計算するかを主語にする）
+        return False, ("同じ seed ではなく、pHash もまだ計算していません"
+                       f"（サムネイルを開くと計算します。距離 {HEATMAP_DISTANCE_THRESHOLD}"
                        " 以下なら出せます）")
     if distance <= HEATMAP_DISTANCE_THRESHOLD:
         return True, None

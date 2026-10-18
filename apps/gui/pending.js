@@ -27,7 +27,9 @@ const ASSETS = '/api/assets?limit=2000&sort=path';   // 一覧（上限 2000 枚
 const PREVIEW = '/api/locations/bulk-delete/preview';
 const BULK = '/api/locations/bulk-delete';
 
-export const STAGE_LABEL = { 1: 'カタログから外す', 2: 'ゴミ箱へ移す', 3: '完全に消す用意をする' };
+// **（ワーディング監査 W-20）** 段 3 は「実体を消す」で通す（「完全に消す」と呼ばない。
+// `frontend-design.md` §6 の「削除の確認: 段」）
+export const STAGE_LABEL = { 1: 'カタログから外す', 2: 'ゴミ箱へ移す', 3: '実体を消す用意をする' };
 export const STATE_LABEL = {
   hidden: 'カタログから外しました', trashed: 'ゴミ箱にあります', pending: '取り消せます',
   stuck: '戻せませんでした', purged: '完全に消しました', restored: '戻しました',
@@ -177,8 +179,8 @@ export function stage3NoticeHtml(preview, roots) {
     && paths.some((p) => underPath(p, r.display_path)));
   if (!noMark.length) return '';
   const names = [...new Set(noMark.map((r) => r.display_path))];
-  return `<div class="pd-warn">この置き場は段 3 の印が付いていません（${esc(names.join(' / '))}）。`
-    + '段 3 は実体を消します。印は<a href="#/settings">設定</a>で付けられます。</div>';
+  return `<div class="pd-warn">この置き場は段 3 の許可が付いていません（${esc(names.join(' / '))}）。`
+    + '段 3 は実体を消します。許可は<a href="#/settings">設定</a>で付けられます。</div>';
 }
 
 /** **その場所が段 3 を許されているか**（`root.allow_stage3`。Q8）。
@@ -207,7 +209,7 @@ export function stage3OfPaths(roots, paths) {
 export function stage3BlockedHtml() {
   const got = state.stage3;
   const why = got.known
-    ? 'この置き場には段 3 の印がありません。段 1・2 だけ選べます。印は設定で付けられます。'
+    ? 'この置き場には段 3 の許可がありません。段 1・2 だけ選べます。許可は設定で付けられます。'
     : '置き場を確かめられないので、段 3 は出していません。再読込でやり直せます。';
   return `<div class="pd-warn">${esc(why)}<a href="#/settings">設定を開く</a></div>`;
 }
@@ -218,9 +220,12 @@ export function scanHtml() {
   return `<div class="pd-scan">走査中です。終わるまで削除と取り消しは待ちます。</div>`;
 }
 
-/** 3 段階の進行（**印 → ゴミ箱 → 実削除**）。いまの段に印を付ける。 */
+/** 3 段階の進行（**カタログから外す → ゴミ箱 → 実体を消す**）。いまの段に印を付ける。 */
 export function stageStrip(stage) {
-  const steps = ['1 印', '2 ゴミ箱', '3 実削除'];
+  // **（ワーディング監査 W-20）** 前は「1 印 → 2 ゴミ箱 → 3 実削除」で、同じ段 3 を
+  // 「実削除」「完全に消す」「実体を消す」の 3 語で呼んでいた。**段の名前は 1 つ**にする
+  // （設計 §6・§17 の「段 1 / 2 / 3」。§6 の行も同じ語に直した）
+  const steps = ['1 カタログから外す', '2 ゴミ箱', '3 実体を消す'];
   return `<span class="pd-strip">` + steps.map((text, i) =>
     `<span class="pd-step${i + 1 === Number(stage) ? ' on' : ''}">${esc(text)}</span>`
   ).join('<span class="pd-arrow">→</span>') + '</span>';
@@ -270,8 +275,8 @@ export function rowHtml(item) {
     ${remain}
     ${stageStrip(stage)}
     <span class="pd-path mono" title="${esc(item.display_path || item.path)}">${esc(item.display_path || item.path)}</span>
-    <span class="pd-meta num">${esc(fmtBytes(item.size))} ・ ${esc(actorText(item.actor))}`
-    + ` ・ ${esc(fmtWhen(item.at))}</span>
+    <span class="pd-meta num">${esc(fmtBytes(item.size))}、${esc(actorText(item.actor))}`
+    + `、${esc(fmtWhen(item.at))}</span>
     <span class="spacer"></span>${buttons.join('')}
     ${stuck}
   </div>`;
@@ -311,19 +316,38 @@ export function trashHtml() {
     return '<div class="pd-sub">ゴミ箱</div><div class="note">ゴミ箱は空です。</div>';
   }
   const days = state.trash.days.map((day) => `<div class="pd-day">`
-    + `<div class="pd-day-head">${esc(day.date)} ・ ${day.count} 件 ・ ${esc(fmtBytes(day.bytes))}</div>`
+    + `<div class="pd-day-head">${esc(day.date)}、${day.count} 件、${esc(fmtBytes(day.bytes))}</div>`
     + day.items.map((item) => `<div class="pd-row pd-trashed" data-id="${esc(item.id)}">
         ${stageStrip(2)}
         <span class="pd-path mono" title="${esc(item.display_path || item.path)}">${esc(item.display_path || item.path)}</span>
-        <span class="pd-meta num">${esc(fmtBytes(item.size))} ・ ${esc(actorText(item.actor))}</span>
+        <span class="pd-meta num">${esc(fmtBytes(item.size))}、${esc(actorText(item.actor))}</span>
         <span class="spacer"></span>
         <button class="pd-trash-restore" data-id="${esc(item.id)}">戻す</button>
       </div>`).join('')
     + '</div>').join('');
-  return `<div class="pd-sub">ゴミ箱<span class="stat">掃除の前に一覧を出します。`
+  // **（ワーディング監査 W-57）** 「掃除の前に一覧を出します」は何の一覧か分からない
+  return `<div class="pd-sub">ゴミ箱の中身です<span class="stat">自動では消しません。`
     + '自動では消しません。</span></div>'
-    + `<div class="pd-trash-head">${state.trash.count} 件 ・ ${esc(fmtBytes(state.trash.bytes))}</div>`
+    + `<div class="pd-trash-head">${state.trash.count} 件、${esc(fmtBytes(state.trash.bytes))}</div>`
     + days;
+}
+
+/**
+ * **（P9 の監査 G-5）日中に外した枚をその日の控えに入れる道を案内する。**
+ *
+ * 日次は**日付が変わったとき**に 1 回だけ取る（`frontend-design.md` §4.6・`backup.py` §0.12-1）。
+ * 実データでは、利用者が 20:04〜20:12 JST に段 1 で外した 193 行が、**00:00:15 JST の控えまで
+ * どの世代にも入っていなかった**（監査の実測）。段 1（カタログから外す）と段 3（実体を消す）の
+ * 直後に、**「いま取る」の場所を 1 行で案内する**——**自動では取らない**
+ * （勝手に数百 MB を写さない。判断は人）。
+ *
+ * 段 2（ゴミ箱へ移す）では出さない（戻せるので急がない）。
+ */
+export function backupHintHtml(stage) {
+  const n = Number(stage);
+  if (n !== 1 && n !== 3) return '';
+  return '<div class="stat">控えは日付が変わったときに取ります。'
+    + '<a href="#/settings">設定</a>の「いま取る」で今すぐ取れます。</div>';
 }
 
 /** 削除の確認（**モーダルではなく画面の中の段**。`?ids=` で渡されたときだけ）。 */
@@ -335,6 +359,7 @@ export function confirmHtml() {
       <div class="pd-done">${state.exec.count} 枚を消す用意をしました。`
       + `あと ${esc(fmtRemain(state.exec.window_sec ?? state.windowSec))} は取り消せます。</div>`
       + (skipped ? `<div class="stat">${skipped} 件は中身が変わっていたので消しませんでした。</div>` : '')
+      + backupHintHtml(state.exec.stage ?? state.stage)
       + '<div class="pd-confirm-actions">'
       + '<a class="back" href="#/pending-deletes">最近の削除で確かめる</a></div></div>';
   }
@@ -351,10 +376,10 @@ export function confirmHtml() {
     ? `<div class="pd-items">${preview.items.map((item) => `<div class="pd-item">
         <span class="mono pd-path">${esc(item.display_path || item.path)}</span>
         <span class="pd-meta num">${esc(fmtBytes(item.size))}</span></div>`).join('')}</div>
-      <div class="pd-sum">${preview.count} 枚 ・ ${esc(fmtBytes(preview.bytes))}</div>
+      <div class="pd-sum">${preview.count} 枚、${esc(fmtBytes(preview.bytes))}</div>
       <div class="pd-frees">${esc(preview.frees?.note || '')}</div>
       ${preview.not_allowed_count
-        ? `<div class="pd-warn">印の無い置き場の ${preview.not_allowed_count} 枚は段 3 にできません（段 1・2 はできます）。</div>` : ''}
+        ? `<div class="pd-warn">許可の無い置き場の ${preview.not_allowed_count} 枚は段 3 にできません（段 1・2 はできます）。</div>` : ''}
       ${stage3NoticeHtml(preview, state.roots)}
       ${preview.last_copies
         ? `<div class="pd-warn">最後の 1 つが ${preview.last_copies} 枚あります。ほかに実体がありません。`
@@ -384,8 +409,9 @@ export function messageHtml() {
 export function legendHtml() {
   // **凡例は段に印を付けない**（`stageStrip(null)`。行と見分けが付かなくなる）
   return `<div class="pd-legend">${stageStrip(null)}<span class="stat">`
-    + '段 1 はカタログから外すだけ（容量は空きません）・段 2 はゴミ箱・段 3 は実体を消す用意。'
-    + '段 1・2 はいつでも戻せます。取り消せるのは段 3 の 5 分の窓の間だけです。</span></div>';
+    // **（ワーディング監査 W-12）** 中黒で文を繋がない（規則 1）。段 3 の呼び方も 1 つに（W-20）
+    + '段 1 はカタログから外すだけで、容量は空きません。段 2 はゴミ箱へ移します。'
+    + '段 3 は実体を消す用意です。段 1・2 はいつでも戻せ、段 3 は 5 分の間だけ取り消せます。</span></div>';
 }
 
 // ---- 読み込み（`GET` は書かない）----
@@ -478,7 +504,13 @@ function render() {
     // 出るのでここには数えない（二重に数えると「3 件」と言いながら 2 行しか無い）
     const rows = state.items.filter((i) => i.state !== 'trashed');
     const pending = rows.filter((i) => i.state === 'pending').length;
-    brief.textContent = `${pending} 件 ・ ${fmtBytes(rows.reduce((n, i) => n + (i.size || 0), 0))}`;
+    const bytes = rows.reduce((n, i) => n + (i.size || 0), 0);
+    // **（ワーディング監査 W-2）件数と容量は同じ母数で出す。**
+    // 前は件数が「段 3 の窓の数」、容量が「この一覧の全行の合計」で、**193 行ある画面に
+    // 「0 件 ・ 324.9 MB」**と出ていた（数が嘘に見える）。いまは**行の数**を先に出す
+    brief.textContent = `${rows.length} 件`
+      + (pending === rows.length ? '' : `（取り消せるのは ${pending} 件）`)
+      + `、${fmtBytes(bytes)}`;
   }
 }
 
@@ -557,7 +589,7 @@ export async function exec() {
   const got = state.preview;
   if (!got) return null;
   if (got.last_copies && state.stage === 3 && !state.confirmLast) {
-    state.msg = '最後の 1 つを消すには「これも消す」に印を付けてください。';
+    state.msg = '最後の 1 つを消すには「これも消す」にチェックを入れてください。';
     state.bad = true;
     render();
     return null;

@@ -178,10 +178,13 @@ class RelinkService:
             "include_deleted": bool(include_deleted),
             "limit": limit,
             "items": page,
-            # **辿り方**を応答に書く（画面が無いので、口だけで使えるように）
-            "hint": ("POST /api/locations/relink {asset_id, path, mode:'exact'} で繋ぎ直せます"
-                     "（中身の sha256 が一致するときだけ）。mode:'nearby' は path を省くと、"
-                     "その参照切れを含む置き場（この応答の roots）から順に同じ名前を探し、"
+            # **辿り方**を応答に書く（画面が無いので、口だけで使えるように）。
+            # **（ワーディング監査 A-6）** 1 文 150 字をやめ、2〜3 文に切る
+            "hint": ("POST /api/locations/relink で繋ぎ直せます。"
+                     "exact は {asset_id, path, mode:'exact'} を渡し、"
+                     "中身の sha256 が一致するときだけ繋ぎます。"
+                     "nearby は path を省くと、その参照切れを含む置き場"
+                     "（この応答の roots）から順に同じ名前を探し、"
                      "見つからなければ残りの置き場を探します"),
         }
 

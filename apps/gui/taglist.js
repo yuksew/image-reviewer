@@ -35,7 +35,7 @@ export function query(search) {
 
 export function rowHtml(item) {
   const gloss = item.gloss
-    ? `<span class="tl-gloss">${esc(item.gloss)}${item.gloss_edited ? '<span class="tg-edited">直した</span>' : ''}</span>`
+    ? `<span class="tl-gloss">${esc(item.gloss)}${item.gloss_edited ? '<span class="tg-edited">人が直した</span>' : ''}</span>`
     : '<span class="tl-none">語釈なし</span>';
   const unknown = item.known === false ? '<span class="tg-unknown">語彙外</span>' : '';
   return `<div class="tl-row${state.selected === item.name ? ' on' : ''}" data-name="${esc(item.name)}" data-id="${esc(String(item.tag_id))}">`
@@ -48,7 +48,7 @@ export function rowHtml(item) {
 
 export function listHtml() {
   const head = `${state.items.length} / ${state.total} 語`
-    + `（語彙あり ${state.counts.known ?? 0} ・ 語彙外 ${state.counts.unknown ?? 0}）`;
+    + `（語彙あり ${state.counts.known ?? 0}、語彙外 ${state.counts.unknown ?? 0}）`;
   const rows = state.items.length
     ? state.items.map(rowHtml).join('')
     : '<div class="note">この条件の語はありません。</div>';
@@ -57,7 +57,7 @@ export function listHtml() {
   // 続きが無いと分からないので、1 つだけ足す
   const more = state.next
     ? `<div class="tl-more"><button id="tl-more">次の 200 語を読む</button>`
-      + `<span class="stat">いま ${state.items.length} 語。残りは検索でも届きます。</span></div>`
+      + `<span class="stat">いま ${state.items.length} 語。残りは検索でも探せます。</span></div>`
     : '';
   return `<div class="tl-head">${esc(head)}</div><div class="tl-rows">${rows}</div>${more}`;
 }
@@ -74,7 +74,8 @@ function detailHtml(item) {
     + '<button id="tl-save">保存</button>'
     + `<button id="tl-translate">訳す</button>`
     + '<span class="stat" id="tl-msg"></span></div>'
-    + '<div class="tg-help">訳は自動です。直すと `edited` が立ち、訳し直しでも上書きされません。</div>';
+    // **（ワーディング監査 W-10）** 内部のフラグ名（`edited`）とバッククォートを画面に出さない
+    + '<div class="tg-help">訳は自動です。直した語釈は、訳し直しても上書きしません。</div>';
 }
 
 async function fetchPage({ cursor = null } = {}) {

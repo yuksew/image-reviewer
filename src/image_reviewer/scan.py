@@ -61,7 +61,7 @@ def scan(store: Store, roots: list[str], *, on_progress=None) -> dict:
 
     for root in roots:
         if not os.path.isdir(root):
-            stats["errors"].append(f"フォルダが無い: {root}")
+            stats["errors"].append(f"フォルダがありません: {root}")
             continue
         for path in iter_images(root):
             stats["seen"] += 1

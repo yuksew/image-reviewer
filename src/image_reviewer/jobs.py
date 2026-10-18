@@ -96,7 +96,7 @@ class JobService:
         with self.store.transaction() as con:
             got = con.execute(
                 "UPDATE job SET state = 'failed', finished_at = ?, message = ?,"
-                " error = 'プロセスが終了しました（同じ条件でもう一度流すと続きから付けます）'"
+                " error = 'プロセスが終了しました（同じ条件でもう一度始めると続きから付けます）'"
                 " WHERE state IN ('queued', 'running')", (db.now(), "中断されました"))
             return got.rowcount or 0
 
@@ -260,7 +260,7 @@ class JobService:
                                "skipped" if outcome == "skipped" else "tagged")
             states = dict(self._counts(job_id))
             if processed == 0 and states.get("tagged", 0) == 0 and states.get("failed", 0):
-                self._finish(job_id, "failed", "1 枚も処理できませんでした")
+                self._finish(job_id, "failed", "1 枚も付けられませんでした")
             else:
                 self._finish(job_id, "done",
                              f"{states.get('tagged', 0)} 枚に付けました"
@@ -275,7 +275,7 @@ class JobService:
                 try:
                     removed = cleanup()
                     if removed:
-                        self._note(job_id, f"ComfyUI の複製を {removed} 枚消しました")
+                        self._note(job_id, f"ComfyUI の temp に置いた写しを {removed} 枚消しました")
                 except Exception:                             # noqa: BLE001  片づけで job を落とさない
                     pass
 

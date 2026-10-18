@@ -101,12 +101,12 @@ def health_db(request: Request, full: str = "1"):
             else:
                 try:
                     rows = [str(row[0]) for row in con.execute("PRAGMA integrity_check").fetchall()]
-                    body["integrity_check"] = rows[0] if rows else "(行が返らない)"
+                    body["integrity_check"] = rows[0] if rows else "（行が返りません）"
                     if rows != ["ok"]:
                         body["ok"] = False
                         body["guidance"] = body["guidance"] or (
-                            "DB の検査に通りませんでした。バックアップから戻すことを検討してください: "
-                            "image-reviewer restore <バックアップのフォルダ>")
+                            "DB の検査に通りませんでした。バックアップから戻してください: "
+                            "image-reviewer restore <フォルダ>")
                 except Exception as exc:                 # noqa: BLE001  結果は必ず返す
                     body["ok"] = False
                     body["integrity_check"] = f"例外: {exc}"

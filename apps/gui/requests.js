@@ -55,7 +55,13 @@ export function agoText(iso, now = Date.now()) {
   return `${Math.floor(sec / 86400)} 日前`;
 }
 
-const STATE_LABEL = { open: '未対応', done: '決定済み', declined: '断った', superseded: '差し替え' };
+// **（ワーディング監査 W-54）** 状態の語の形を揃える（名詞で揃える。動詞の過去形を混ぜない）
+const STATE_LABEL = { open: '未対応', done: '決定', declined: '断り', superseded: '差し替え' };
+
+// **（ワーディング監査 W-9）** `wants` の値を日本語のラベルに写す（契約の値は英語のまま）
+const WANTS_LABEL = {
+  selected_ids: '選ぶ画像', reason: '理由', annotations: '注記', asset_ids: '画像', memo: 'メモ',
+};
 
 // AI の推しが何番目か（1 始まり）。
 // **サーバの `ai.pick_index` を使う**（P6-1a の監査 C1 で契約に足した）。無ければ
@@ -96,7 +102,7 @@ export function cardHtml(item) {
     : '';
   const closed = item.state === 'done' && item.response
     ? `<div class="req-closed">この要求は閉じました${
-      (item.response.selected_asset_ids || []).length ? `（${(item.response.selected_asset_ids || []).length} 枚に決めました）` : ''
+      (item.response.selected_asset_ids || []).length ? '（1 枚を選びました）' : ''
     }。エージェントがここを読みます。</div>`
     : '';
   const declined = item.state === 'declined'
@@ -108,8 +114,10 @@ export function cardHtml(item) {
     ? '<div class="req-detail">'
       + `<div class="req-line"><span class="k">用件</span>${esc(item.ask || '（用件なし）')}</div>`
       + `<div class="req-line"><span class="k">見てほしいこと</span>${conditions.length ? conditions.map(esc).join(' / ') : '（なし）'}</div>`
-      + `<div class="req-line"><span class="k">どこから</span>${esc(item.origin || '（なし）')}</div>`
-      + `<div class="req-line"><span class="k">応答に求めるもの</span>${(item.wants || []).map(esc).join(' / ') || '（なし）'}</div>`
+      // **（ワーディング監査 W-55）** 「どこから」だけ砕けていた。ほかの見出しと同じ漢語に揃える
+      + `<div class="req-line"><span class="k">出どころ</span>${esc(item.origin || '（なし）')}</div>`
+      // **（ワーディング監査 W-9）** `wants` の値を英語のまま出さない（§6.1 の規則 2）
+      + `<div class="req-line"><span class="k">応答に求めるもの</span>${(item.wants || []).map((w) => esc(WANTS_LABEL[w] || `その他（${w}）`)).join(' / ') || '（なし）'}</div>`
       + `<div class="req-line"><span class="k">まとまり</span><a href="#/group/${esc(item.group_id)}">${esc(item.group_id)}</a></div>`
       + (item.closed_at ? `<div class="req-line"><span class="k">閉じた時刻</span>${esc(item.closed_at)}（${esc(item.closed_by || '—')}）</div>` : '')
       + '</div>'

@@ -35,10 +35,15 @@ function human() {
   return { 'Content-Type': 'application/json', 'X-Image-Reviewer-Actor': 'human' };
 }
 
-/** 控えの種類の語（利用者の言葉で。`backup.py` の `kind` をそのまま出さない）。 */
+/** 控えの種類の語（利用者の言葉で。`backup.py` の `kind` をそのまま出さない）。
+ *
+ * **（ワーディング監査 W-65）** 動詞を種類の名前にしない（「取り直す」→「取り直し」）。
+ * 画面では 1 回分を「バックアップ」、数えるときは「世代」で通す（W-29・G-4）。
+ */
 export const KIND_TEXT = {
-  daily: '日次', manual: '取り直す', 'pre-migrate': '版を上げる前の控え',
-  'pre-topup': '表の形を変える前の控え', other: 'その他',
+  daily: '日次', manual: '取り直し',
+  'pre-migrate': '版を上げる前', 'pre-topup': '表の形を変える前',
+  other: 'その他',
 };
 
 export function kindText(kind) {
@@ -98,20 +103,20 @@ export function readOnlyHtml() {
   return `<div class="st-readonly"><div class="st-sub">読み取り専用</div>
     <div class="st-warn">DB を読み取り専用で開いています。${esc(why)}</div>
     ${guidance ? `<div class="st-note">${esc(guidance)}</div>` : ''}
-    <div class="st-note">バックアップから戻すことを検討してください:
-      <code>image-reviewer restore &lt;バックアップのフォルダ&gt;</code></div></div>`;
+    <div class="st-note">バックアップから戻してください:
+      <code>image-reviewer restore &lt;フォルダ&gt;</code></div></div>`;
 }
 
 /** 直近の一覧（新しい順。**日次と「取り直す」だけ**を「最後に取った時刻」に数える）。 */
 export function snapshotsHtml() {
   const snaps = (state.backup && state.backup.snapshots) || [];
-  if (!snaps.length) return '<div class="st-note">まだ控えはありません。</div>';
+  if (!snaps.length) return '<div class="st-note">まだバックアップはありません。</div>';
   const rows = snaps.map((snap) => `<div class="st-snap">
       <span class="st-snap-when num">${esc(fmtWhen(snap.created_at) || snap.name)}</span>
       <span class="st-snap-kind">${esc(kindText(snap.kind))}</span>
       <span class="st-snap-size num">${esc(fmtBytes(snap.bytes))}</span>
       <span class="st-snap-name mono">${esc(snap.name)}</span>
-      ${snap.ok ? '' : '<span class="st-snap-bad">控えを読めません</span>'}
+      ${snap.ok ? '' : '<span class="st-snap-bad">バックアップを読めません</span>'}
     </div>`).join('');
   return `<div class="st-snaps">${rows}</div>`;
 }
@@ -131,14 +136,16 @@ export function backupHtml() {
         <span class="mono">${esc(got.last_error)}</span></div>
       <div class="st-note">置き場を作れないときは、書き込める場所に変えてください。</div>`
     : '';
-  return `<div class="st-sub">バックアップ<span class="stat">黙って失敗しません。失敗はここに出ます。</span></div>
+  // **（ワーディング監査 W-28）** 「黙って失敗しません」は fail silently の直訳で、同じ文が
+  // 画面の下にもう 1 回あった（index.html から消した）。**ここ 1 か所だけ**にする
+  return `<div class="st-sub">バックアップ<span class="stat">失敗したときは、ここにその全文が出ます。</span></div>
     <div class="st-line">${lastAt
       ? `最後に取ったのは <span class="num">${esc(fmtWhen(lastAt))}</span> です。`
       : 'まだ取っていません。'}</div>
     <div class="st-line">置き場: <span class="mono">${esc(got.backup_dir || '—')}</span>
       <span class="stat">${got.backup_dir_source === 'settings' ? '設定の値です' : '既定の場所です'}</span></div>
     <div class="st-line">${got.today_done ? '今日の分は取れています。' : '今日の分はまだです。'}</div>
-    <div class="st-line">${got.count} 個の控えがあります（直近 ${esc(got.keep ?? 7)} 個を残します）。</div>
+    <div class="st-line">バックアップが ${got.count} 世代あります（直近 ${esc(got.keep ?? 7)} 世代を残します）。</div>
     ${failed}
     <div class="st-actions">
       <button class="st-now"${state.busy ? ' disabled' : ''}>取り直す</button>
@@ -149,41 +156,44 @@ export function backupHtml() {
         <input id="st-dir" class="st-dir" type="text" value="${esc(got.backup_dir || '')}"
                placeholder="絶対パス" spellcheck="false"></label>
       <button class="st-save"${state.busy ? ' disabled' : ''}>保存する</button>
-      <span class="stat">データ置き場の中は指定できません。</span>
+      <!-- **（ワーディング監査 W-30）** 「データ置き場」ではなく、利用者の言葉で言う -->
+      <span class="stat">アプリの置き場（.data）の中は指定できません。</span>
     </div>
-    <div class="st-note">復元はコマンドで行います（
+    <div class="st-note">復元はコマンドで戻します（
       <code>image-reviewer restore &lt;フォルダ&gt;</code>）。画面からは戻しません。</div>
     ${snapshotsHtml()}`;
 }
 
-/** 置き場ごとの「段 3 を許す」印（Q8。**人だけ**）。
+/** 置き場ごとの「段 3 の許可」（Q8。**人だけ**）。
  *
- * **読み取り専用のときは押せなくする**（印も書き込みの口。§6・C-3）。
+ * **読み取り専用のときは押せなくする**（許可も書き込みの口。§6・C-3）。
+ * **（ワーディング監査 §4）** 「印」は 6 つの物を指していて分からないので、ここでは「許可」と呼ぶ
+ * （`root.allow_stage3`）。
  */
 export function rootsHtml() {
   const readOnly = state.status === 503 || Boolean(state.backup && state.backup.read_only);
   if (!state.rootsOk) {
-    return `<div class="st-sub">置き場ごとの「段 3 を許す」印</div>
+    return `<div class="st-sub">置き場ごとの「段 3 の許可」</div>
       <div class="st-note">このサーバは置き場の一覧を返しません（古い版です）。</div>`;
   }
   if (!state.roots.length) {
-    return `<div class="st-sub">置き場ごとの「段 3 を許す」印</div>
-      <div class="st-note">登録された置き場はありません（走査するフォルダを足すと入ります）。</div>`;
+    return `<div class="st-sub">置き場ごとの「段 3 の許可」</div>
+      <div class="st-note">置き場がまだありません。フォルダを走査すると、ここに出ます。</div>`;
   }
   const rows = state.roots.map((root) => `<div class="st-root">
       <span class="st-root-path mono" title="${esc(root.display_path || root.path)}">${
         esc(root.display_path || root.path)}</span>
       <span class="st-mark${root.allow_stage3 ? ' on' : ''}">${
-        root.allow_stage3 ? '印あり' : '印なし'}</span>
+        root.allow_stage3 ? '許可あり' : '許可なし'}</span>
       <span class="spacer"></span>
       <button class="st-allow" data-id="${esc(root.id)}" data-allow="${
         root.allow_stage3 ? 'false' : 'true'}"${
         state.busy || readOnly ? ' disabled' : ''}>${
-        root.allow_stage3 ? '印を外す' : 'この置き場で段 3 を許す'}</button>
+        root.allow_stage3 ? '許可を外す' : 'この置き場で段 3 を許す'}</button>
     </div>`).join('');
-  return `<div class="st-sub">置き場ごとの「段 3 を許す」印
-      <span class="stat">印の無い置き場では段 3（実ファイルの削除）を選べません。段 1・2 はいつでも使えます。</span></div>
-    ${readOnly ? '<div class="st-note">読み取り専用で開いているので、印は変えられません。</div>' : ''}
+  return `<div class="st-sub">置き場ごとの「段 3 の許可」
+      <span class="stat">許可の無い置き場では段 3（実体を消す）を選べません。段 1・2 はいつでも使えます。</span></div>
+    ${readOnly ? '<div class="st-note">読み取り専用で開いているので、許可は変えられません。</div>' : ''}
     ${rows}`;
 }
 
@@ -228,9 +238,10 @@ function render() {
     const got = state.backup || {};
     const marks = state.roots.filter((r) => r.allow_stage3).length;
     // **読み取り専用は 200 の形（版が新しい）でも「読み取り専用」と言う**（C-3）
+    // **（ワーディング監査 W-29・§4）** 「個の控え」ではなく「世代のバックアップ」、「印」は「許可」
     brief.textContent = state.status === 503 || got.read_only
       ? '読み取り専用'
-      : `${got.count ?? 0} 個の控え ・ 段 3 の印 ${marks} / ${state.roots.length}`;
+      : `バックアップ ${got.count ?? 0} 世代、段 3 の許可 ${marks} / ${state.roots.length}`;
   }
 }
 
@@ -249,9 +260,9 @@ export async function takeNow() {
     return null;
   }
   state.msg = `取り直しました: ${body.dir || ''}`
-    + (body.counts ? `（${body.counts.assets ?? 0} 枚・判断 ${body.counts.decisions ?? 0} 件）` : '')
+    + (body.counts ? `（${body.counts.assets ?? 0} 枚、判断 ${body.counts.decisions ?? 0} 件）` : '')
     + (body.pruned && body.pruned.length
-      ? ` 古い控えを ${body.pruned.length} 個消しました。` : '');
+      ? ` 古いバックアップを ${body.pruned.length} 世代消しました。` : '');
   state.bad = false;
   await load();
   return body;
@@ -302,7 +313,7 @@ export async function setAllow(rootId, allow) {
   }
   state.msg = body.allow_stage3
     ? 'この置き場で段 3 を許します。'
-    : 'この置き場の印を外しました。';
+    : 'この置き場の許可を外しました。';
   state.bad = false;
   await load();
   return body;

@@ -102,8 +102,9 @@ def cmd_capture(args) -> int:
         if stats["error"]:
             print(stats["error"], file=sys.stderr)
             return 2
-        print(f"/history {stats['history_entries']} 件を走査。")
-        print(f"訳が未取得の画像 {stats['checked']} 枚のうち {stats['captured']} 枚で訳を捕獲した。")
+        # **（ワーディング監査 C-3）** 端末の出力は敬体に揃える（同じ CLI の他の行と同じ）
+        print(f"/history を {stats['history_entries']} 件見ました。")
+        print(f"訳が未取得の画像 {stats['checked']} 枚のうち {stats['captured']} 枚で訳を捕獲しました。")
         print(f"  実行が見つからない {stats['no_history']} / ja2en でない {stats['not_textgen']} / "
               f"テキスト出力が無い {stats['no_text_output']}")
         return 0
@@ -191,8 +192,9 @@ def cmd_backup(args) -> int:
     print(f"  作った時刻 {manifest['created_at']} / 版 {manifest['app_version']} / "
           f"abi {manifest['abi']}")
     counts = manifest["counts"]
+    # **（ワーディング監査 C-9）** 単位を揃える（まとまりは件、注記は件、語は語）
     print(f"  画像 {counts['assets']} 枚 / 判断 {counts['decisions']} 件 / "
-          f"まとまり {counts['groups']} / 注記 {counts['annotations']} / 語 {counts['tags']}")
+          f"まとまり {counts['groups']} 件 / 注記 {counts['annotations']} 件 / 語 {counts['tags']} 語")
     print(f"  DB {manifest['db_bytes'] / 1024:.1f} KB（{manifest['db_sha256'][:19]}…）")
     check = got.get("db_check") or {}
     if check:
@@ -200,7 +202,7 @@ def cmd_backup(args) -> int:
         print(f"  写しの検査: {check.get('stage')}（quick_check="
               f"{(stages.get('quick_check') or {}).get('detail')}）")
     files = got["files"]
-    print(f"  sidecar / export: 写した {files['copied']} / 前と同じで共有した {files['linked']} "
+    print(f"  sidecar / export: 写した {files['copied']} / 変わっていないので共有した {files['linked']} "
           f"/ 設定 {got['settings']} 件")
     if got["library"]["files"]:
         print(f"  画像の実体 {got['library']['files']} 枚（"
@@ -247,8 +249,9 @@ def cmd_restore(args) -> int:
               f"期待 {str(sha.get('expected'))[:19]}… / 実際 {str(sha.get('actual'))[:19]}…")
     print(f"  戻す前の quick_check: {got['before']['detail']}")
     if got["setaside"]:
+        # **（ワーディング監査 C-1）** Markdown の記法（`**太字**`・バッククォート）を端末に出さない
         print(f"  元の DB を退避しました: {got['setaside']}"
-              "（**バックアップのフォルダの隣**。`--backup-dir` は無いので）")
+              "（バックアップのフォルダの隣です。--backup-dir という選択肢は無いためです）")
     print(f"  戻しました: {got['data_dir']}\\db.sqlite3"
           f"（integrity_check: {got['after']['detail']}）")
     for name, stat in got["copied"].items():
@@ -256,7 +259,7 @@ def cmd_restore(args) -> int:
     if got["library"]["restored"] or got["library"]["missing"]:
         print(f"  画像の実体: 戻した {got['library']['restored']} / 既にあった "
               f"{got['library']['kept']} / 見つからない {got['library']['missing']}")
-    print("  走査を 1 回勧めます（参照切れを拾うため）: image-reviewer scan --root <置き場>")
+    print("  参照切れを拾うため、走査を 1 回してください: image-reviewer scan --root <置き場>")
     return 0
 
 
@@ -273,11 +276,11 @@ def cmd_rebuild_metadata(args) -> int:
         got = rebuild_metadata(store)
     finally:
         store.close()
-    print("来歴を組み直しました（**DB にある値は上書きしません**）。")
+    print("来歴を組み直しました（DB にある値は上書きしません）。")
     print(f"  見た {got['assets']} 枚 / 埋めた {got['updated']} / そのまま {got['unchanged']}")
     print(f"  sidecar から {got['from_sidecar']} / PNG から {got['from_png']} / "
           f"sidecar {got['sidecars']} ファイル")
-    print(f"  実体が無い {got['missing_files']} / 元になる物が無い {got['no_source']}")
+    print(f"  ファイルが見つからない {got['missing_files']} / 元になるものが無い {got['no_source']}")
     for note in got["notes"][:10]:
         print(f"  注記: {note}", file=sys.stderr)
     return 0
@@ -490,13 +493,13 @@ def cmd_migrate_from_json(args) -> int:
         target = store.data_dir / "db.sqlite3"
     finally:
         store.close()
-    print("JSON ストアから取り込みました（**JSON は書き換えず、控えとして残します**）。")
+    print("JSON ストアから取り込みました（JSON は書き換えず、控えとして残します）。")
     print(f"  新規 {result['created']} / 更新 {result['updated']} / そのまま {result['skipped']} 件")
     print(f"  画像 {result['assets']} 枚 / 場所 {result['locations']} 件 / "
           f"来歴あり {result['with_provenance']} / 来歴なし {result['without_provenance']} / "
           f"参照切れ {result['missing']}")
     print(f"  sidecar から補った {result['sidecars']} 件 / 場所の履歴 {result['history']} 件")
-    print(f"  台帳に写した判断 {result['decisions']} 件（監査 B1。台帳が無い写しは次の起動で消える）")
+    print(f"  台帳に写した判断 {result['decisions']} 件（台帳の無い写しは次の起動で消えます）")
     print(f"  取り込み元: {src}")
     print(f"  取り込み先: {target}")
     return 0
@@ -527,11 +530,12 @@ def main(argv: list[str] | None = None) -> int:
     p_mig.set_defaults(func=cmd_migrate_from_json)
 
     # ---- P8-4（バックアップと復元。設計 §0.12-4）----
-    p_backup = sub.add_parser("backup", help="いま 1 回バックアップを取る（**必ず新しく取る**）")
+    # **（ワーディング監査 C-1）** `--help` にも Markdown の記法を出さない
+    p_backup = sub.add_parser("backup", help="いま 1 回バックアップを取る（必ず新しく取る）")
     p_backup.add_argument("--out", default=None,
-                          help="置き場（既定: 設定 backup_dir。**<data> の中は断る**）")
+                          help="置き場（既定: 設定 backup_dir。<data> の中は断る）")
     p_backup.add_argument("--include-library", action="store_true",
-                          help="画像の実体も控える（既定は取らない。参照モードでは画像は利用者の資産）")
+                          help="画像の実体も控える（既定では取りません。参照モードの画像は利用者のものだからです）")
     p_backup.set_defaults(func=cmd_backup)
 
     p_restore = sub.add_parser("restore", help="バックアップから戻す（元の DB は退避してから）")

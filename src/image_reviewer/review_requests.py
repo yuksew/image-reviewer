@@ -260,7 +260,7 @@ class ReviewRequestService:
 
             if group is not None and group["state"] == "decided":
                 # 点検 C2: 受けると「永久に open」の要求ができる（decide は decided に 409）
-                raise ReviewError(422, "決定済みのまとまりには要求できません。reopen してから",
+                raise ReviewError(422, "決定済みのまとまりには要求できません。先に開き直してください",
                                   details={"group_id": group_id})
             if group is not None and given_policy is not None and policy != group["policy"]:
                 # P6-1a の監査（設計の穴 5）: `group_id` を指名したときは**まとまりの設定が正**。

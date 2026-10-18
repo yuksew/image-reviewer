@@ -156,9 +156,10 @@ export function renderDeleteBadge(items) {
   const windows = rows
     .filter((it) => it.state === 'pending' && it.remaining_sec != null)
     .map((it) => Number(it.remaining_sec) || 0);
+  // **（ワーディング監査 W-71）** メタ情報の中黒をやめ、「あと 3:12」は括弧に入れる（規則 1）
   const text = rows.length
     ? `最近の削除 ${rows.length}`
-      + (windows.length ? ` ・ あと ${fmtRemain(Math.min(...windows))}` : '')
+      + (windows.length ? `（あと ${fmtRemain(Math.min(...windows))}）` : '')
     : '';
   el.textContent = text;
   el.hidden = !text;
@@ -179,17 +180,30 @@ async function fetchDeletes() {
 //
 // - `GET /api/backup` の `last_error` があるときだけ「バックアップに失敗しています」を出す
 // - **503 のときは「読み取り専用です」**（DB が壊れている / 版が新しい。P8-4 の再確認 D-2）
+// - **（P9 の監査 D-1 / D-2）503 でも「読み取り専用」とは限らない。** `disk i/o error`（一時的な
+//   読み書き。503 `io_error`）と `database is locked`（503 `busy`）は**もう一度で直る**ので、
+//   「読み取り専用です」（＝バックアップから戻す話）とは**別の語**にする。読み取り専用として
+//   出すのは `read_only` / `db_error`（DB が壊れている）と、`code` の無い古いサーバだけ
 // - **文言はここ 1 つ**。押すと `#/settings` へ行き、そこで全文が読める（G-6）
 //
 // 「読み取り専用」の見せ方: 状態そのものが読めない（503）ときも**同じ場所に出す**。
+
+/** その 503 は「読み取り専用」か（**一時的な物を読み取り専用と言わない**。D-1 / D-2）。 */
+export function isReadOnlyStatus(status, state) {
+  if (Number(status) !== 503) return Boolean((state || {}).read_only);
+  const code = String((state || {}).code || '');
+  // `code` が無いのは古いサーバ（今までどおり読み取り専用として出す）
+  return code === '' || code === 'read_only' || code === 'db_error';
+}
 
 export function renderBackupBadge(state, { status = 0 } = {}) {
   const el = $('stat-backup');
   if (!el) return;
   const got = state || {};
   const unavailable = Number(status) === 503;
-  const readOnly = Boolean(got.read_only) || unavailable;
-  const failed = Boolean(got.last_error) && !readOnly;
+  const readOnly = isReadOnlyStatus(status, got);
+  // **（D-1 / D-2）** 503 でも一時的な物（`io_error` / `busy`）は「失敗」として出す
+  const failed = Boolean(got.last_error) || (unavailable && !readOnly);
   let text = '';
   if (readOnly) text = '読み取り専用です';
   else if (failed) text = 'バックアップに失敗しています';
@@ -198,9 +212,10 @@ export function renderBackupBadge(state, { status = 0 } = {}) {
   el.classList.toggle('bk-readonly', readOnly);
   el.classList.toggle('bk-failed', failed);
   // **押すと詳細**（全文は `#/settings` の「バックアップ」にある。§4.5.1）
+  const why = got.last_error || got.detail || '状態を読めません';
   el.title = readOnly
-    ? 'DB を読み取り専用で開いています。押すと設定で案内を読みます'
-    : (failed ? `最後の失敗: ${String(got.last_error).slice(0, 300)}（押すと設定で全文を読みます）`
+    ? 'DB を読み取り専用で開いています。押すと設定に案内が出ます'
+    : (failed ? `最後の失敗: ${String(why).slice(0, 300)}（押すと設定に全文が出ます）`
       : '');
 }
 
@@ -230,7 +245,7 @@ export function renderScanBadge(state) {
   const on = Boolean(state && state.scanning);
   el.textContent = on ? '走査中です' : '';
   el.hidden = !on;
-  el.title = on ? '走査中は削除と取り消しが待ちます（順番に処理します）' : '';
+  el.title = on ? '走査中は削除と取り消しが待ちます（順番に進めます）' : '';
 }
 
 async function fetchScan() {

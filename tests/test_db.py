@@ -51,10 +51,21 @@ def test_the_temporary_btree_goes_to_memory(tmp_path: Path):
     **P9 の実測で 1 万枚の `GET /api/assets` が 500 になった**（`%TEMP%` に書けない環境）。
 
     **`cache_size` は既定のまま**（`assert` で固定する）。§12.2 は `-65536`（64 MB）と
-    書いているが、P9 の実測で**走ったまま壊れた DB を live の `quick_check` が見落とす**
-    ようになった（64 MB に DB 全体が載り、壊れる前のページがそのまま返る）。
-    あの保証は `tests/test_backup.py` の
-    `test_a_broken_source_does_not_replace_the_seven_healthy_snapshots` が守っている。
+    書いているが、**入れる実利が無い**（P9 の実測: 1 万枚の SQL 3 本が 43.6 → 42.5 ms。
+    一覧の 200 ms は `store.assets()` の dict 組み立てが主因）ので入れていない。
+
+    **（P9 の監査 C-1）以前ここには「既定の 2 MB なら走ったまま壊れた DB を見つける」と
+    いう理由を書いていたが、それは誤りだった。** 既定でも、キャッシュに収まる大きさの DB
+    （0.65 MB）では**書き込み用の接続が見落とす**。いまは `backup._refuse_if_broken()` が
+    **新しい読み取り専用の接続**で見るので、`cache_size` の値は安全の話ではない
+    （`tests/test_backup.py::test_a_page_in_the_writers_cache_is_still_noticed`）。
+
+    **（P9 の監査 D-10）振る舞いの試験は足していない。** 「書けない置き場で一時 b-tree が
+    落ちる」形は `pytest` の中で決定的に作れない——`TMP` / `TEMP` を**ファイル**に向けても、
+    SQLite は `GetTempPath` の結果が使えなければ**カレント（`.`）に落ちる**ので通ってしまう
+    （実測: `.tmp-audit-redo/p9fix/probe_temp_store.py`）。P9 で 500 になったのは
+    **エージェントの sandbox が書けない所を全部塞いでいた**ためで、その再現には sandbox が要る。
+    ここは pragma の値を固定する（`M1` / `M2` の壊し試験が落ちる）。
     """
     con = db.open_db(tmp_path)
     try:

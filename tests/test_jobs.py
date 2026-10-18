@@ -185,7 +185,7 @@ def test_a_job_that_processed_nothing_fails(env):
     only = add_asset(env.store, "a" * 64)
     env.fake.fail_on = {only}
     result = env.jobs.wait(env.jobs.start_tag(asset_ids=[only], sources=["wd14"])["job_id"])
-    assert result["state"] == "failed" and "1 枚も処理できませんでした" in result["message"]
+    assert result["state"] == "failed" and "1 枚も付けられませんでした" in result["message"]
 
 
 # ---- 受付の検査（§3.2）----

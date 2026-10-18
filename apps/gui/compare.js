@@ -296,7 +296,7 @@ function renderStage() {
                      meta.seed ? `seed ${meta.seed}` : null,
                      meta.steps != null ? `steps ${meta.steps}` : null,
                      meta.cfg != null ? `cfg ${meta.cfg}` : null]
-      .filter(Boolean).join(' · ');
+      .filter(Boolean).join('、');
     const flag = item.review_state === 'kept' ? 'キープ'
       : item.review_state === 'rejected' ? 'ボツ' : '';
     // 似ている順のときは距離をキャプションに足す（サーバが返した値。画面では数えない）
@@ -386,15 +386,17 @@ function renderDiff() {
       const value = row.values[at];
       if (unknown.has(id)) {
         const known = prefix[id];
+        // **（ワーディング監査 W-22）** 敬体に揃え、「未捕獲」はほどく（G-6）
         const title = known
-          ? `最終プロンプトは分からない（訳が未捕獲）。分かっているのは前置語だけ: ${known}`
-          : '最終プロンプトは分からない（訳が未捕獲 / 来歴に無い）';
+          ? `最終プロンプトは分かりません（訳を捕獲していません）。分かっているのは前置語だけです: ${known}`
+          : '最終プロンプトは分かりません（訳を捕獲しておらず、来歴にもありません）';
         return `<td class="cell unknown${numClass}" title="${esc(title)}">`
           + '<span class="unknown-mark">分からない</span>'
           + (known ? `<span class="partial">前置語: ${esc(known)}</span>` : '') + '</td>';
       }
       const cellState = (row.cells || [])[at] || 'same';
-      const title = value == null ? '（この画像には無い）' : String(value);
+      // **（ワーディング監査 W-52）** 体言止めをやめる
+      const title = value == null ? '（この画像にはありません）' : String(value);
       return `<td class="cell ${esc(cellState)}${numClass}" title="${esc(title)}">`
         + (value == null ? '<span class="none">—</span>' : esc(value)) + '</td>';
     }).join('');
@@ -412,7 +414,7 @@ function renderDiff() {
   $('cmp-diff').innerHTML = `
     <div class="cmp-tablewrap">
       <table class="cmp-table">
-        <thead><tr><th class="key">項目</th>${head}</tr></thead>
+        <thead><tr><th class="key">来歴</th>${head}</tr></thead>
         <tbody>${body || '<tr><td class="cmp-note">違う行はありません（すべて同じ）。</td></tr>'}</tbody>
       </table>
     </div>
@@ -422,13 +424,14 @@ function renderDiff() {
 }
 
 function stateLabel(value) {
+  // **（ワーディング監査 W-50）** 「分からない」と「不明」を混ぜない（1 つの語に揃える）
   return {
     changed: '違い',
     reweighted: '重み',
     only_in_some: '一部のみ',
     // 監査 B2: 「分からない」を「同じ」や「違い」と言わない
     unknown: '分からない',
-    incomplete: '一部不明',
+    incomplete: '一部が分からない',
   }[value] || value;
 }
 
@@ -438,7 +441,7 @@ function promptBlock() {
   if (!detail) return '';
   if (detail.too_long) {
     return '<div class="cmp-note">語が多すぎるので語の差分は省きました'
-      + '（表の値は生の文字列で見られます）。</div>';
+      + '（表には値をそのまま出しています）。</div>';
   }
   // 監査 B2: 訳が未捕獲の枚は「分からない」と描く（空の行にしない）
   const unknownIds = new Set(detail.unknown || []);
@@ -450,13 +453,13 @@ function promptBlock() {
   if (unknownIds.has(detail.base)) {
     // 基準そのものが分からないと、他の枚の語と比べられない（「追加」とは言わない）
     lines.push('<div class="cmp-line"><span class="who">基準</span>'
-      + '<span class="word unknown">訳が未捕獲（分からない）</span></div>');
+      + '<span class="word unknown">訳を捕獲していない（分かりません）</span></div>');
   }
   for (const id of others) {
     const index = displayIndex(id);                 // 監査 C2: 番号は画面の並び
     if (unknownIds.has(id)) {
       lines.push(`<div class="cmp-line"><span class="who">${index + 1}</span>`
-        + '<span class="word unknown">訳が未捕獲（分からない）</span></div>');
+        + '<span class="word unknown">訳を捕獲していない（分かりません）</span></div>');
       continue;
     }
     const words = detail.per_asset[id].map((word) => {
@@ -472,7 +475,7 @@ function promptBlock() {
     `<span class="word ${esc(token.state)}" title="${esc(token.state)}">${esc(token.t)}</span>`)
     .join(' ');
   const summary = unknownIds.size
-    ? `訳が未捕獲の枚がある（${unknownIds.size} 枚は分からない）`
+    ? `訳を捕獲していない画像がある（${unknownIds.size} 枚は分かりません）`
     : detail.normalized_equal ? '語も重みも同じ'
       : detail.reweighted ? '語は同じ・重みが違う' : '語が違う';
   const moved = detail.tokens.filter((token) => token.state === 'moved').length;
@@ -480,7 +483,7 @@ function promptBlock() {
     <summary>語の差分（基準 ${displayIndex(detail.base) + 1} 番）
       <span class="src">${esc(summary)} / 移動 ${moved} 語</span></summary>
     ${linesHtml}
-    <div class="cmp-line"><span class="who">全</span>${tokens}</div>
+    <div class="cmp-line"><span class="who">全体</span>${tokens}</div>
   </details>`;
 }
 
@@ -508,7 +511,7 @@ function jaBlock() {
     return `<div class="cmp-line"><span class="who">${index + 1}</span>${sentences}${chars}</div>`;
   }).join('');
   return `<details class="cmp-detail"><summary>日本語原文の差分
-    <span class="src">文単位 → 文字単位</span></summary>${lines}</details>`;
+    <span class="src">文単位、次に文字単位</span></summary>${lines}</details>`;
 }
 
 // ---- 差分ヒートマップ（P5-3。`comparison.md` §2.3・設計 §0.5 G6）----
@@ -622,7 +625,7 @@ function renderHeat() {
   const heat = state.heat.heatmap || {};
   const order = orderedIds();
   $('cmp-heatpair').textContent =
-    `基準 ${indexOfBase() + 1} 番 ⇔ ${order.indexOf(state.heatPair.b) + 1} 番`;
+    `基準 ${indexOfBase() + 1} 番と ${order.indexOf(state.heatPair.b) + 1} 番`;
   $('cmp-heatmetrics').textContent = metricsLine(state.heat);
   if (heat.available && heat.image) {
     $('cmp-heatimg').innerHTML =
@@ -630,7 +633,7 @@ function renderHeat() {
   } else {
     // 位置が合わないときは**画像ではなく理由**を出す（`comparison.md` §2.3）
     $('cmp-heatimg').innerHTML =
-      `<div class="cmp-note heat-no">差分を出せません: ${esc(heat.reason || '理由がありません')}</div>`;
+      `<div class="cmp-note heat-no">差分を出せません（${esc(heat.reason || '理由は不明です')}）</div>`;
   }
 }
 

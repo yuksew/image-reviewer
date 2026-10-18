@@ -95,7 +95,7 @@ function render() {
             <button type="button" class="anno-del" data-del="${esc(item.id)}">消す</button>
           </div>`;
       }).join('')
-      : '<div class="stat">まだ印はありません。ドラッグで囲むと付きます。</div>';
+      : '<div class="stat">まだ注記はありません。ドラッグで囲むと付きます。</div>';
   }
   const stage = surface();
   if (stage) {
@@ -167,9 +167,9 @@ async function commit(image) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.detail || res.status);
     }
-    state.note = '印を付けました。メモを書くなら一覧の「メモ」から';
+    state.note = '注記を付けました。メモを書くなら一覧の「メモ」から書けます。';
   } catch (error) {
-    state.error = `印を付けられません: ${error.message}`;
+    state.error = `注記を付けられません: ${error.message}`;
   }
   await refresh();
 }

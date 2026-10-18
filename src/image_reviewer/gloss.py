@@ -216,7 +216,7 @@ class GlossEngine:
                              headers={"Content-Type": "application/json"}, timeout=60.0)
         except OSError as exc:
             # **P4-2 の監査 B-1 / E-3**: 繋がらない・時間切れは 500 にしない（502）
-            raise ReviewError(502, "ComfyUI に繋がりません",
+            raise ReviewError(502, "ComfyUI につながりません",
                               details={"url": self.base, "error": str(exc)}) from exc
         prompt_id = (got or {}).get("prompt_id")
         if not prompt_id:
@@ -414,7 +414,7 @@ class GlossService:
         # --- ② 模型（錠の外）---
         engine = self.engine()
         if not engine.ping():
-            raise ReviewError(409, "語釈の模型（ComfyUI）につながりません",
+            raise ReviewError(409, "語釈のモデル（ComfyUI）につながりません。ComfyUI を起動すると訳が使えます",
                               code="gloss_engine_unavailable",
                               details={"url": getattr(engine, "base", None)})
         calls = 0

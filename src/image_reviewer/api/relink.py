@@ -47,7 +47,7 @@ def locations_relink(request: Request, body: dict = Body(...)):
 def locations_missing(
     request: Request,
     limit: int = Query(500, description="返す件数（既定 500・上限 5000）"),
-    include_deleted: str = Query("0", description="1 でアプリから消した物も出す（P8-2 の段 1〜3）"),
+    include_deleted: str = Query("0", description="1 で段 1〜3 で外した画像も出す"),
 ):
     """**参照切れの一覧**（**`GET` は 1 バイトも書かない**）。**人もエージェントも読める**。
 

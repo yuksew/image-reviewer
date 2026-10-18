@@ -152,12 +152,21 @@ def ids_of(data_dir: Path, *, limit: int | None = None, big: bool = False) -> li
 
 def probe_list(out: Path, synth: Path, runs: int) -> None:
     say("\n1. 一覧 API の応答（1 万枚の DB・**サーバ内**＝`TestClient`。目標 p95 20 ms）")
+    global OK
     cli = Client(synth, out / "backups")
     try:
         floor = []
         for _ in range(runs):
             floor.append(cli.get("/api/health")[2])
         report("GET /api/health（**土台**＝枠の費用。目標なし）", floor)
+
+        # **（P9 の監査 D-6）`/api/stats` も測る。** 画面は読み込みのたびに
+        # `/api/assets?limit=2000` と一緒にこれを呼ぶ（§12.1 の表に無かった）
+        samples = []
+        for _ in range(runs):
+            samples.append(cli.get("/api/stats")[2])
+        report("GET /api/stats（画面が一覧と一緒に毎回呼ぶ。§12.1 に無かった行）", samples,
+               note="`meta_json` を 1 万回 `json.loads` する")
 
         first = cli.get("/api/assets")
         total = first[1]["total"]
@@ -178,10 +187,22 @@ def probe_list(out: Path, synth: Path, runs: int) -> None:
             samples.append(cli.get("/api/assets?sort=model")[2])
         report("GET /api/assets?sort=model", samples, 20.0)
 
+        # **（P9 の監査 C-3）絞り込みが本当に効いているかを数える。**
+        # `make_synthetic_db.py` の判断が台帳に無いと、`reconcile()` が全部 `unreviewed` に
+        # 戻すので**0 件への絞り込み**を測ることになる（名札と中身が食い違う）
+        kept_total = None
         samples = []
         for _ in range(runs):
-            samples.append(cli.get("/api/assets?state=kept")[2])
-        report("GET /api/assets?state=kept（絞り込み）", samples, 20.0)
+            status, body, ms, _n = cli.get("/api/assets?state=kept")
+            samples.append(ms)
+            assert status == 200, body
+            kept_total = body.get("total")
+        report(f"GET /api/assets?state=kept（絞り込み。**返った {kept_total} 件**）",
+               samples, 20.0)
+        if not kept_total:
+            OK = False
+            FAILURES.append("state=kept の絞り込みが 0 件（判断が台帳に無い＝絞り込みを測っていない）")
+            say("  **絞り込みが 0 件**。この行は「絞り込み」を測っていない（監査 C-3）")
 
         samples = []
         for _ in range(runs):
@@ -313,9 +334,13 @@ def probe_decide(out: Path, synth: Path, runs: int) -> None:
             samples.append((time.perf_counter() - t0) * 1000)
             assert res.status_code == 200, res.text
         body = res.json()
+        # **（P9 の監査 D-9）応答にある鍵を出す。** `POST /api/reviews` は `asset` の中に
+        # `review_state` を返す（`export_pending` という鍵は無い。前は None と出していた）
+        asset = body.get("asset") or {}
         report("POST /api/reviews（keep を 1 枚ずつ・別々の枚）", samples, 100.0,
-               note=f"decision_id={body.get('decision_id')} state={body.get('review_state')}"
-                    f" / 掃き出し待ち {body.get('export_pending')}")
+               note=f"decision_id={body.get('decision_id')} /"
+                    f" review_state={asset.get('review_state')}"
+                    f" / 印を付けたまとまり {len(body.get('affected_group_ids') or [])}")
     finally:
         cli.close()
     shutil.rmtree(work, ignore_errors=True)
@@ -714,9 +739,14 @@ def main() -> int:
     ap.add_argument("--all", action="store_true")
     args = ap.parse_args()
 
-    out = Path(args.out)
+    # **（P9 の監査 D-3）相対パスで渡されても壊れない。** `--out` / `--synth` / `--replica` を
+    # そのまま使うと `check_backup_dir()` の「絶対パスで指定してください」（422）で
+    # `--library` が落ち、**日次のタイマーも黙って 5 回失敗した**（stderr だけ）。
+    # `IMAGE_REVIEWER_BACKUP_DIR` にも絶対パスで渡す必要があるので、ここで 1 回だけ解決する。
+    out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    synth = Path(args.synth) if args.synth else out / "synth10k"
+    synth = (Path(args.synth) if args.synth else out / "synth10k").resolve()
+    replica = (Path(args.replica) if args.replica else out / "real").resolve()
 
     wanted = {k: getattr(args, k) or args.all
               for k in ("list", "thumbs", "compare", "decide", "scan", "delete", "relink",
@@ -749,9 +779,9 @@ def main() -> int:
     if wanted["relink"]:
         probe_relink(out, synth)
     if wanted["library"]:
-        probe_library(out, Path(args.replica) if args.replica else out / "real")
+        probe_library(out, replica)
     if wanted["real"]:
-        probe_real(out, Path(args.replica) if args.replica else out / "real", args.runs)
+        probe_real(out, replica, args.runs)
 
     if not args.keep:
         shutil.rmtree(out / "w", ignore_errors=True)

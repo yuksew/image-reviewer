@@ -14,6 +14,9 @@
 - DB は **`scan.scan()` を 1 回通して作る**（`INSERT` を直に書かない。
   **`(path, size, mtime_ns)` が本物と一致する**ので、2 回目の走査が「差分なし」になる）。
 - 判断（`review_state`）とタグ（`tag` / `asset_tag`）を少しだけ入れる（一覧の絞り込みが効く形）。
+  **（P9 の監査 C-3）判断は `ReviewService.apply_asset()` で台帳に入れる**——
+  `asset.review_state` を直接 `UPDATE` すると、起動時の `reconcile()`（台帳が正）が
+  全部 `unreviewed` に戻し、`?state=kept` が**0 件への絞り込み**になる（名札と中身が食い違う）。
 
 使い方:
     $env:UV_CACHE_DIR = "C:\\work\\image-reviwer\\.uv-cache"
@@ -161,7 +164,17 @@ def _png_bytes(im: Image.Image) -> bytes:
 
 
 def seed_rows(store: Store, rng: random.Random, folders: int, big: int) -> dict:
-    """判断とタグを少し入れる（**一覧の絞り込みと `known` の道が本当に通る**形にする）。"""
+    """判断とタグを少し入れる（**一覧の絞り込みと `known` の道が本当に通る**形にする）。
+
+    **（P9 の監査 C-3）判断は台帳に書く。** 前は `asset.review_state` を直接
+    `UPDATE` していたが、`create_app()` の起動時の `ReviewService.reconcile()` は
+    **台帳（`decision`）が正**なので、それを**全部 `unreviewed` に戻す**（監査の実測:
+    1 万枚すべて `unreviewed`・`decision` 0 件）。そのため
+    `GET /api/assets?state=kept` の計測は「**0 件への絞り込み**」を測っていて、
+    表の名札（「絞り込み」）と中身が食い違っていた。
+    ここは `ReviewService.apply_asset()`（本物の道）で入れる——
+    `keep` に `rc.keep.favorite`、`reject` に `rc.reject.other`（必須の理由）。
+    """
     counts = {"kept": 0, "rejected": 0, "tags": 0}
     with store.locked() as con:
         names = ["1girl", "solo", "long_hair", "blue_eyes", "school_uniform", "smile",
@@ -174,20 +187,25 @@ def seed_rows(store: Store, rng: random.Random, folders: int, big: int) -> dict:
         ids = [r["id"] for r in con.execute("SELECT id FROM asset ORDER BY id")]
     with store.transaction() as con:
         for n, asset_id in enumerate(ids):
-            if n % 7 == 0:
-                con.execute("UPDATE asset SET review_state = 'kept', reviewed_at = '2026-10-18T00:00:00Z',"
-                            " reviewed_by = 'human' WHERE id = ?", (asset_id,))
-                counts["kept"] += 1
-            elif n % 11 == 0:
-                con.execute("UPDATE asset SET review_state = 'rejected', reviewed_at = '2026-10-18T00:00:00Z',"
-                            " reviewed_by = 'human' WHERE id = ?", (asset_id,))
-                counts["rejected"] += 1
             if n % 3 == 0:
                 for name in rng.sample(names[:10], 3):
                     con.execute("INSERT OR IGNORE INTO asset_tag(asset_id, tag_id, score, source,"
                                 " actor, tagged_at) VALUES (?, ?, ?, 'wd14', 'agent',"
                                 " '2026-10-18T00:00:00Z')", (asset_id, tag_ids[name], rng.random()))
                     counts["tags"] += 1
+
+    from image_reviewer.review import ReviewService                      # 循環を避けて局所で
+
+    review = ReviewService(store)                 # 台帳が正（前の判断が無いので何もしない）
+    for n, asset_id in enumerate(ids):
+        if n % 7 == 0:
+            review.apply_asset(asset_id, "keep", reason_code_id="rc.keep.favorite",
+                               actor="human")
+            counts["kept"] += 1
+        elif n % 11 == 0:
+            review.apply_asset(asset_id, "reject", reason_code_id="rc.reject.other",
+                               actor="human")
+            counts["rejected"] += 1
     return counts
 
 
@@ -236,9 +254,14 @@ def main() -> int:
         store.close()
 
     with Store(out) as store:
+        with store.locked() as con:
+            kept = con.execute("SELECT count(*) AS n FROM asset"
+                               " WHERE review_state = 'kept'").fetchone()["n"]
+            decisions = con.execute("SELECT count(*) AS n FROM decision").fetchone()["n"]
         print(f"4. できた物: asset={store.stats()['assets']} "
               f"locations={store.stats()['locations']} "
-              f"with_provenance={store.stats()['with_provenance']}")
+              f"with_provenance={store.stats()['with_provenance']} "
+              f"kept={kept} decision={decisions}")
     db_size = (out / "db.sqlite3").stat().st_size + (out / "db.sqlite3-wal").stat().st_size \
         if (out / "db.sqlite3-wal").exists() else (out / "db.sqlite3").stat().st_size
     print(f"   DB {db_size / 1e6:.1f} MB / {out}")

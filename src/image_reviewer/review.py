@@ -164,7 +164,7 @@ class ReviewService:
                     result["superseded"] = True
             else:
                 if group["state"] == "decided":                      # 点検 C3
-                    raise ReviewError(409, "決定済みのまとまりです（先に reopen してください）",
+                    raise ReviewError(409, "決定済みのまとまりです（先に開き直してください: /reopen）",
                                       code="group_decided", details={"group_id": group_id})
                 result = self._decide_group(con, group, checked, greason, note, actor,
                                             client_token)
@@ -234,7 +234,7 @@ class ReviewService:
                         changes.append((got["id"], have, want))
         if fixed:
             log.warning(
-                "現在値の写しを台帳から組み直しました: %d 行（監査 B1）。"
+                "現在値の写しを台帳から組み直しました: %d 行。"
                 " 直す前: %s / 直した後: %s%s",
                 fixed,
                 [_fmt_state(cid, have) for cid, have, _want in changes],
@@ -611,7 +611,7 @@ class ReviewService:
         missing = [a for a in members if a not in seen]
         extra = [i["asset_id"] for i in out if i["asset_id"] not in known]
         if missing or extra:
-            raise ReviewError(422, "items がまとまりの全枚を過不足なく覆っていません",
+            raise ReviewError(422, "items にまとまりの全部の画像が過不足なく入っていません",
                               details={"missing": missing, "extra": extra})
         return out
 

@@ -33,6 +33,10 @@
    切り替えて**断る（G-1）。
 11. **（D-2 / G-5）版を上げずに表の形を変える前**にも控えを取る（`pre-topup-*`）。
     `_top_up_v6` の `ALTER` は `pre-migrate-*` の道を通らない（実データで実際に起きた）。
+12. **（P9 の監査 C-1）走ったまま壊れた DB の入口は「新しい読み取り専用の接続」で見る**
+    （`quick_check_on_disk`）。書き込み用の接続は**自分が書いたページをキャッシュに持つ**ので、
+    外から潰されたページを読み直さない（実測: 既定の 2 MB に収まる 0.65 MB の DB で
+    見落とした）。`cache_size` は**速さだけで決める**（入れない。§12.2）。
 """
 
 from __future__ import annotations
@@ -95,6 +99,31 @@ PRE_TOPUP_PREFIX = "pre-topup-"
 
 #: 復元の案内（`GET /api/health/db` と CLI が同じ文言を使う）
 RESTORE_HINT = "image-reviewer restore <バックアップのフォルダ>"
+
+#: 「壊れている」ではなく「混んでいる」だけの言い方（**`read_only` に切り替えない**）。
+#: `quick_check` が投げた例外の文言で見る（`api/__init__.py` の `_is_corruption` と同じ流儀）
+BUSY_WORDS = ("database is locked", "database table is locked", "busy")
+
+
+def _looks_busy(got: dict) -> bool:
+    """その `quick_check` の失敗は**一時的な錠**か（P9 の監査 C-1 の副産物）。
+
+    走ったまま壊れた DB を見る入口は、**新しい読み取り専用の接続**で `quick_check` する。
+    別の接続が書き込み中だと `database is locked` で失敗しうるが、それは**壊れていない**。
+    ここで `read_only` に切り替えると、そのプロセスは**二度と書き込めない**（戻す道が無い）。
+    次の周期で直る物を永久の停止にしない。
+    """
+    text = str(got.get("error") or got.get("detail") or "").lower()
+    return any(word in text for word in BUSY_WORDS)
+
+
+def _switched_read_only(exc: BaseException) -> bool:
+    """`_refuse_if_broken` が**読み取り専用に切り替えて**断った例外か（P9 の監査 D-8）。
+
+    `_mark_broken` が既に `last_error` を書いているので、`_failed()` がもう一度書こうとすると
+    `transaction()` が 503 を返し、**トレースバックがログに出るだけ**になる（二重記録）。
+    """
+    return isinstance(exc, ReviewError) and exc.code == "read_only"
 
 
 # ---- 置き場 ----
@@ -711,6 +740,25 @@ def check_db_file(path, *, full: bool = False) -> dict:
         con.close()
 
 
+def quick_check_on_disk(data_dir) -> dict:
+    """**新しい読み取り専用の接続**で `quick_check` する（**P9 の監査 C-1**）。
+
+    走ったまま壊れた DB の入口（G-1）は、長らく `store` の**書き込み用の接続**で
+    `quick_check` していた。ところがその接続は**自分が書いたページをページキャッシュに
+    持っていて、外から潰されたページを読み直さない**。既定の `cache_size`（2 MB）でも、
+    それに収まる大きさの DB（実測 0.65 MB・250 行）では**壊れを見落として控えを取り、
+    書き続けた**（監査の実測。`cache_size` を 64 MB にしたときだけの話ではなかった）。
+
+    新しい接続はカーペットを敷いていないので、**盤の上を読む**。監査の 28 通りすべてで
+    見つかった。**速さの話ではないので、`cache_size` は既定のまま**（§12.2）。
+
+    実装は `check_db_file`（`file:...?mode=ro` を**新しく 1 本開いて** `quick_check` する。
+    復元の前と同じ物差し）。`<data>` に 1 バイトも書かない。
+    開けない（先頭 4 KB を潰した形）ときも `ok: False` を返す。
+    """
+    return check_db_file(Path(data_dir) / "db.sqlite3")
+
+
 def check_snapshot_db(path) -> dict:
     """**写しの健全性**（設計 §0.12-5 の日次の `integrity_check`。P8-4 の監査 B-1）。
 
@@ -874,9 +922,15 @@ class BackupService:
                     "error": None}
 
     def _failed(self, exc: Exception, *, ticks: int) -> dict:
-        """失敗を残す（**黙って失敗しない**。設計 §0.12 の 6）。"""
+        """失敗を残す（**黙って失敗しない**。設計 §0.12 の 6）。
+
+        **（P9 の監査 D-8）読み取り専用へ切り替えて断ったときは記録しない。**
+        `_mark_broken()` が既に書いているので、ここでもう一度書くと
+        `transaction()` が 503 を返してトレースバックがログに積まれるだけになる。
+        """
         message = exc.detail if isinstance(exc, ReviewError) else str(exc)
-        self._record_error(message)
+        if not _switched_read_only(exc):
+            self._record_error(message)
         log.warning("バックアップに失敗しました: %s", message)
         return {"ticks": ticks, "skipped": "failed", "taken": None, "error": message}
 
@@ -888,12 +942,23 @@ class BackupService:
         起動時の `inspect_db`（`app.py`）は「開く前」の検査なので、**走っている間に
         壊れた**場合はここでしか気づけない。写しの検査（B-1）だけでも世代は守れるが、
         壊れた DB に書き続けないためにも入口を 1 つ置く。
+
+        **（P9 の監査 C-1）見るのは「新しい読み取り専用の接続」**（`quick_check_on_disk`）。
+        書き込み用の接続で見ていた前の形は、その接続が**自分が書いたページをキャッシュに
+        持っている**ため、外から潰されたページを見落とした（実測: 0.65 MB の DB で
+        `ok: True` のまま控えを取り、`read_only` にならなかった）。
         """
         if self.store.read_only:
             return
-        with self.store.locked() as con:
-            got = db.quick_check(con)
+        got = quick_check_on_disk(self.data_dir)
         if got["ok"]:
+            return
+        if _looks_busy(got):
+            # **「混んでいる」を「壊れている」に数えない。** 一度 `read_only` にすると
+            # そのプロセスは書き込みをやめる（戻す道が無い）ので、一時的な錠で
+            # 永久に読み取り専用になる側に倒さない（`database is locked` は次の周期で直る）
+            log.warning("バックアップの健全性を確かめられませんでした（混んでいる）: %s",
+                        got["detail"])
             return
         message = f"DB が壊れています（quick_check: {got['detail']}）"
         self._mark_broken(message)
@@ -946,7 +1011,9 @@ class BackupService:
                 replace_dir(tmp, final)              # 一瞬で本名に（書きかけを見せない）
             except BaseException as exc:
                 shutil.rmtree(tmp, ignore_errors=True)
-                if isinstance(exc, Exception):       # **黙って捨てない**（Ctrl-C は残さない）
+                # **黙って捨てない**（Ctrl-C は残さない）。読み取り専用へ切り替えた断りは
+                # `_mark_broken()` が記録済みなので二重に書かない（P9 の監査 D-8）
+                if isinstance(exc, Exception) and not _switched_read_only(exc):
                     self._record_failure(exc)
                 raise
             # **D-6**: 一時の置き場（`--out`）では掃除しない。自分の置き場のときだけ
@@ -1571,7 +1638,8 @@ __all__ = [
     "current_app_version", "default_backup_dir", "dir_size", "env_backup_dir",
     "free_dir_name", "guidance_for", "inspect_db", "is_our_snapshot", "kind_of_snapshot",
     "list_snapshots", "local_day", "local_hhmmss", "next_local_midnight", "plus_seconds",
-    "prune_snapshots", "read_manifest", "read_manifest_lenient", "rebuild_metadata",
+    "prune_snapshots", "quick_check_on_disk", "read_manifest", "read_manifest_lenient",
+    "rebuild_metadata",
     "replace_dir", "resolve_backup_dir", "restore", "set_backup_dir", "setting_of",
     "settings_state",
     "sha256_file", "snapshot_info", "validate_manifest",

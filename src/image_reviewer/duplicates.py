@@ -166,11 +166,11 @@ def _rank(row: dict) -> tuple:
 
 #: 推薦の規則（**上から順に見て、上位 2 枚を分けた規則を言う**。監査 D-2）
 _RULES: tuple[tuple[str, Any], ...] = (
-    ("人がキープと言った物", _kept),
-    ("人がボツと言っていない物", lambda r: -_rejected(r)),
-    ("画素数が最大", _pixels),
-    ("ファイルが大きい", lambda r: int(r.get("size") or 0)),
-    ("新しい方（同じ寸法の作り直しは最終版を残す）", lambda r: int(r.get("mtime_ns") or 0)),
+    ("人がキープにしたもの", _kept),
+    ("人がボツにしていないもの", lambda r: -_rejected(r)),
+    ("画素数がいちばん多い", _pixels),
+    ("ファイルがいちばん大きい", lambda r: int(r.get("size") or 0)),
+    ("いちばん新しい（同じ寸法の作り直しは最終版を残す）", lambda r: int(r.get("mtime_ns") or 0)),
 )
 
 
@@ -200,7 +200,7 @@ def representative(members: Sequence[dict]) -> tuple[str, str]:
     for label, get in _RULES:
         if get(best) != get(second):
             return str(best["id"]), label
-    return str(best["id"]), "id の順（他に違いが無い）"
+    return str(best["id"]), "id の順（ほかに違いが無い）"
 
 
 def _hashed_assets(con: sqlite3.Connection) -> dict[str, int]:
@@ -551,7 +551,7 @@ class DuplicatesService:
             if got["state"] in ("done", "failed", "cancelled"):
                 return got
             time.sleep(self._poll)
-        raise ReviewError(504, "待ち時間を越えました", details={"job_id": job_id})
+        raise ReviewError(504, "待ち時間を超えました", details={"job_id": job_id})
 
     # ---- 読み（`GET` は書かない）----
 

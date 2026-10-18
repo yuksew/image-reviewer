@@ -18,6 +18,10 @@ import { hidePending, renderDeleteEntry, showPending, toDelete, wireDeleteEntry,
          wirePending } from './pending.js';
 // P8-5: 設定（`#/settings`。バックアップの詳細と置き場の段 3 の印）
 import { hideSettings, showSettings, wireSettings } from './settings.js';
+// P9 の監査 C-2: 画面に出す「枚」の規則は 1 か所（`counts.js`）
+import { briefText, liveTotal, provenanceCounts } from './counts.js';
+// ワーディング監査 G-12 / W-3: 絞り込みの軸と 0 枚のときの文は 1 か所（`filters.js`）
+import { emptyText, isFiltering, railSelection, visibleAssets as filterAssets } from './filters.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -40,6 +44,37 @@ const state = {
 const DENSITY = { dense: 140, normal: 200, sparse: 300 };
 const DENSITY_LABEL = { dense: '密', normal: '普', sparse: '疎' };
 
+// **（ワーディング監査 G-3）英語の内部値をそのまま画面に出さない。**
+// 値は日本語のラベルの地図を通す（`jobs.js` の `STATE_LABEL` と同じ形）。
+// 地図に無い値は「その他（値）」の形で出す。**技術用語（pHash・sha256・seed など）は残す。**
+const KIND_LABEL = { generated: '生成物', reference: '参考資料', photo: '写真・スクショ' };
+//: `ja_source` / `en_source` / `final_prompt_source` の値（`png_meta.py`・`export.py` の語彙）
+const SOURCE_LABEL = {
+  png_primitive: 'PNG の文字列ノード',
+  png_literal: 'PNG に書かれた値',
+  workflow_node: 'ワークフローのノード',
+  sidecar: '控えのファイル（sidecar）',
+  comfyui_history: 'ComfyUI の /history',
+  textgenerate: '生成に使ったノード',
+  ollama: 'Ollama の訳',
+  manual: '手で入れた値',
+  reconstructed: '捕獲した値から組み直し',
+};
+
+function labelText(map, value) {
+  if (value === null || value === undefined || value === '') return '';
+  return map[value] || `その他（${value}）`;
+}
+
+/** LoRA の 1 つを「名前（強さ）」の形にする（**オブジェクトをそのまま出さない**。ワーディング監査 W-1）。 */
+function loraText(lora) {
+  if (lora === null || lora === undefined) return '';
+  if (typeof lora !== 'object') return String(lora);
+  const name = lora.name ?? lora.lora ?? '';
+  const strength = lora.strength_model ?? lora.strength ?? null;
+  return strength === null || strength === undefined ? String(name) : `${name}（強さ ${strength}）`;
+}
+
 async function api(path, options) {
   const res = await fetch(path, options);
   if (!res.ok) {
@@ -61,7 +96,8 @@ function esc(s) {
 }
 
 function shortPath(p) {
-  if (!p) return '（実体なし）';
+  // **（ワーディング監査 W-69）** 「実体なし」ではなく、起きていることをそのまま書く（§6 の参照切れ）
+  if (!p) return '見つかりません';
   const parts = p.split(/[\\/]/);
   return parts.length <= 3 ? p : '…\\' + parts.slice(-2).join('\\');
 }
@@ -89,7 +125,8 @@ async function capture() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     });
-    alert(`/history ${s.history_entries} 件を走査。\n訳が未取得の ${s.checked} 枚のうち ${s.captured} 枚で訳を捕獲しました。`);
+    // **（ワーディング監査 W-46）** 「N 件を走査。」は体言止めで切れていた。敬体の 1 文にする
+    alert(`/history を ${s.history_entries} 件見ました。\n訳が未取得の ${s.checked} 枚のうち ${s.captured} 枚で訳を捕獲しました。`);
     await load();
     if (state.selected) await select(state.selected);
   } catch (e) {
@@ -121,19 +158,24 @@ async function rescan() {
 
 function renderStats() {
   const s = state.stats || {};
-  // **（P9）切った枚数を黙って捨てない。** `state.total > state.listed` のときだけ添える
-  // （文言の正は `frontend-design.md` §6。実データ 455 枚では今までどおり「455 枚」）
-  const total = state.total || (s.assets ?? 0);
-  $('stat-brief').textContent = (state.listed && state.total > state.listed)
-    ? `${total} 枚（先頭 ${state.listed} 枚を表示）`
-    : `${total} 枚`;
-  $('c-all').textContent = s.assets ?? 0;
-  $('c-with').textContent = s.with_provenance ?? 0;
-  $('c-without').textContent = s.without_provenance ?? 0;
+  // **（P9 の監査 C-2）「枚」は 1 つの規則で出す。** 上部バーも「すべて」も下部バーも
+  // **生きた枚**（`GET /api/assets` の `total`＝段 1〜3 で外した枚を含まない）。
+  // 前は上部だけが `total` で、`#c-all` と下部バーは `/api/stats` の `assets`（455）だったので、
+  // 実データで「262 枚」と「455」が同じ画面に並んだ。
+  const total = liveTotal(s, state.total);
+  const counts = provenanceCounts(state.assets, total, s);
+  $('stat-brief').textContent = briefText(total, state.listed);
+  $('c-all').textContent = total;
+  $('c-with').textContent = counts.with;
+  $('c-without').textContent = counts.without;
   const byKind = {};
   for (const a of state.assets) byKind[a.kind] = (byKind[a.kind] || 0) + 1;
+  // **（ワーディング監査 W-6）** 種別は §17 の 3 語（生成物 / 参考資料 / 写真・スクショ）で分ける。
+  // 前は「写真・その他」の 1 行に photo と reference を足した数を出していたので、
+  // **押したときに絞られる枚（photo だけ）と見えている数が違っていた**
   $('c-gen').textContent = byKind.generated || 0;
-  $('c-photo').textContent = (byKind.photo || 0) + (byKind.reference || 0);
+  $('c-ref').textContent = byKind.reference || 0;
+  $('c-photo').textContent = byKind.photo || 0;
 
   const models = $('models');
   models.innerHTML = '';
@@ -146,29 +188,43 @@ function renderStats() {
     models.appendChild(el);
   }
 
+  // **（ワーディング監査 W-61）** 区切りが空白だけだと 4 つの数が繋がって読めない。括弧と読点で組む
   $('bar-count').textContent =
-    `${s.assets ?? 0} 枚   来歴あり ${s.with_provenance ?? 0}   来歴なし ${s.without_provenance ?? 0}` +
-    (s.missing ? `   参照切れ ${s.missing}` : '');
+    `${total} 枚（来歴あり ${counts.with}、来歴なし ${counts.without}` +
+    (s.missing ? `、参照切れ ${s.missing}` : '') + '）';
 }
 
 // ---- フィルタ ----
 
-function setFilter(f) {
-  state.filter = f;
+/** 左の列の「いま効いている 1 つ」に印を付ける（**来歴の軸と種別の軸で 1 つだけ**。監査 G-12）。 */
+function markRail() {
+  const on = state.filter !== 'all' ? state.filter : (state.provenance !== 'all' ? state.provenance : 'all');
   for (const el of document.querySelectorAll('.rail .item')) {
-    el.classList.toggle('on', el.dataset.filter === f);
+    el.classList.toggle('on', el.dataset.filter === on);
   }
+}
+
+function setFilter(f) {
+  // **（ワーディング監査 G-12）左の列の「来歴あり」「来歴なし」は押せるのに絞られなかった。**
+  // どの軸がどう動くかは `filters.js` の純関数が決める（`visibleAssets()` が見るのは
+  // `state.provenance` なので、この 2 行を押したら**その軸を動かす**）。左の列は 1 つだけ選べる
+  const picked = railSelection(f, state.provenance);
+  state.filter = picked.filter;
+  state.provenance = picked.provenance;
+  syncProvenanceButton();
+  markRail();
   renderSheet();
 }
 
+/** 上部の「来歴: …」の文字を、いまの軸に合わせる（左の列から動かしたときも揃える）。 */
+function syncProvenanceButton() {
+  $('btn-provenance').textContent =
+    `来歴: ${{ all: 'すべて', with: 'あり', without: 'なし' }[state.provenance]}`;
+}
+
 function visibleAssets() {
-  let items = state.assets;
-  if (state.provenance === 'with') items = items.filter((a) => a.has_provenance);
-  if (state.provenance === 'without') items = items.filter((a) => !a.has_provenance);
-  const f = state.filter;
-  if (f.startsWith('kind:')) items = items.filter((a) => a.kind === f.slice(5));
-  else if (f.startsWith('model:')) items = items.filter((a) => a.model === f.slice(6));
-  return items;
+  // 絞り込みの中身は `filters.js`（押したときに軸が動くことを `gui_smoke` が固定する）
+  return filterAssets(state.assets, { filter: state.filter, provenance: state.provenance });
 }
 
 // ---- フィルム（一覧） ----
@@ -177,7 +233,11 @@ function renderSheet() {
   const items = visibleAssets();
   const rows = $('rows');
   rows.innerHTML = '';
+  // **（ワーディング監査 W-3）絞り込みで 0 枚のときに「まだ画像がありません」と言わない**
+  // （走査は済んでいる。§6 の「空（検索）」の文を出す。§5-5。文は `filters.js` の 1 か所）
+  const filtering = isFiltering(state.filter, state.provenance);
   $('sheet-empty').hidden = items.length > 0;
+  $('sheet-empty').textContent = emptyText(filtering);
   $('bar-shown').textContent = `表示 ${items.length} 枚`;
 
   const frag = document.createDocumentFragment();
@@ -197,7 +257,7 @@ function renderSheet() {
     el.innerHTML =
       `<div class="wedge"></div><div class="warn"></div><div class="no"></div>` +
       `<img loading="lazy" decoding="async" src="/api/assets/${a.id}/thumb?size=256" alt="">` +
-      `<div class="cap">${esc(a.model || '')}${a.seed ? ' · ' + esc(a.seed) : ''}</div>`;
+      `<div class="cap">${esc(a.model || '')}${a.seed ? '、' + esc(a.seed) : ''}</div>`;
     el.querySelector('.no').textContent = String(items.indexOf(a) + 1);
     // 点検 C9: 比較の画面は**まとまりが無くても**入れる。Ctrl / Shift + クリックで選ぶ
     el.addEventListener('click', (event) => {
@@ -231,7 +291,7 @@ async function select(id) {
   row('モデル', esc(meta.model));
   row('テクストエンコーダ', esc(meta.clip));
   row('VAE', esc(meta.vae));
-  row('LoRA', (meta.loras || []).map(esc).join('<br>'));
+  row('LoRA', (meta.loras || []).map((lora) => esc(loraText(lora))).join('<br>'));
   row('seed', esc(meta.seed), 'num');
   row('steps', meta.steps, 'num');
   row('cfg', meta.cfg, 'num');
@@ -240,7 +300,8 @@ async function select(id) {
   row('scheduler', esc(meta.scheduler));
   row('大きさ', `${esc(asset.width)} × ${esc(asset.height)}`);
   row('実体', fmtBytes(asset.size), 'num');
-  row('種別', esc(asset.kind));
+  // **（ワーディング監査 W-6）** `generated` ではなく §17 の語（生成物 / 参考資料 / 写真・スクショ）で出す
+  row('種別', esc(labelText(KIND_LABEL, asset.kind)));
   const nodes = meta.node_types ? Object.entries(meta.node_types).map(([k, v]) => `${k}×${v}`).join(', ') : '';
   row('ノード', `<span class="mono">${esc(nodes)}</span>`);
 
@@ -265,24 +326,24 @@ async function select(id) {
       : `<div class="note">この画像には生成条件が残っていません（prompt チャンクが無い）。</div>`}
 
     ${meta.ja_text ? `<h3>生成に用いた日本語</h3><textarea readonly>${esc(meta.ja_text)}</textarea>
-      <div class="stat">出所: ${esc(meta.ja_source || '—')}</div>` : ''}
+      <div class="stat">出所: ${esc(labelText(SOURCE_LABEL, meta.ja_source))}</div>` : ''}
 
     ${meta.en_text ? `
       <h3>当時の英訳<span class="src">（生成の瞬間に捕獲）</span></h3>
       <textarea readonly>${esc(meta.en_text)}</textarea>
-      <div class="stat">出所: ${esc(meta.en_source)}
-        ${meta.prompt_id ? ` ・ prompt_id ${esc(meta.prompt_id.slice(0, 8))}…` : ''}
-        ${meta.captured_from_node ? ` ・ ノード ${esc(meta.captured_from_node)}` : ''}</div>
+      <div class="stat">出所: ${esc(labelText(SOURCE_LABEL, meta.en_source))}
+        ${meta.prompt_id ? `、prompt_id ${esc(meta.prompt_id.slice(0, 8))}…` : ''}
+        ${meta.captured_from_node ? `、ノード ${esc(meta.captured_from_node)}` : ''}</div>
       ${meta.final_prompt ? `
         <h3>実際に渡った最終プロンプト<span class="src">（再構成）</span></h3>
         <textarea readonly>${esc(meta.final_prompt)}</textarea>
-        <div class="stat">捕獲値に前置語を足して組み直したもの（出所: ${esc(meta.final_prompt_source)}）。
-          L1 で書き出すならこれを固定する（品質語を落とさない）。</div>` : ''}
+        <div class="stat">捕獲値に前置語を足して組み直したものです
+          （出所: ${esc(labelText(SOURCE_LABEL, meta.final_prompt_source))}）。</div>` : ''}
     ` : (meta.has_textgen ? `
       <h3>当時の英訳</h3>
-      <div class="note">この画像は日本語→英語の翻訳を通していますが、訳がまだ捕獲できていません。
+      <div class="note">この画像は日本語から英語への翻訳を通していますが、訳がまだ捕獲できていません。
       ComfyUI を起動した状態で「訳を捕獲」を押すと、<code>/history</code> に残っていれば取れます
-      （残っていなければ訳し直しになります。design.md §7.3.1）。</div>
+      （残っていなければ訳し直しになります）。</div>
       <table>${Object.entries(meta.textgen_params || {}).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(String(v))}</td></tr>`).join('')}</table>
     ` : '')}
 
@@ -293,8 +354,8 @@ async function select(id) {
       <a href="/api/assets/${id}/file" target="_blank">原本を開く</a>
     </div>
     <div class="stat" style="margin-top:6px">
-      API 形式のまま ComfyUI のキャンバスへドラッグ&ドロップすると開けます（実機で確認済み）。
-      URL 一発で開く方法は ComfyUI にありません。
+      API 形式のまま ComfyUI のキャンバスへドラッグ&ドロップすると開けます。
+      URL で直接開く方法は ComfyUI にありません。
     </div>
     <div class="stat mono" style="margin-top:6px">sha256 ${esc(asset.sha256)}</div>
   `;
@@ -488,7 +549,9 @@ function route() {
 
 function cycleProvenance() {
   state.provenance = state.provenance === 'all' ? 'with' : state.provenance === 'with' ? 'without' : 'all';
-  $('btn-provenance').textContent = `来歴: ${{ all: 'すべて', with: 'あり', without: 'なし' }[state.provenance]}`;
+  state.filter = 'all';                 // 左の列と 1 つだけ（監査 G-12）
+  syncProvenanceButton();
+  markRail();
   renderSheet();
 }
 

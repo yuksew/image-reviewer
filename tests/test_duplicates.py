@@ -157,7 +157,7 @@ def test_the_representative_prefers_the_one_a_human_kept():
     """壊すと落ちる: 規則 1（人がキープ）を外すと、画素数の多い方が選ばれる。"""
     members = [member("a", width=1024, height=1024, size=5000),
                member("b", width=64, height=64, size=10, verdict="keep")]
-    assert representative(members) == ("b", "人がキープと言った物")
+    assert representative(members) == ("b", "人がキープにしたもの")
 
 
 def test_the_representative_prefers_the_biggest_picture():
@@ -173,7 +173,7 @@ def test_the_representative_prefers_the_newer_one_when_sizes_match():
     **同じ寸法の作り直し**（実データの 19 群）では、**新しい方が「最終版」**（点検 C2・G3）。
     """
     members = [member("old", mtime_ns=100), member("new", mtime_ns=200)]
-    assert representative(members) == ("new", "新しい方（同じ寸法の作り直しは最終版を残す）")
+    assert representative(members) == ("new", "いちばん新しい（同じ寸法の作り直しは最終版を残す）")
 
 
 def test_the_representative_is_deterministic():
@@ -190,19 +190,19 @@ def test_the_representative_never_recommends_a_rejected_one():
                member("ok", width=64, height=64, size=10)]
     got = representative(members)
     assert got[0] == "ok", f"ボツにした枚を推薦した: {got}"
-    assert got[1] == "人がボツと言っていない物", got
+    assert got[1] == "人がボツにしていないもの", got
 
 
 def test_the_reason_is_the_deciding_rule_not_the_first_difference():
     """壊すと落ちる: 理由を「群の中で最初に違う属性」にすると、**決め手と違うことを言う**（監査 D-2）。
 
     `A(100px, 10B)・B(100px, 20B)・C(50px, 30B)` は **B** が選ばれる（画素数で勝った）。
-    理由は「画素数が最大」ではなく、**上位 2 枚（B と A）を分けた規則＝「ファイルが大きい」**。
+    理由は「画素数がいちばん多い」ではなく、**上位 2 枚（B と A）を分けた規則＝「ファイルがいちばん大きい」**。
     """
     members = [member("a", width=100, height=100, size=10),
                member("b", width=100, height=100, size=20),
                member("c", width=50, height=50, size=30)]
-    assert representative(members) == ("b", "ファイルが大きい")
+    assert representative(members) == ("b", "ファイルがいちばん大きい")
 
 
 # ---- 群（§3.1 の `near`）----

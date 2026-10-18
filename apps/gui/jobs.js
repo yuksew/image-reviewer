@@ -15,8 +15,19 @@ const $ = (id) => document.getElementById(id);
 const state = { items: [], detail: null, timer: null, wired: false };
 
 export const STATE_LABEL = {
-  queued: '待っています', running: '実行中', done: '完了', failed: '失敗', cancelled: '中断',
+  // **（ワーディング監査 W-35）** 進行中の状態は「進行中」に揃える（同じ画面の見出し `進行中` と同じ語）。
+  // 「実行」は §6 の使わない語
+  queued: '待っています', running: '進行中', done: '完了', failed: '失敗', cancelled: '中断',
 };
+
+// **（ワーディング監査 W-8）** ジョブの種類は英語の内部値（`hash` / `tag`）をそのまま出さない。
+// 日本語のラベルの地図を通す（地図に無い値は「その他（値）」。§6.1 の規則 2）
+export const JOB_KIND_LABEL = { hash: '指紋の計算', tag: 'タグ付け' };
+
+function kindText(kind) {
+  if (!kind) return '';
+  return JOB_KIND_LABEL[kind] || `その他（${kind}）`;
+}
 
 export function esc(value) {
   return String(value ?? '').replace(/[&<>"]/g,
@@ -71,14 +82,17 @@ export function jobHtml(job, now = Date.now()) {
     : '';
   return `<div class="jb-row${active ? ' on' : ''}" data-id="${esc(job.id)}">`
     + `<div class="jb-top"><span class="jb-state jb-${esc(job.state)}">${esc(STATE_LABEL[job.state] || job.state)}</span>`
-    + `<span class="jb-kind">${esc(job.kind)}</span>`
+    + `<span class="jb-kind">${esc(kindText(job.kind))}</span>`
     + `<span class="jb-count num">${done} / ${total}</span>`
-    + `<span class="stat">1 枚 ${esc(fmtSec(perItem))}${active ? ` ・ 残り 約 ${esc(fmtSec(remainSec))}` : ''}</span>`
+    // **（ワーディング監査 W-36）** 測れないときは数を出さない（`fmtSec` が「—」を返す）。
+    // 前は終わったジョブにも「1 枚 0.0 秒」、始まったばかりのジョブに「残り 約 0.0 秒」と出ていた
+    + `<span class="stat">1 枚 ${esc(fmtSec(perItem > 0 ? perItem : null))}`
+    + `${active && remainSec > 0 ? `、残り約 ${esc(fmtSec(remainSec))}` : ''}</span>`
     + `<span class="spacer"></span>${cancel}</div>`
     + `<div class="jb-bar"><span style="width:${pct}%"></span></div>`
     // **P4-3 の監査 A-1**: 失敗だけの job（付いた 0・飛ばした 0）でも行を出す
     + ((counts.tagged || counts.skipped || failedCount)
-      ? `<div class="stat">付いた ${counts.tagged || 0} ・ 飛ばした ${counts.skipped || 0} ・ 失敗 ${failedCount}</div>` : '')
+      ? `<div class="stat">付いた ${counts.tagged || 0}、飛ばした ${counts.skipped || 0}、失敗 ${failedCount}</div>` : '')
     + (job.note ? `<div class="stat">${esc(job.note)}</div>` : '')
     + (job.message ? `<div class="stat">${esc(job.message)}</div>` : '')
     + failed

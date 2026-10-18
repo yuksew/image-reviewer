@@ -129,7 +129,7 @@ def set_gloss(request: Request, tag_id: int, payload: dict = Body(default={})):
     tags.require_human(actor)
     ja = payload.get("ja")
     if not isinstance(ja, str) or not ja.strip():
-        raise ReviewError(422, "ja（日本語の語釈）をください", details={"ja": "1 文字以上"})
+        raise ReviewError(422, "ja（日本語の語釈）が要ります", details={"ja": "1 文字以上"})
     if len(ja) > gloss.MAX_JA:
         raise ReviewError(422, f"ja は {gloss.MAX_JA} 文字までです",
                           details={"ja": f"{gloss.MAX_JA} 文字まで", "length": len(ja)})

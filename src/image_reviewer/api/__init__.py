@@ -136,17 +136,40 @@ def sqlite_error_handler(request: Request, exc: sqlite3.DatabaseError) -> JSONRe
 
     そこで**語彙を分ける**:
 
-    - **壊れている仲間**（`malformed` / `not a database` / `corrupt` / `encrypted` /
-      `disk I/O error`）だけ 503（今までどおり。読み取り専用なら `read_only`）
-    - それ以外（`unable to open database file`・`database is locked`・`no such table`・
-      `IntegrityError` など）は **500 `sqlite_error`**。
-      **「バックアップから戻してください」とは言わない**（壊れているとは限らない）
+    - **壊れている仲間**（`malformed` / `not a database` / `corrupt` / `encrypted`）だけ 503
+      （今までどおり。読み取り専用なら `read_only`）
+    - **（P9 の監査 D-1）`disk i/o error` は「壊れている」に数えない。** 一時的な I/O の失敗
+      （USB の抜け・ウイルス対策の掴み）にも「バックアップから戻してください」と言っていた。
+      503 **`io_error`** ＋ `Retry-After` にして「もう一度」を案内する（**復元は勧めない**）
+    - **（P9 の監査 D-2）`database is locked` は「混んでいる」**（`busy_timeout` 15 秒の後なので
+      稀）。内部エラー（500）ではなく 503 **`busy`** ＋ `Retry-After: 1`
+    - それ以外（`unable to open database file`・`no such table`・`IntegrityError` など）は
+      **500 `sqlite_error`**。**「バックアップから戻してください」とは言わない**
+      （壊れているとは限らない）
 
     `kind` に例外のクラス名を入れる（`IntegrityError` か `OperationalError` かがログ無しで分かる）。
     """
     store = getattr(getattr(request.app, "state", None), "store", None)
     state = getattr(getattr(request.app, "state", None), "db_state", None) or {}
     read_only = bool(getattr(store, "read_only", False))
+    if _is_io_error(exc):
+        # **（P9 の監査 D-1 / G-6）復元を勧めない。** 一時的な読み書きの失敗
+        return JSONResponse(
+            {"detail": "DB の読み書きで一時的なエラーが起きました。少し待って、"
+                       "もう一度試してください（バックアップから戻す必要はありません）",
+             "code": "io_error",
+             "details": {"kind": type(exc).__name__, "error": str(exc),
+                         "read_only": read_only, "mode": state.get("mode")}},
+            status_code=503, headers={"Retry-After": "5"})
+    if _is_busy(exc):
+        # **（P9 の監査 D-2）「混んでいる」は 500 ではなく 503 ＋ もう一度**
+        return JSONResponse(
+            {"detail": "DB がいま混んでいます（ほかの処理が書き込んでいます）。"
+                       "少し待って、もう一度試してください",
+             "code": "busy",
+             "details": {"kind": type(exc).__name__, "error": str(exc),
+                         "read_only": read_only, "mode": state.get("mode")}},
+            status_code=503, headers={"Retry-After": "1"})
     if not _is_corruption(exc):
         # **壊れているとは限らない**。番号も文言も分ける（D-8）
         return JSONResponse(
@@ -170,8 +193,16 @@ def sqlite_error_handler(request: Request, exc: sqlite3.DatabaseError) -> JSONRe
 
 
 #: 「DB が壊れている」と言ってよい SQLite の言い方（**ここが 1 か所**。D-8）
+#: **（P9 の監査 D-1）`disk i/o error` はここから外した**（一時的な失敗でもある）
 CORRUPTION_WORDS = ("malformed", "not a database", "corrupt", "encrypted",
-                    "disk i/o error", "file is encrypted")
+                    "file is encrypted")
+
+#: **一時的な読み書きの失敗**（D-1 / G-6）。503 `io_error` ＋ `Retry-After`。復元を勧めない
+IO_WORDS = ("disk i/o error",)
+
+#: **混んでいる**だけの言い方（D-2）。503 `busy` ＋ `Retry-After`
+BUSY_WORDS = ("database is locked", "database table is locked", "database schema is locked",
+              "busy")
 
 
 def _is_corruption(exc: BaseException) -> bool:
@@ -183,4 +214,20 @@ def _is_corruption(exc: BaseException) -> bool:
     """
     text = str(exc).lower()
     return any(word in text for word in CORRUPTION_WORDS)
+
+
+def _is_io_error(exc: BaseException) -> bool:
+    """その `DatabaseError` は**一時的な読み書きの失敗**か（P9 の監査 D-1）。
+
+    `disk i/o error` は「壊れている」ではなく**もう一度で直りうる**（USB の抜け・
+    ウイルス対策の掴み・ネットワークドライブの瞬断）。**復元を勧めない**。
+    """
+    text = str(exc).lower()
+    return any(word in text for word in IO_WORDS)
+
+
+def _is_busy(exc: BaseException) -> bool:
+    """その `DatabaseError` は**混んでいる**だけか（P9 の監査 D-2）。"""
+    text = str(exc).lower()
+    return any(word in text for word in BUSY_WORDS)
 

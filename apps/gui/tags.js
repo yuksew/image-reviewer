@@ -21,7 +21,8 @@ export const GLOSS_LIMIT = 20;
 export const CATEGORY_LABEL = { 4: 'キャラ', 3: '作品', 1: '作者', 0: '一般', 9: 'rating' };
 const CATEGORY_RANK = [4, 3, 1, 0, 9];
 
-//: 出所の印（§5.1。`manual` は「手」）
+//: タグの出どころ（§5.1。`manual` は「手」）。
+//: **（ワーディング監査 §4）** 「印」は 6 つの物を指していて分からないので、ここは「出どころ」と呼ぶ
 export const SOURCE_LABEL = { png: 'PNG', wd14: 'タガー', manual: '手' };
 
 export function esc(value) {
@@ -108,7 +109,7 @@ export function wordRowHtml(word, { pending = true } = {}) {
   const remove = (word.sources || []).includes('manual')
     ? `<button class="tg-remove" data-name="${esc(word.name)}" title="人が付けた語を外す">外す</button>` : '';
   const gloss = word.gloss
-    ? `<div class="ja">${esc(word.gloss)}${word.gloss_edited ? '<span class="tg-edited">直した</span>' : ''}</div>`
+    ? `<div class="ja">${esc(word.gloss)}${word.gloss_edited ? '<span class="tg-edited">人が直した</span>' : ''}</div>`
     : `<div class="ja tg-none">日本語の語釈はまだありません。`
       + (pending ? `<button class="tg-translate" data-name="${esc(word.name)}">訳す</button>` : '')
       + '</div>';
@@ -126,7 +127,7 @@ export function briefHtml(data) {
     .filter((s) => counts[s])
     .map((s) => `${SOURCE_LABEL[s]} ${counts[s]}`);
   const pending = (data.pending_gloss || []).length;
-  return `${parts.join(' ・ ') || 'タグなし'}${pending ? ` ・ 語釈待ち ${pending} 語` : ''}`;
+  return `${parts.join('、') || 'タグなし'}${pending ? `、語釈待ち ${pending} 語` : ''}`;
 }
 
 /** 欄ぜんたい（見出し・説明・操作・本体）。 */
@@ -137,7 +138,7 @@ export function panelHtml(data) {
   const body = groups.length
     ? groups.map((g) => `<h4 class="tg-head">${esc(g.label)}</h4>`
         + g.words.map((w) => wordRowHtml(w)).join('')).join('')
-    : '<div class="note">この画像にはまだタグがありません。「タグ付け」で付けるか、下の「語を足す」で 1 つずつ付けられます。</div>';
+    : '<div class="note">この画像にはまだタグがありません。タグの一覧（<b>タグ</b>）の「一括タグ付け」で付けるか、下の「語を足す」で 1 つずつ付けられます。</div>';
   return `<div class="tg-brief">${esc(briefHtml(data))}</div>`
     + body
     + '<div class="tg-actions">'
@@ -148,8 +149,8 @@ export function panelHtml(data) {
     + '<button id="tg-add-go">足す</button></span>'
     + '</div>'
     + '<div class="tg-msg" id="tg-msg" hidden></div>'
-    + '<div class="tg-help">タガーは下ごしらえです。手の破綻などは読めません（人が見て直してください）。'
-    + '訳は自動です。直せます。</div>';
+    + '<div class="tg-help">タガーは下ごしらえで、手の破綻までは読めません。人が見て直してください。'
+    + '訳は自動ですが、直せます。</div>';
 }
 
 // ---- 取得と操作 ----
@@ -195,7 +196,7 @@ export function messageOf(body) {
   const parts = [`${t} 語を訳しました`];
   if (s) parts.push(`${s} 語は語釈済み`);
   if (u) parts.push(`${u} 語は訳せませんでした（保存していません）`);
-  return `${parts.join(' ・ ')}。`;
+  return `${parts.join('、')}。`;
 }
 
 async function reload() {

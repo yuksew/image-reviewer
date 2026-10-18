@@ -107,12 +107,17 @@ def connect(data_dir: str | Path, *, read_only: bool = False,
     #   `%TEMP%` に書けない環境＝エージェントの sandbox。§12.2 は最初からこれを書いていた）。
     con.execute("PRAGMA temp_store = MEMORY")
     # **`cache_size` は既定のままにする**（§12.2 は `-65536`＝64 MB と書いているが、
-    # **入れなかった**）。P9 の実測: 64 MB のページキャッシュに DB 全体（2.28 MB の合成）が
-    # 載ると、**走ったまま壊れた DB を live の接続の `quick_check` が見落とす**
-    # （`ok: True` のまま。既定の 2 MB なら `database disk image is malformed` になる）。
-    # それは P8-4 の監査 G-1 が守っている「壊れた DB に書き続けない」保証そのもの
-    # （`tests/test_backup.py::test_a_broken_source_does_not_replace_the_seven_healthy_snapshots`
-    #  がこの 1 行を守っている）。速さより安全を取る。
+    # **入れなかった**）。**理由は速さだけ**（P9 の実測: 1 万枚の SQL 3 本が
+    # 43.6 → 42.5 ms。一覧の 200 ms は `store.assets()` の dict 組み立てが主因で、
+    # ページキャッシュでは動かない。入れる実利が無い）。
+    # **（P9 の監査 C-1。前の理由は誤りだった。）** ここには「64 MB にすると、走ったまま
+    # 壊れた DB を live の接続の `quick_check` が見落とす（既定の 2 MB なら見つける）」と
+    # 書いてあった。**既定でも見落とす**——それに収まる大きさの DB（実測 0.65 MB・250 行）
+    # では、書き込み用の接続が自分が書いたページをキャッシュに持つので、外から潰された
+    # ページを読み直さない（監査の実測。28 通りすべてで既定でも見落とした）。
+    # いまは `backup._refuse_if_broken()` が**新しい読み取り専用の接続**で `quick_check`
+    # するので、`cache_size` の値は安全の話ではない（`tests/test_backup.py` の
+    # `test_a_page_in_the_writers_cache_is_still_noticed` が守っている）。
     # `cache_size` と `mmap_size` は**ページの大きさを読む**ので、**壊れた DB では投げる**
     # （実測: 先頭 4 KB を潰した DB で `DatabaseError: file is not a database`）。
     # ここで落とすと「壊れた DB でも起動して 503 で案内する」道（§0.12-5）が**開けなくなる**

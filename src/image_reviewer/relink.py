@@ -25,6 +25,13 @@
    （`unlink` / `rename` を呼ばない）。読むのは `sha256` の計算と、`nearby` の走査だけ。
 7. **`GET` は 1 バイトも書かない**（`missing()` は読むだけ。設計 §0.13）。
 8. **黙って捨てない**: `nearby` は探した数・候補・読めなかった物・打ち切ったらその数も返す。
+9. **`nearby` の `path` 省略は 2 段**（P8-6 の監査 C-2 / G-2）: ①**その参照切れを含む置き場**
+   ②それで見つからなければ**残りの置き場**。見つかった段で止めるので、実データの ComfyUI 出力
+   （306 MB）のような置き場を**毎回は歩かない**。**歩かなかった置き場は `folders_skipped` に出す**。
+10. **二重登録の検査は取引の中でもう一度**（P8-6 の監査 C-3 / G-3）。`_refuse_if_registered` は
+    `sha256` を読む前の安い検査なので、その間に別の要求が同じパスを登録できる。取引の中で
+    見直さないと主キーに当たって `IntegrityError` → P8-4 の handler が**壊れていない DB で
+    「バックアップから戻してください」**と言う（実測）。規則は `_conflict_of` の 1 か所。
 """
 
 from __future__ import annotations
@@ -113,7 +120,8 @@ class RelinkService:
         - **消した物は既定で出さない。** 段 2・3 の削除も `missing_at` を立てる（§4.1）ので、
           そのまま出すと「参照切れ」と「アプリから消した物」が混ざる。**数は `excluded_deleted`
           で返す**（黙って捨てない）。`include_deleted=1` で全部出す
-        - `roots` はその場所を含む**登録した置き場**（`nearby` が探す範囲。画面の案内にも使える）
+        - `roots` はその場所を含む**登録した置き場**（`nearby` が**先に**探す範囲。
+          見つからなければ**残りの置き場**も探す。監査 C-2 / G-2。画面の案内にも使える）
         - **`limit` を超えた分は `unlisted` に数える**（一覧は切っても数は切らない）
         """
         _actor_of(actor)
@@ -172,7 +180,9 @@ class RelinkService:
             "items": page,
             # **辿り方**を応答に書く（画面が無いので、口だけで使えるように）
             "hint": ("POST /api/locations/relink {asset_id, path, mode:'exact'} で繋ぎ直せます"
-                     "（中身の sha256 が一致するときだけ）"),
+                     "（中身の sha256 が一致するときだけ）。mode:'nearby' は path を省くと、"
+                     "その参照切れを含む置き場（この応答の roots）から順に同じ名前を探し、"
+                     "見つからなければ残りの置き場を探します"),
         }
 
     # ---- 書く（人だけ。検査は `api.require_human`）----
@@ -182,8 +192,9 @@ class RelinkService:
         """参照切れの 1 か所を新しいパスに繋ぎ直す（設計 §3.2 の `POST /api/locations/relink`）。
 
         - `mode='exact'`（既定）: **`path` は新しいファイル**。中身を確かめて繋ぐ
-        - `mode='nearby'`: **`path` は探すフォルダ**（省略すると、その場所が入っている
-          登録済みの置き場を**同じファイル名**で探す）。設計 §0.11 の「近くを探す」
+        - `mode='nearby'`: **`path` は探すフォルダ**（省略すると、**その参照切れを含む置き場**から
+          同じファイル名で探し、見つからなければ**残りの置き場**を探す。設計 §0.11 の
+          「近くを探す」。監査 C-2 / G-2）
         - `from_path` は**どの参照切れか**を指定する（1 枚が 2 か所以上で切れているとき）。
 
         **ファイルは動かさない・消さない。** 登録（`asset_location`）と履歴だけを直す。
@@ -203,11 +214,13 @@ class RelinkService:
         self._refuse_if_deleting(target)
 
         # --- 新しいパスを決める（exact はその 1 つ・nearby は同じ名前を探す）---
+        near: dict = {}
         searched = None
         candidates: list[str] = []
         unreadable: list[str] = []
         truncated = False
         folders: list[str] = []
+        skipped: list[str] = []
         if mode == "exact":
             chosen = Path(given)
             if chosen.is_dir():
@@ -218,8 +231,15 @@ class RelinkService:
                                   details={"path": given, "mode": mode})
             others: list[Path] = []
         else:
-            chosen, others, searched, candidates, unreadable, truncated, folders = \
-                self._search_nearby(target, given, roots)
+            near = self._search_nearby(target, given, roots)
+            chosen = near["chosen"]
+            others = near["others"]
+            searched = near["searched"]
+            candidates = near["candidates"]
+            unreadable = near["unreadable"]
+            truncated = near["truncated"]
+            folders = near["folders"]
+            skipped = near["skipped"]
 
         new_display = str(chosen)
         new_key = normalize_path(chosen)
@@ -238,6 +258,16 @@ class RelinkService:
         with self.store.transaction() as con:
             history_id = None
             if moved:
+                # **取引の中で見直す**（P8-6 の監査 C-3 / G-3）。`_refuse_if_registered` は
+                # 取引の外（`sha256` を読む前）なので、その間に別の要求がこのパスを登録できる。
+                # 見直さないと `asset_location` の主キーに当たって `IntegrityError` になり、
+                # P8-4 の handler が**壊れていない DB で「バックアップから戻してください」**
+                # （503 `db_error`）と言う。ここで 409 にして、番号と `code` を正しくする
+                again = con.execute("SELECT asset_id FROM asset_location WHERE path = ?",
+                                    (new_key,)).fetchone()
+                conflict = self._conflict_of(again, target["asset_id"], new_key)
+                if conflict is not None:
+                    raise conflict
                 cur = con.execute(
                     "INSERT INTO location_history(asset_id, path, size, mtime_ns,"
                     " replaced_by_asset_id, replaced_at, to_path, reason, actor)"
@@ -290,7 +320,10 @@ class RelinkService:
         if mode == "nearby":
             out.update({"searched": searched, "candidates": candidates,
                         "unreadable": unreadable, "candidates_truncated": truncated,
-                        "folders": folders})
+                        # **どこを歩いたか**を返す（監査 C-2）。見つかった段で止めるので、
+                        # 歩かなかった置き場は `folders_skipped` に出して黙って捨てない
+                        "folders": folders, "folders_skipped": skipped,
+                        "found_in": near["stage"], "scope": near["scope"]})
             if others:
                 # 同じ中身が他にもあった（**選ばなかった物も出す**。黙って捨てない）
                 out["also_found"] = [str(p) for p in others]
@@ -356,21 +389,34 @@ class RelinkService:
         - 別の `asset` のパス → **409 `path_taken`**
         - 同じ `asset` の**別の生きた場所** → **409 `already_registered`**（する事が無い）
         - **移り先が元のパスと同じ**（元の場所に戻ってきた）→ 通す（`missing_at` を戻すだけ）
+
+        **取引の外の検査**（`sha256` を読む前に安く断る）。取引の中でもう一度見る
+        （`_conflict_of` を共有。監査 C-3 / G-3）。
         """
         if new_key == target["path"]:
             return
         with self.store.locked() as con:
-            row = con.execute("SELECT asset_id, missing_at FROM asset_location WHERE path = ?",
+            row = con.execute("SELECT asset_id FROM asset_location WHERE path = ?",
                               (new_key,)).fetchone()
+        conflict = self._conflict_of(row, asset_id, new_key)
+        if conflict is not None:
+            raise conflict
+
+    @staticmethod
+    def _conflict_of(row, asset_id: str, new_key: str) -> ReviewError | None:
+        """`new_key` に既にある行を見て、断る理由を返す（無ければ `None`）。
+
+        **規則はここ 1 か所**（取引の外と中で同じ答えにする。家風「検査は 1 か所」）。
+        """
         if row is None:
-            return
+            return None
         if row["asset_id"] == asset_id:
-            raise ReviewError(409, "その場所は既にこの画像に登録されています",
-                              code="already_registered",
-                              details={"path": new_key, "asset_id": asset_id})
-        raise ReviewError(409, "その場所は別の画像に登録されています（二重登録しません）",
-                          code="path_taken",
-                          details={"path": new_key, "asset_id": row["asset_id"]})
+            return ReviewError(409, "その場所は既にこの画像に登録されています",
+                               code="already_registered",
+                               details={"path": new_key, "asset_id": asset_id})
+        return ReviewError(409, "その場所は別の画像に登録されています（二重登録しません）",
+                           code="path_taken",
+                           details={"path": new_key, "asset_id": row["asset_id"]})
 
     def _sha256_or_error(self, path: Path) -> str:
         """中身の `sha256`。**読めなければ繋がない**（409 `unreadable`。500 にしない）。"""
@@ -380,14 +426,19 @@ class RelinkService:
             raise ReviewError(409, "ファイルを読めないので繋ぎ直せません", code="unreadable",
                               details={"path": str(path), "error": str(exc)}) from exc
 
-    def _search_nearby(self, target: dict, given: str, roots: list[str],
-                       ) -> tuple[Path, list[Path], int, list[str], list[str], bool]:
+    def _search_nearby(self, target: dict, given: str, roots: list[str]) -> dict:
         """**同じファイル名を探し、ハッシュが一致する物だけ**を候補にする（設計 §0.11）。
 
-        - `given` があればそのフォルダ（ファイルを渡されたらその親）
-        - 無ければ**登録した置き場ぜんぶ**を同じファイル名で歩く。**置き場が 1 つも無ければ
-          422 `bad_scope`**（ディスク全体を勝手に歩かない）
-        - 候補は `NEARBY_CANDIDATE_LIMIT` まで（**打ち切ったら数を返す**）
+        - `given` があればそのフォルダ（ファイルを渡されたらその親）**だけ**を歩く
+        - 無ければ**2 段**に歩く（P8-6 の監査 C-2 / G-2）:
+          ① **その参照切れを含む置き場**（`GET /api/locations/missing` の `roots` と同じ規則）
+          ② それで見つからなければ**残りの置き場**
+          見つかった段で止めるので、実データの ComfyUI 出力（306 MB）のような置き場を
+          **毎回は歩かない**。**歩かなかった置き場は `skipped` に出す**（黙って捨てない）
+        - 置き場が 1 つも無ければ 422 `bad_scope`（ディスク全体を勝手に歩かない）
+        - 候補は**1 つの段あたり** `NEARBY_CANDIDATE_LIMIT` まで（**打ち切ったら数を返す**）。
+          段の上限に達しても**次の段は歩く**（「見つからなければ残りへ」を守る）。既に読んだ
+          候補は読み直さない（段が進んでも `sha256` は 1 回だけ）
 
         **（実装で分かったこと）** 走査は「知らないパスの画像」をその場で登録するので、
         **走査した置き場の中で動いたファイルは走査の時点で既に繋がっている**
@@ -395,7 +446,8 @@ class RelinkService:
         ときと「**人が探すフォルダを指定した**」ときである。
         """
         name = file_name_of(target["display_path"])
-        folders: list[Path] = []
+        want = (target["sha256"] or "").lower()
+        all_folders: list[Path] = []
         if given:
             picked = Path(given)
             if picked.is_file():
@@ -403,43 +455,94 @@ class RelinkService:
             if not picked.is_dir():
                 raise ReviewError(404, "探すフォルダがありません", code="not_found",
                                   details={"path": given, "mode": "nearby"})
-            folders = [picked]
+            stages = [("given", [picked])]
+            scope = "given"
         else:
-            folders = [Path(r) for r in roots]
-            if not folders:
+            all_folders = [Path(r) for r in roots]
+            if not all_folders:
                 raise ReviewError(
                     422, "登録した置き場が無いので、探すフォルダを指定してください",
                     code="bad_scope",
                     details={"path": target["display_path"], "roots": roots, "mode": "nearby"})
-        found: list[Path] = []
-        for folder in folders:
-            for path in iter_images(folder):                 # 走査と同じ「画像だけ」の規則
-                if Path(path).name.casefold() == name:
-                    found.append(Path(path))
-        # **決定的に**（同じ入力なら同じ答え。大小文字を畳んでから並べる）
-        found = sorted({str(p) for p in found}, key=lambda s: (s.casefold(), s))
-        truncated = len(found) > NEARBY_CANDIDATE_LIMIT
-        found = found[:NEARBY_CANDIDATE_LIMIT]
+            # **その参照切れを含む置き場**を先に歩く（`missing()` の `roots` と同じ規則）
+            home = [f for f in all_folders if is_under(target["display_path"], str(f))]
+            home_keys = {str(f) for f in home}
+            rest = [f for f in all_folders if str(f) not in home_keys]
+            stages = ([("home", home)] if home else []) + [("rest", rest)]
+            scope = "home_then_rest"
+
+        found: set[str] = set()
+        checked: set[str] = set()
         matches: list[Path] = []
         unreadable: list[str] = []
-        for raw in found:
-            try:
-                if sha256_of(raw) == (target["sha256"] or "").lower():
-                    matches.append(Path(raw))
-            except OSError:
-                unreadable.append(raw)
+        walked: list[str] = []
+        stage_of_match: str | None = None
+        searched = 0
+        truncated = False
+        for stage, folders in stages:
+            if not folders:
+                continue
+            for folder in folders:
+                walked.append(str(folder))
+                for path in iter_images(folder):          # 走査と同じ「画像だけ」の規則
+                    if Path(path).name.casefold() == name:
+                        found.add(str(path))
+            # **この段で新しく見つかった候補**を決定的に並べ、段ごとの上限まで確かめる
+            # （前の段で読んだ物は読み直さない。**上限は 1 つの段あたり**＝「同じ名前が
+            #  大量にある置き場」で固まらないための歯止め。次の段はいつでも歩く）
+            fresh = sorted((s for s in found if s not in checked),
+                           key=lambda s: (s.casefold(), s))
+            if len(fresh) > NEARBY_CANDIDATE_LIMIT:
+                truncated = True
+                fresh = fresh[:NEARBY_CANDIDATE_LIMIT]
+            searched_here = 0
+            for raw in fresh:
+                if searched_here >= NEARBY_CANDIDATE_LIMIT:
+                    truncated = True
+                    break
+                checked.add(raw)
+                searched += 1
+                searched_here += 1
+                try:
+                    if sha256_of(raw) == want:
+                        matches.append(Path(raw))
+                except OSError:
+                    unreadable.append(raw)
+            if matches:
+                stage_of_match = stage
+                break
+        walked_keys = set(walked)
+        skipped = [str(f) for f in all_folders if str(f) not in walked_keys]
+        # **歩いたフォルダで見つかった同じ名前の候補**（応答と、断るときの説明に使う。
+        # **決定的な順**。`searched` は「そのうち中身を確かめた数」）
+        cand = sorted(found, key=lambda s: (s.casefold(), s))
+        if len(cand) > NEARBY_CANDIDATE_LIMIT:
+            truncated = True
+            cand = cand[:NEARBY_CANDIDATE_LIMIT]
+
         if not matches:
-            if not found:
+            seen = {"mode": "nearby", "name": name, "scope": scope,
+                    "folders": walked, "folders_skipped": skipped, "searched": searched}
+            if searched == 0:
                 raise ReviewError(404, "同じ名前のファイルが見つかりません", code="not_found",
-                                  details={"mode": "nearby", "name": name,
-                                           "folders": [str(f) for f in folders], "searched": 0})
+                                  details=seen)
             raise ReviewError(
                 409, "同じ名前はありましたが中身が違います（同じ絵ではありません）",
                 code="hash_mismatch",
-                details={"mode": "nearby", "name": name, "expected": target["sha256"],
-                         "candidates": found, "unreadable": unreadable})
-        return (matches[0], matches[1:], len(found), found, unreadable, truncated,
-                [str(f) for f in folders])
+                details={**seen, "expected": target["sha256"], "candidates": cand,
+                         "unreadable": unreadable})
+        return {
+            "chosen": matches[0],
+            "others": matches[1:],
+            "searched": searched,
+            "candidates": cand,
+            "unreadable": unreadable,
+            "truncated": truncated,
+            "folders": walked,
+            "skipped": skipped,
+            "stage": stage_of_match,
+            "scope": scope,
+        }
 
     @staticmethod
     def _kept(con, asset_id: str) -> dict:

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import shutil
 import sqlite3
@@ -305,6 +306,89 @@ def test_a_path_already_registered_to_the_same_asset_is_refused(world: World):
     assert len(world.store.asset(world.asset_id)["locations"]) == 2
 
 
+def test_a_path_taken_while_hashing_is_refused_by_the_recheck(app_env, monkeypatch):
+    """**`sha256` を読んでいる間にそのパスが別の画像に登録された**形でも 409 `path_taken`。
+
+    `_refuse_if_registered` は取引の外（`sha256` を読む前）の安い検査なので、その間に別の
+    要求（走査・別の人の再リンク）が同じパスを登録できる。取引の中で見直さないと
+    `asset_location` の主キーに当たって `IntegrityError` になり、**P8-4 の
+    `sqlite_error_handler` が 503 `db_error`「DB が壊れているので読めません。バックアップから
+    戻してください」を返す**（壊れていないのに復元を勧める。監査 C-3 / D-8 の実測）。
+
+    壊すと落ちる: 取引の中の `SELECT` を外す（503 `db_error` になる）。
+    """
+    client, app, store, tmp = app_env
+    root = tmp / "library"
+    src = make_png(root / "a.png", seed=1)
+    scan(store, [str(root)])
+    asset_id = store.location_of(src)["asset_id"]
+    away = move(src, tmp / "elsewhere" / "a.png")
+    scan(store, [str(root)])
+    assert missing_keys(store) == {normalize_path(src)}
+
+    target = tmp / "incoming" / "a.png"               # 繋ぎ直す先（同じ絵・まだ誰の物でもない）
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(away, target)
+    real = relink.sha256_of
+    taken: list[str] = []
+
+    def sha_then_someone_else_takes_it(path):
+        """中身を確かめた**後**に、別の要求がそのパスを登録した形を作る。"""
+        got = real(path)
+        if Path(path) == target and not taken:
+            other = make_png(tmp / "incoming" / "other.png", seed=77)
+            shutil.copy2(other, target)               # 窓の間にパスの中身が入れ替わる
+            taken.append(register(store, target))     # 走査がそれを別の asset として登録する
+        return got
+
+    monkeypatch.setattr(relink, "sha256_of", sha_then_someone_else_takes_it)
+    got = client.post("/api/locations/relink", headers=HUMAN,
+                      json={"asset_id": asset_id, "path": str(target), "mode": "exact"})
+
+    assert got.status_code == 409, got.text
+    body = got.json()
+    assert body["code"] == "path_taken" and body["details"]["asset_id"] == taken[0]
+    # **「壊れている」と言わせない**（P8-4 の handler を通っていない）
+    assert "バックアップ" not in got.text and body["code"] != "db_error"
+    # **1 バイトも変わっていない**（参照切れも履歴もそのまま。取引は丸ごと巻き戻る）
+    assert missing_keys(store) == {normalize_path(src)}
+    assert store.location_history() == []
+    assert store.location_of(target)["asset_id"] == taken[0]
+
+
+def test_a_path_registered_to_the_same_asset_while_hashing_is_refused(world: World, monkeypatch):
+    """同じ `asset` が窓の間に**その新しいパスへ**登録された形は 409 `already_registered`。
+
+    走査は「知らないパスの画像」をその場で登録するので、**中身が同じなら同じ `asset`** の
+    行が増える（これが実際に起きる形）。規則は `_conflict_of` の 1 か所で、取引の外と中が
+    同じ答えを返す。
+
+    壊すと落ちる: 取引の中の `SELECT` を外す（`IntegrityError` になる）。
+    """
+    away = world.move_away(world.tmp / "elsewhere" / "a.png")
+    target = world.tmp / "incoming" / "a.png"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(away, target)
+    real = relink.sha256_of
+    taken: list[bool] = []
+
+    def sha_then_the_scan_registers_it(path):
+        got = real(path)
+        if Path(path) == target and not taken:
+            taken.append(True)
+            register(world.store, target)             # 同じ中身 → 同じ asset の 2 つ目の場所
+        return got
+
+    monkeypatch.setattr(relink, "sha256_of", sha_then_the_scan_registers_it)
+    with pytest.raises(ReviewError) as got:
+        world.relink(path=str(target), mode="exact")
+    assert got.value.status == 409 and got.value.code == "already_registered"
+    # 場所は 2 つ（走査が登録した新しい 1 つ＋参照切れの 1 つ）のままで、履歴は増えない
+    assert len(world.store.asset(world.asset_id)["locations"]) == 2
+    assert world.store.location_history() == []
+    assert missing_keys(world.store) == {normalize_path(world.src)}
+
+
 # ---- 3. 近くを探す（nearby）----
 
 
@@ -313,9 +397,11 @@ def test_nearby_finds_the_file_with_the_same_name_in_a_registered_root(world: Wo
 
     ここは「**まだ走査していない置き場**へ動いた」場合（走査は知らないパスの画像を
     その場で登録するので、走査済みの置き場の中で動いた物は既に繋がっている）。
+    置き場を歩くのは**2 段**（P8-6 の監査 C-2 / G-2）: ①その参照切れを含む置き場
+    ②見つからなければ残り。ここは ②で見つかる形なので、**両方を歩く**。
 
     壊すと落ちる: 名前で絞らずに**置き場の画像を全部ハッシュする**（遅い）、
-    置き場の外まで歩く、探したフォルダを返さない。
+    置き場の外まで歩く、探したフォルダを返さない、残りの置き場を歩かない。
     """
     other = world.add_root(world.tmp / "elsewhere")     # 走査していない置き場
     moved = world.move_away(other / "sub" / "a.png")
@@ -323,21 +409,79 @@ def test_nearby_finds_the_file_with_the_same_name_in_a_registered_root(world: Wo
     assert got["relinked"] is True and got["mode"] == "nearby"
     assert got["to_path"] == str(moved)
     assert got["searched"] >= 1 and got["candidates"] == [str(moved)]
-    assert sorted(got["folders"]) == sorted([str(world.root), str(other)])
+    # **その参照切れを含む置き場（1 つ目）→ 残り（2 つ目）**の順に歩いた
+    assert got["folders"] == [str(world.root), str(other)]
+    assert got["folders_skipped"] == [] and got["found_in"] == "rest"
+    assert got["scope"] == "home_then_rest"
     assert got["unreadable"] == [] and got["candidates_truncated"] is False
     assert location_row(world.store, world.asset_id)["path"] == normalize_path(moved)
+
+
+def test_nearby_walks_the_place_that_holds_the_missing_file_first(world: World):
+    """**その参照切れを含む置き場を先に歩き、見つかったら残りは歩かない**（監査 C-2 / G-2）。
+
+    実データの ComfyUI 出力（181 ファイル・306 MB）のような置き場を**毎回は歩かない**ための
+    2 段。歩かなかった置き場は `folders_skipped` に出して**黙って捨てない**。
+
+    壊すと落ちる: 置き場ぜんぶを一度に歩く（`folders` が 2 つになり `skipped` が空になる）、
+    残りを先に歩く（`found_in` が `rest` になる）。
+    """
+    other = world.add_root(world.tmp / "elsewhere")
+    moved = world.move_away(world.tmp / "lost" / "a.png")   # 元の名前は置き場に残さない
+    back = world.root / "sub" / "a.png"                     # **置き場の中**に同じ絵を置く
+    back.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(moved, back)                               # まだ登録していない（走査しない）
+
+    got = world.relink(mode="nearby")
+
+    assert got["to_path"] == str(back) and got["found_in"] == "home"
+    assert got["folders"] == [str(world.root)]               # 1 段目だけで見つかった
+    assert got["folders_skipped"] == [str(other)]            # 2 段目は歩いていない
+    assert got["scope"] == "home_then_rest" and got["searched"] == 1
+    assert location_row(world.store, world.asset_id)["path"] == normalize_path(back)
 
 
 def test_nearby_can_be_pointed_at_a_folder(world: World):
     """**人が探すフォルダを指定できる**（置き場の外でも、読むだけなら歩いてよい）。
 
-    壊すと落ちる: 置き場の下しか許さない（外へ動いたファイルを繋げない）。
+    指定したときは**そのフォルダだけ**を歩く（2 段にしない。監査 C-2 / G-2）。
+
+    壊すと落ちる: 置き場の下しか許さない（外へ動いたファイルを繋げない）、
+    指定したのに置き場も歩く。
     """
     outside = world.tmp / "moved-here"
     moved = world.move_away(outside / "a.png")
     got = world.relink(mode="nearby", path=str(outside))
     assert got["to_path"] == str(moved)
-    assert got["folders"] == [str(outside)]
+    assert got["folders"] == [str(outside)] and got["folders_skipped"] == []
+    assert got["scope"] == "given" and got["found_in"] == "given"
+
+
+def test_nearby_keeps_walking_the_rest_after_hitting_the_cap(world: World, monkeypatch):
+    """1 段目で**上限に達して**見つからなくても、**2 段目は歩く**（監査 C-2 / G-2）。
+
+    上限は「同じ名前が大量にある置き場で固まらない」ための歯止めで、**段ごと**に掛ける。
+    上限に達したことを理由に残りの置き場を歩かないと、「**見つからなければ残りへ**」が
+    成り立たなくなる（人が「無い」と言われる）。
+
+    壊すと落ちる: 上限を段をまたいで数える（2 段目を歩かずに 409 になる）。
+    """
+    monkeypatch.setattr(relink, "NEARBY_CANDIDATE_LIMIT", 2)
+    other = world.add_root(world.tmp / "elsewhere")
+    moved = world.move_away(world.tmp / "lost" / "a.png")   # 元の名前は置き場に残さない
+    for i, seed in enumerate((11, 12, 13)):                 # 1 段目に**同名の別の絵**を 3 枚
+        make_png(world.root / f"d{i}" / "a.png", seed=seed)
+    back = other / "sub" / "a.png"                          # 2 段目に本物
+    back.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(moved, back)
+
+    got = world.relink(mode="nearby")
+
+    assert got["to_path"] == str(back) and got["found_in"] == "rest"
+    assert got["folders"] == [str(world.root), str(other)]
+    assert got["searched"] > 2, "1 段目の上限で止まり、2 段目を歩いていない"
+    assert got["candidates_truncated"] is True
+    assert len(got["candidates"]) == 2, "候補の並びは決定的に上限まで"
 
 
 def test_nearby_accepts_a_file_and_uses_its_folder(world: World):
@@ -403,13 +547,16 @@ def test_nearby_says_not_found_when_the_name_is_absent(world: World):
     """同じ名前が 1 つも無ければ **404 `not_found`**（中身違いの 409 と分ける）。
 
     壊すと落ちる: 「見つからない」と「中身が違う」を同じ番号にする（人は次に何をすべきか
-    分からなくなる）。
+    分からなくなる）、**どこを歩いたか**を返さない（監査 C-2 で `folders` を返すと決めた）。
     """
     world.move_away(world.tmp / "elsewhere" / "renamed.png")
     with pytest.raises(ReviewError) as got:
         world.relink(mode="nearby")
     assert got.value.status == 404 and got.value.code == "not_found"
     assert got.value.details["searched"] == 0
+    assert got.value.details["folders"] == [str(world.root)]
+    assert got.value.details["folders_skipped"] == []
+    assert got.value.details["scope"] == "home_then_rest"
 
 
 def test_a_file_moved_inside_a_scanned_root_is_already_linked_by_the_scan(world: World):
@@ -446,6 +593,79 @@ def test_a_file_that_came_back_just_clears_missing_at(world: World):
     assert got["history_id"] is None
     assert location_row(world.store, world.asset_id)["missing_at"] is None
     assert world.store.location_history() == []
+
+
+def test_a_file_that_came_back_is_revived_by_the_scan(world: World, monkeypatch):
+    """**動かして戻して走査**すると、参照切れが 0 に戻る（P8-6 の監査 C-1 / G-1）。
+
+    移動は `mtime_ns` を変えないので、**同じパスへ戻った**ファイルは走査の早道
+    （`size` と `mtime_ns` が同じなら `register()` を呼ばない）に落ちる。ここで
+    `missing_at` を戻さないと、**走査を何度回しても参照切れのまま**で、人は何を押せば
+    よいか分からない（監査の再現 R12a。`POST /api/locations/relink` を同じパスへ打てば
+    戻るが、走査で戻るのが正しい）。
+
+    壊すと落ちる: `scan.py` の早道で `mark_seen()` を呼ばない（`known` と数えるだけになる）、
+    逆に**印が無くても書く**（2 回目の走査で `last_seen_at` が変わる。`db.now()` は秒まで
+    なので、時計を進めてから見る）。
+    """
+    moved = world.move_away(world.tmp / "elsewhere" / "a.png")
+    assert missing_keys(world.store) == {normalize_path(world.src)}
+    shutil.move(str(moved), str(world.src))            # アプリの外で**同じパスへ戻す**
+
+    stats = scan(world.store, [str(world.root)])
+
+    assert stats["missing"] == 0 and stats["known"] == 1, stats
+    assert missing_keys(world.store) == set()
+    row = location_row(world.store, world.asset_id)
+    assert row["missing_at"] is None and row["path"] == normalize_path(world.src)
+    assert row["last_seen_at"], "戻した時刻を残していない"
+    assert world.store.location_history() == [], "走査は繋ぎ直しではない（履歴を足さない）"
+    # **印を戻した 1 回だけ書く**（印が立っていない行には走査のたびに書かない）
+    tick = itertools.count(1)
+    monkeypatch.setattr(db, "now", lambda: f"2026-01-01T00:{next(tick):02d}:00Z")
+    seen_at = row["last_seen_at"]
+    again = scan(world.store, [str(world.root)])
+    assert again["known"] == 1 and again["missing"] == 0
+    assert location_row(world.store, world.asset_id)["last_seen_at"] == seen_at, \
+        "印が立っていない行に書いている"
+
+
+def test_relink_redraws_the_catalog_flag_from_the_rules(world: World):
+    """**`asset.deleted_at` は規則から引き直す**（`_sync_hidden`。監査 G-4 / F の M9）。
+
+    - **段 1 で外した印**（生きた `deletion_log.stage = 1` の行）がある枚は、繋ぎ直しても
+      **一覧に戻らない**（利用者の意思を消さない）
+    - 印が無い枚は、生きた場所が戻れば**一覧に戻る**（`deleted_at` が外れる）
+
+    壊すと落ちる: `_sync_hidden` を呼ばない（隠れたままの枚が戻らない。段 1 の向きは
+    印が残るので気付きにくい＝監査の M9 が落ちなかった理由）。
+    """
+    # (1) 段 1 で外した形（`deletion_log` の生きた行＋`asset.deleted_at`）
+    with world.store.transaction() as con:
+        con.execute("INSERT INTO deletion_log(id, asset_id, path, stage, actor, at)"
+                    " VALUES (?,?,?, 1, 'human', ?)",
+                    (db.ulid(), world.asset_id, str(world.src), db.now()))
+        con.execute("UPDATE asset SET deleted_at = ? WHERE id = ?",
+                    (db.now(), world.asset_id))
+    moved = world.move_away(world.tmp / "elsewhere" / "a.png")
+    got = world.relink(path=str(moved), mode="exact")
+    assert got["relinked"] is True
+    assert world.store.asset(world.asset_id)["deleted_at"] is not None, "段 1 の印が消えた"
+
+    # (2) 印が無い形（隠れているが段 1 の行が無い）→ 生きた場所が戻れば一覧にも戻る
+    hidden_at = db.now()
+    with world.store.transaction() as con:
+        con.execute("UPDATE deletion_log SET restored_at = ? WHERE asset_id = ?",
+                    (hidden_at, world.asset_id))
+        con.execute("UPDATE asset SET deleted_at = ? WHERE id = ?",
+                    (hidden_at, world.asset_id))
+        con.execute("UPDATE asset_location SET missing_at = ? WHERE asset_id = ?",
+                    (hidden_at, world.asset_id))       # 実体は在るが印だけ切れている形
+    assert world.store.asset(world.asset_id)["deleted_at"] == hidden_at
+    again = move(Path(world.store.asset(world.asset_id)["locations"][0]["path"]),
+                 world.tmp / "elsewhere2" / "a.png")
+    world.relink(path=str(again), mode="exact")
+    assert world.store.asset(world.asset_id)["deleted_at"] is None, "一覧に戻っていない"
 
 
 # ---- 5. 人だけ・守り ----

@@ -362,6 +362,39 @@ class Store:
                 )
         return asset_id, created
 
+    def mark_seen(self, path: str) -> bool:
+        """既知の場所を「今見た」にする（**参照切れを戻す**。P8-6 の監査 C-1 / G-1）。
+
+        走査の早道（`size` と `mtime_ns` が同じ＝中身を読み直さない道）から呼ばれる。
+        **移動は `mtime_ns` を変えない**ので、いったん外へ出て**同じパスへ戻ってきた**枚は
+        `register()` に届かない（`scan.py` が `known` と数えて飛ばす）。ここで `missing_at` を
+        戻さないと、走査を何度回しても参照切れのままになる（監査 R12a の再現）。
+
+        - **`missing_at` が立っていない行には 1 バイトも書かない**（走査のたびに全行へ
+          `last_seen_at` を書くと、`last_seen_at` の意味が「印を戻した時刻」でなくなり、
+          走査と WAL が無駄に重くなる。既存の早道と同じ判断）
+        - 書き込みは取引の中で、**取引の中でもう一度見る**（読んでから書くまでの間に
+          別の走査が戻しているかもしれない。C-3 と同じ流儀）
+        - **`asset.deleted_at` は触らない**（段 2・3 の削除の途中の枚を走査で勝手に
+          一覧へ戻さない。`relink` も 409 `deleted` で断る。戻す道は「最近の削除」）。
+          段 1 で外した印（`deletion_log.stage = 1`）はそのまま残る
+        - 戻り値は「参照切れを外したか」
+        """
+        key = normalize_path(path)
+        with self.locked() as con:
+            row = con.execute("SELECT missing_at FROM asset_location WHERE path = ?",
+                              (key,)).fetchone()
+            if row is None or row["missing_at"] is None:
+                return False
+        with self.transaction() as con:
+            row = con.execute("SELECT missing_at FROM asset_location WHERE path = ?",
+                              (key,)).fetchone()
+            if row is None or row["missing_at"] is None:
+                return False
+            con.execute("UPDATE asset_location SET missing_at = NULL, last_seen_at = ?"
+                        " WHERE path = ?", (db.now(), key))
+        return True
+
     def mark_missing(self, seen_keys: set[str], roots: list[str]) -> int:
         """走査したフォルダの下で見つからなかった場所だけを「参照切れ」にする。
 

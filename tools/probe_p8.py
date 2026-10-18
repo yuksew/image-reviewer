@@ -1213,6 +1213,28 @@ def probe_relink() -> bool:
              f"{near.status_code} to={near.json().get('to_path')} "
              f"searched={near.json().get('searched')}")
 
+        # --- C-1（P8-6 の監査）: 動かして**同じパスへ戻して**走査 → 参照切れが 0 に戻る ---
+        back = copies[3]
+        back_path = Path(back["display_path"])
+        away = WORK / "relink-away" / back_path.name
+        away.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(back_path), away)
+        gone_scan = client.post("/api/scan", headers=human,
+                                json={"roots": [str(library)]}).json()
+        gone = client.get("/api/locations/missing", headers=human).json()
+        shutil.move(str(away), str(back_path))                # **同じパスへ戻す**
+        back_scan = client.post("/api/scan", headers=human,
+                                json={"roots": [str(library)]}).json()
+        revived = con.execute("SELECT missing_at, last_seen_at FROM asset_location"
+                              " WHERE asset_id = ?", (back["asset_id"],)).fetchone()
+        line("動かして戻して走査 → 参照切れが 0 に戻る（C-1）",
+             gone_scan.get("missing") == 1 and gone["total"] == 1
+             and back_scan.get("missing") == 0 and back_scan.get("known") >= 1
+             and revived["missing_at"] is None and revived["last_seen_at"],
+             f"走査1 missing={gone_scan.get('missing')} / 一覧 {gone['total']} 件 → "
+             f"走査2 missing={back_scan.get('missing')} known={back_scan.get('known')} / "
+             f"missing_at={revived['missing_at']}")
+
         # --- GET は 1 バイトも書かない ---
         state = snapshot()
         files = sorted((str(p.relative_to(data)), p.stat().st_size, p.stat().st_mtime_ns)

@@ -6,7 +6,8 @@
 - 中身（sha256）を正体にする。走査の一部として計算する（実測 399 MB/s）
 - パスは `normalize_path` で正規化した鍵で照合する（I1）
 - **ファイルは 1 回だけ開く**（I19）。先頭 8 バイト・ハッシュ・チャンクを同じハンドルから取る
-- （パス・サイズ・mtime）が同じなら何もしない（2 回目以降を安くする）
+- （パス・サイズ・mtime）が同じなら何もしない（2 回目以降を安くする）。**ただし参照切れの
+  印（`missing_at`）が立っていれば戻す**（P8-6 の監査 C-1。戻ってきたファイルを生き返らせる）
 """
 
 from __future__ import annotations
@@ -74,6 +75,12 @@ def scan(store: Store, roots: list[str], *, on_progress=None) -> dict:
 
             known = store.location_of(path)
             if known and known["size"] == st.st_size and known["mtime_ns"] == st.st_mtime_ns:
+                # **戻ってきたファイルを生き返らせる**（P8-6 の監査 C-1 / G-1）。
+                # 移動は `mtime_ns` を変えないので、外へ出て**同じパスへ戻った**枚はこの早道に
+                # 落ちる（`register()` の `missing_at = NULL` に届かない）。ここで戻さないと、
+                # 走査を何度回しても「参照切れ」のままで、人は何を押せばよいか分からない。
+                if known["missing_at"]:
+                    store.mark_seen(path)
                 stats["known"] += 1
                 asset = store.asset(known["asset_id"])
                 if asset and asset.get("meta"):

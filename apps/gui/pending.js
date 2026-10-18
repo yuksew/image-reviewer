@@ -12,6 +12,8 @@
 // - **（P8-3 の監査 G-3）戻せなかった理由は `stuck_reason` で 4 通り**に分ける
 // - **（P8-3 の監査 G-4）固定の名前・数を文言に埋め込まない**（置き場は `/api/roots` から組む）
 // - **（P8-5・Q8）印の無い置き場では段 3 のラジオを出さない**（`root.allow_stage3`）
+//   **（P8-5 の監査 D-5）一覧の上限（2000 枚）を超える置き場では、選んだ枚が一覧に無い**ので、
+//   その枚だけ `GET /api/assets/<id>` で引く（**足りない枚の数だけ**）
 // - **（P8-5）走査中は「走査中です。終わるまで削除と取り消しは待ちます。」を 1 行**出す
 // - 「いま消す」「別名で戻す」「ゴミ箱から戻す」は**人だけ**の口（押す前に確認を 1 回挟む）
 // - 拾い物（`found`）は**消さない**（人が決める）
@@ -21,7 +23,7 @@ const PENDING = '/api/pending-deletes';
 const TRASH = '/api/trash';
 const ROOTS = '/api/roots';
 const SCAN = '/api/scan';
-const ASSETS = '/api/assets?limit=2000&sort=path';
+const ASSETS = '/api/assets?limit=2000&sort=path';   // 一覧（上限 2000 枚。足りない分は 1 枚の口）
 const PREVIEW = '/api/locations/bulk-delete/preview';
 const BULK = '/api/locations/bulk-delete';
 
@@ -417,9 +419,27 @@ async function load() {
   render();
 }
 
+/** `GET /api/assets/<id>` の本文から**主のパス**を取る（`app.py` の `_primary_path` と同じ見方）。
+ *
+ * 一覧（`_summary`）は `path` を返すが、1 枚の口（`store.asset`）は `locations` を返す。
+ * どちらの形でも同じ 1 本に決める（**欠けている物を主にしない**）。
+ */
+function primaryPathOf(one) {
+  if (!one) return null;
+  if (one.path) return one.path;
+  const all = one.locations || [];
+  const live = all.filter((l) => !l.missing_at);
+  const locs = (live.length ? live : all).slice();
+  locs.sort((a, b) => (Number(!a.is_primary) - Number(!b.is_primary))
+    || String(a.path).localeCompare(String(b.path)));
+  return locs.length ? (locs[0].path || null) : null;
+}
+
 /** 選んだ枚のパスを引き、**段 3 を出せるか**を決める（P8-5・Q8）。
  *
  * パスは `GET /api/assets`（1 回）から引く（**枚ごとに `GET` を並べない**）。
+ * **（P8-5 の監査 D-5）一覧の上限（2000 枚）を超える置き場では、選んだ枚が一覧に無い。**
+ * その枚だけ `GET /api/assets/<id>` で引く（引くのは**足りない枚の数だけ**）。
  * 引けなければ `known: false`（＝段 3 を出さない。**安全側**）。
  */
 async function stage3For(ids, roots) {
@@ -428,7 +448,13 @@ async function stage3For(ids, roots) {
   if (!res || !res.ok) return stage3OfPaths(roots, ids.map(() => null));
   const body = await res.json().catch(() => ({}));
   const byId = new Map((body.items || []).map((row) => [row.id, row.path || null]));
-  return stage3OfPaths(roots, ids.map((id) => byId.get(id) || null));
+  const missing = [...new Set(ids)].filter((id) => !byId.has(id));
+  for (const id of missing) {
+    const one = await fetch(`/api/assets/${encodeURIComponent(id)}`, { headers: asHuman() })
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (one) byId.set(id, primaryPathOf(one));
+  }
+  return stage3OfPaths(roots, ids.map((id) => (byId.has(id) ? (byId.get(id) || null) : null)));
 }
 
 function render() {

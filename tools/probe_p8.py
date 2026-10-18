@@ -8,6 +8,7 @@
     uv run --no-sync python tools/probe_p8.py --delete     # P8-2（線 5〜8。削除と取り消し）
     uv run --no-sync python tools/probe_p8.py --backup     # P8-4（線 10・12。バックアップと健全性）
     uv run --no-sync python tools/probe_p8.py --restore    # P8-4（線 11。復元と組み直し）
+    uv run --no-sync python tools/probe_p8.py --relink     # P8-6（線 9。参照切れの再リンク）
     uv run --no-sync python tools/probe_p8.py --all        # 全部
     uv run --no-sync python tools/probe_p8.py --keep       # 複製を残す
     uv run --no-sync python tools/probe_p8.py --distances 0,3,6,10   # 距離を絞る
@@ -267,6 +268,7 @@ def main() -> int:
     ap.add_argument("--delete", action="store_true", help="P8-2（線 5〜8）")
     ap.add_argument("--backup", action="store_true", help="P8-4（線 10・12。バックアップと健全性）")
     ap.add_argument("--restore", action="store_true", help="P8-4（線 11。復元と組み直し）")
+    ap.add_argument("--relink", action="store_true", help="P8-6（線 9。参照切れの再リンク）")
     ap.add_argument("--all", action="store_true", help="全部")
     ap.add_argument("--distances", default=None,
                     help=f"帯と総当たりを比べる距離（既定は 0〜{MAX_DISTANCE_LIMIT} の全部。"
@@ -278,7 +280,7 @@ def main() -> int:
             if not (0 <= dist <= MAX_DISTANCE_LIMIT):
                 print(f"NG: --distances は 0〜{MAX_DISTANCE_LIMIT}（{dist} が外）")
                 return 1
-    chosen = (args.duplicates, args.delete, args.backup, args.restore)
+    chosen = (args.duplicates, args.delete, args.backup, args.restore, args.relink)
     both = args.all or not any(chosen)
     ok = True
     if both or args.duplicates:
@@ -289,6 +291,8 @@ def main() -> int:
         ok = probe_backup() and ok
     if both or args.restore:
         ok = probe_restore() and ok
+    if both or args.relink:
+        ok = probe_relink() and ok
     if not args.keep:
         shutil.rmtree(WORK, ignore_errors=True)
         if WORK.exists():
@@ -1052,6 +1056,186 @@ def fresh_app(data: Path, backup_dir: Path):
         pass
     return app_module.create_app()
 
+
+# ---- P8-6（参照切れの再リンク。線 9）----
+
+
+def probe_relink() -> bool:
+    """**P8-6 の線 9**（参照切れ → 中身を確かめて繋ぐ）を実データの複製で通す。
+
+    **画像も複製してから動かす**（`copy_images`。実データの画像には触らない）。
+    口は `TestClient`（ASGI を通る本物の HTTP）。`IMAGE_REVIEWER_DATA` は必ず複製を指す。
+    """
+    ok = True
+    before = real_data_signature()
+    data = copy_real(WORK / "relink-data")
+    backups = WORK / "relink-backups"
+    library = WORK / "relink-library"
+    nearby_root = WORK / "relink-nearby"
+    if library.exists():
+        shutil.rmtree(library)
+    if nearby_root.exists():
+        shutil.rmtree(nearby_root)
+    from fastapi.testclient import TestClient                     # noqa: PLC0415
+    from image_reviewer import db                                 # noqa: PLC0415
+
+    app = fresh_app(data, backups)
+    store = app.state.store
+    con = store.con
+    copies = copy_images(con, count=6, into=library)
+    store.set_roots([str(library)])
+    print(f"P8-6. 実データの複製: {data}（実データ: {before['assets']} 枚 / 判断 "
+          f"{before['decisions']} 件 / 参照切れ {before['missing']} 件）")
+
+    def line(label: str, good: bool, detail: str = "") -> None:
+        nonlocal ok
+        ok = ok and good
+        print(f"   [{'OK' if good else 'NG'}] {label}" + (f": {detail}" if detail else ""))
+
+    target, target2, taken = copies[0], copies[1], copies[2]
+    human = {"X-Image-Reviewer-Actor": "human"}
+    agent = {"X-Image-Reviewer-Actor": "agent"}
+
+    def add_decision_and_tag(asset_id: str) -> None:
+        """判断とタグを 1 つずつ入れる（**触られていないこと**を見る的）。"""
+        with store.transaction() as c:
+            seq = c.execute("SELECT COALESCE(max(seq), 0) + 1 AS n FROM decision").fetchone()["n"]
+            c.execute("INSERT INTO decision(id, seq, subject_type, subject_id, verdict, actor,"
+                      " created_at) VALUES (?,?, 'asset', ?, 'keep', 'human', ?)",
+                      (db.ulid(), seq, asset_id, db.now()))
+            c.execute("UPDATE asset SET review_state = 'kept', reviewed_by = 'human',"
+                      " reviewed_at = ? WHERE id = ?", (db.now(), asset_id))
+            c.execute("INSERT INTO tag(name, known) VALUES ('probe-relink', 1)"
+                      " ON CONFLICT(name) DO UPDATE SET known = 1")
+            tag_id = c.execute("SELECT id FROM tag WHERE name = 'probe-relink'").fetchone()["id"]
+            c.execute("INSERT INTO asset_tag(asset_id, tag_id, source, actor, tagged_at)"
+                      " VALUES (?,?, 'manual', 'human', ?)", (asset_id, tag_id, db.now()))
+
+    add_decision_and_tag(target["asset_id"])
+    add_decision_and_tag(target2["asset_id"])
+
+    def snapshot() -> list[tuple]:
+        """全表の中身（`GET` が書かないことを見る）。"""
+        tables = [r["name"] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
+        return [(t, tuple(tuple(r) for r in con.execute(f"SELECT * FROM {t}"))) for t in tables]
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        first = client.get("/api/locations/missing", headers=human).json()
+        line("最初は参照切れ 0（実データと同じ）", first["total"] == 0, f"total={first['total']}")
+
+        # --- 線 9 の前半: アプリの外で動かして走査 → missing_at が立つ ---
+        moved = WORK / "relink-moved" / "renamed.png"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(target["display_path"], moved)
+        scanned = client.post("/api/scan", headers=human, json={"roots": [str(library)]})
+        one = client.get("/api/locations/missing", headers=human).json()
+        row = con.execute("SELECT missing_at, path FROM asset_location WHERE asset_id = ?",
+                          (target["asset_id"],)).fetchone()
+        line("線 9 の前半（動かして走査 → missing_at が立つ）",
+             scanned.status_code == 200 and one["total"] == 1 and row["missing_at"] is not None,
+             f"scan missing={scanned.json().get('missing')} / 一覧 {one['total']} 件 / "
+             f"missing_at={row['missing_at']}")
+
+        body = {"asset_id": target["asset_id"], "path": str(moved), "mode": "exact"}
+        # --- エージェントは 403（1 バイトも書かない）---
+        refused = client.post("/api/locations/relink", headers=agent, json=body)
+        line("エージェントは 403 human_only",
+             refused.status_code == 403 and refused.json().get("code") == "human_only"
+             and con.execute("SELECT missing_at FROM asset_location WHERE asset_id = ?",
+                             (target["asset_id"],)).fetchone()["missing_at"] == row["missing_at"],
+             f"{refused.status_code} {refused.json().get('code')}")
+
+        # --- 中身が違う → 409 hash_mismatch ---
+        wrong = WORK / "relink-wrong.png"
+        shutil.copy2(taken["display_path"], wrong)
+        bad = client.post("/api/locations/relink", headers=human,
+                          json={"asset_id": target["asset_id"], "path": str(wrong),
+                                "mode": "exact"})
+        line("中身が違えば 409 hash_mismatch",
+             bad.status_code == 409 and bad.json().get("code") == "hash_mismatch",
+             f"{bad.status_code} {bad.json().get('code')}")
+
+        # --- 既に別の画像に登録済み → 409 path_taken ---
+        dup = client.post("/api/locations/relink", headers=human,
+                          json={"asset_id": target["asset_id"], "path": taken["display_path"],
+                                "mode": "exact"})
+        line("既に別の画像に登録済みなら 409 path_taken",
+             dup.status_code == 409 and dup.json().get("code") == "path_taken",
+             f"{dup.status_code} {dup.json().get('code')} / {dup.json().get('details')}")
+
+        # --- 成功: 同じ asset のまま繋がる ---
+        history_before = con.execute("SELECT count(*) AS n FROM location_history").fetchone()["n"]
+        done = client.post("/api/locations/relink", headers=human, json=body)
+        got = done.json()
+        after = con.execute("SELECT missing_at, path, display_path FROM asset_location"
+                            " WHERE asset_id = ?", (target["asset_id"],)).fetchone()
+        hist = con.execute("SELECT * FROM location_history ORDER BY id DESC LIMIT 1").fetchone()
+        asset = client.get(f"/api/assets/{target['asset_id']}", headers=human).json()
+        tagged = client.get("/api/assets?tag=probe-relink", headers=human).json()
+        left = client.get("/api/locations/missing", headers=human).json()
+        line("線 9 の後半（人が繋ぎ直せる・同じ asset のまま）",
+             done.status_code == 200 and got["relinked"] is True and got["moved"] is True
+             and got["to_key"] == normalize_path(moved),
+             f"{done.status_code} moved={got.get('moved')} to={got.get('to_path')}")
+        line("missing_at が NULL に戻り、場所が新しいパスになる",
+             after["missing_at"] is None and after["path"] == normalize_path(moved),
+             f"missing_at={after['missing_at']} path={after['display_path']}")
+        line("判断が保たれる（同じ asset・kept のまま）",
+             asset["review_state"] == "kept" and asset["id"] == target["asset_id"]
+             and got["kept"]["decisions"] >= 1,
+             f"review_state={asset['review_state']} kept={got['kept']}")
+        line("タグが保たれる（語で引ける）",
+             tagged["total"] == 2 and got["kept"]["tags"] == 1,
+             f"probe-relink の枚数 {tagged['total']} / kept.tags={got['kept']['tags']}")
+        line("location_history に 1 行（移動元 → 移動先・理由・人）",
+             hist is not None and hist["path"] == target["display_path"]
+             and hist["to_path"] == str(moved) and hist["reason"] == "relinked"
+             and hist["actor"] == "human" and hist["replaced_by_asset_id"] is None
+             and con.execute("SELECT count(*) AS n FROM location_history"
+                             ).fetchone()["n"] == history_before + 1,
+             f"reason={hist['reason'] if hist else None} to={hist['to_path'] if hist else None}")
+        line("一覧から消える（参照切れ 0）", left["total"] == 0, f"total={left['total']}")
+        line("ファイルは動かしていない（新しい場所に在る・古い場所には無い）",
+             moved.is_file() and not Path(target["display_path"]).exists())
+
+        # --- nearby（**まだ走査していない置き場**へ動いた形。名前は変えない）---
+        store.set_roots([str(nearby_root)])
+        near_dst = nearby_root / "sub" / Path(target2["display_path"]).name
+        near_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(target2["display_path"], near_dst)
+        client.post("/api/scan", headers=human, json={"roots": [str(library)]})
+        near = client.post("/api/locations/relink", headers=human,
+                           json={"asset_id": target2["asset_id"], "mode": "nearby"})
+        line("nearby（同じ名前を置き場から探して繋ぐ）",
+             near.status_code == 200 and near.json()["to_path"] == str(near_dst)
+             and near.json()["searched"] >= 1,
+             f"{near.status_code} to={near.json().get('to_path')} "
+             f"searched={near.json().get('searched')}")
+
+        # --- GET は 1 バイトも書かない ---
+        state = snapshot()
+        files = sorted((str(p.relative_to(data)), p.stat().st_size, p.stat().st_mtime_ns)
+                       for p in data.rglob("*") if p.is_file())
+        for _ in range(2):
+            assert client.get("/api/locations/missing", headers=human).status_code == 200
+            assert client.get("/api/locations/missing?include_deleted=1",
+                              headers=human).status_code == 200
+        after_files = sorted((str(p.relative_to(data)), p.stat().st_size, p.stat().st_mtime_ns)
+                             for p in data.rglob("*") if p.is_file())
+        line("GET /api/locations/missing は書かない",
+             snapshot() == state and after_files == files)
+
+        cols = [r["name"] for r in con.execute("PRAGMA table_info(location_history)")]
+        line("location_history に to_path / reason / actor が入っている",
+             {"to_path", "reason", "actor"} <= set(cols), str(cols))
+
+    after_all = real_data_signature()
+    line("実データが無傷（複製だけで試した）", before == after_all,
+         f"{after_all['assets']} 枚 / 判断 {after_all['decisions']} 件 / "
+         f"参照切れ {after_all['missing']} 件")
+    print(f"   作業場: {WORK}（--keep で残す）")
+    return ok
 
 
 if __name__ == "__main__":

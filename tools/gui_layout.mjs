@@ -42,7 +42,8 @@
 //     （`--ids a,b` を渡すと削除の確認も押す。POST は差し替えた `fetch` が飲む）
 //   - 設定（`--screen settings`。P8-5）: 横に溢れない／**最後の失敗（`last_error`）の全文が
 //     スクロール無しで見える**／置き場ごとの「段 3 を許す」印／**押すと POST が 1 回だけ**
-//     （印の付け外し・「いま取る」・置き場を変える）／読み取り専用のときの案内
+//     （印の付け外し・「取り直す」・置き場を変える。**二度押しでも 1 回**＝C-1）／
+//     読み取り専用のときの案内（**200 の `read_only` も含む**＝C-3）
 //   - ライブラリ（`--screen library`）: 上の削除の入口に加えて、**上部バーの
 //     「バックアップに失敗しています」**（`GET /api/backup` の `last_error` と突き合わせる）と、
 //     **押すと `#/settings` で全文が読める**こと（P8-5。P8-4 の再確認 B-1' / G-4）
@@ -441,16 +442,22 @@ const OPEN_EXCLUSIONS = `(async () => {
 
 // **（P8-3 の監査 C-1）拡大の削除の入口を押す**。`#/pending-deletes?ids=<この 1 枚>` へ行き、
 // 削除の確認（段の選択）が出ることを見る。**押さないテストは穴を隠す**（P7-4 の教訓）。
-// POST はしない（画面が移るだけ。渡す先は GET だけを読む）
+// POST はしない（画面が移るだけ。渡す先は GET だけを読む）。
+//
+// **（P8-5 の監査 C-2）段は 2 つのこともある**（印の無い置き場。`pending.js` の出し分け）。
+// ここでは「削除の確認が出た」ことだけを見て、**段の数は API と突き合わせて**別に見る。
 const PRESS_ASSET_DELETE = `(async () => {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-  const out = { pressed: false, hash: '', confirmShown: false };
+  const out = { pressed: false, hash: '', confirmShown: false, stages: 0, stage3Note: '' };
   const btn = document.getElementById('del-one');
   if (btn) { btn.click(); out.pressed = true; await wait(600); }
   out.hash = location.hash;
   const confirm = document.getElementById('pd-confirm');
   out.confirmShown = !!confirm && /削除の確認/.test(confirm.textContent || '')
-    && document.querySelectorAll('#pd-confirm .pd-stage').length === 3;
+    && document.querySelectorAll('#pd-confirm .pd-stage').length >= 2;
+  out.stages = document.querySelectorAll('#pd-confirm .pd-stage').length;
+  out.stage3Note = [...document.querySelectorAll('#pd-confirm .pd-warn')]
+    .map((n) => n.textContent || '').join(' ');
   return out;
 })()`;
 
@@ -745,8 +752,8 @@ const MEASURE_SETTINGS = `(() => {
   };
 })()`;
 
-// 設定で**押す**（印の付け外し・「いま取る」・置き場を変える）。**POST / PATCH は飲む**
-// （サーバのデータは書かない）。押した結果の 1 行も見る
+// 設定で**押す**（印の付け外し・「取り直す」・置き場を変える）。**POST / PATCH は飲む**
+// （サーバのデータは書かない）。押した結果の 1 行も見る。**二度押しは 1 回だけ**（C-1）
 const PRESS_SETTINGS = `(async () => {
   const real = window.fetch;
   const json = (body, status = 200) => new Response(JSON.stringify(body),
@@ -770,18 +777,34 @@ const PRESS_SETTINGS = `(async () => {
     return Promise.resolve(json({ ok: true }));
   };
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-  const out = { pressedAllow: false, pressedNow: false, pressedSave: false, error: null };
+  const out = { pressedAllow: false, pressedAllowTwice: false, allowBusy: null,
+                pressedNow: false, pressedNowTwice: false, nowBusy: null,
+                pressedSave: false, error: null };
   try {
-    // **押す直前に取り直す**（描き直しで要素が入れ替わる。PRESS_DUP と同じ教訓）
-    const allow = document.querySelector('#st-roots .st-allow');
+    // **押す直前に取り直す**（描き直しで要素が入れ替わる。PRESS_DUP と同じ教訓）。
+    // **（P8-5 の監査 C-1）二度押し**: 1 回目の応答が返る前に 2 回目を押す。
+    // 描き直されたボタンが disabled なら**本物のブラウザは 2 回目を届けない**
+    const allowAt = () => document.querySelector('#st-roots .st-allow');
+    const allow = allowAt();
     if (allow) {
       out.allowWant = allow.dataset.allow === 'true';      // 押したボタンがどちら向きか
       allow.click();
       out.pressedAllow = true;
+      const again = allowAt();
+      out.allowBusy = again ? again.disabled === true : null;
+      if (again && !again.disabled) { again.click(); out.pressedAllowTwice = true; }
       await wait(500);
     }
-    const now = document.querySelector('#st-backup .st-now');
-    if (now && !now.disabled) { now.click(); out.pressedNow = true; await wait(500); }
+    const nowAt = () => document.querySelector('#st-backup .st-now');
+    const now = nowAt();
+    if (now && !now.disabled) {
+      now.click();
+      out.pressedNow = true;
+      const again = nowAt();
+      out.nowBusy = again ? again.disabled === true : null;
+      if (again && !again.disabled) { again.click(); out.pressedNowTwice = true; }
+      await wait(500);
+    }
     const dir = document.getElementById('st-dir');
     const save = document.querySelector('#st-backup .st-save');
     if (dir && save) {
@@ -945,6 +968,27 @@ try {
       process.exit(2);
     }
     const url = `${BASE}/#/asset/${encodeURIComponent(IDS[0])}`;
+    // **（P8-5 の監査 C-2）段の数の期待値は API から組む**（`--screen pending --ids` と同じ規則。
+    // `pending.js` の `stage3Allowed` = 覆っている置き場のどれかに印があれば段 3 を出す）。
+    // **印の無い置き場では 2 つ**なので、「3 つ」を前提にすると必ず NG になる（C-2）
+    let wantStages = null;
+    try {
+      const roots = ((await (await fetch(`${BASE}/api/roots`)).json()).roots) || [];
+      const items = ((await (await fetch(`${BASE}/api/assets?limit=2000`)).json()).items) || [];
+      const row = items.find((r) => r.id === IDS[0]);
+      const norm = (v) => String(v).replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+      const under = (p, root) => {
+        if (!p || !root) return false;
+        const a = norm(p); const b = norm(root);
+        return a === b || a.startsWith(`${b}\\`);
+      };
+      const path = row ? row.path : null;
+      const allowed = Boolean(path)
+        && roots.some((r) => r.allow_stage3 && under(path, r.display_path || r.path));
+      wantStages = path ? (allowed ? 3 : 2) : null;
+    } catch (error) {
+      console.log(`注意: 置き場か枚のパスを取れませんでした（段の数は見ない）: ${error.message}`);
+    }
     for (const [width, height] of VIEWPORTS) {
       if (ONLY && ONLY !== `${width}x${height}`) continue;
       await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
@@ -982,6 +1026,13 @@ try {
       else if (!String(pressed.hash).startsWith('#/pending-deletes?ids=')) {
         bad.push(`削除の確認へ渡す（${pressed.hash}）`);
       } else if (!pressed.confirmShown) bad.push('削除の確認が出る');
+      // **（P8-5 の監査 C-2）段は 2 つ（印なし）か 3 つ（印あり）**。期待値は API から
+      if (wantStages !== null && pressed && pressed.stages !== wantStages) {
+        bad.push(`段の数（期待 ${wantStages} なのに ${pressed.stages}。C-2）`);
+      } else if (wantStages === 2 && pressed
+        && !/段 3 の印がありません/.test(pressed.stage3Note || '')) {
+        bad.push('段 3 を出さない理由の 1 行');
+      }
       // P4-3: タグの欄（設計 §8.3 の 1〜3）
       if (got.tagOverflow !== 0) bad.push('タグ欄が横に溢れない');
       // **折り返した語釈は正しい**ので、折り返しを含む行を除いて比べる（監査 §8.3-3 の作り直し）
@@ -996,6 +1047,7 @@ try {
         + ` tgTop=${got.tgTop}px tgVisible=${got.tgVisible}`
         + ` delTop=${got.delTop}px delVisible=${got.delVisible}`
         + ` 削除の入口=${JSON.stringify((pressed || {}).hash)}`
+        + ` 段=${(pressed || {}).stages}(${wantStages})`
         + ` markNos=[${got.markNos.join(',')}] rowNos=[${got.rowNos.join(',')}]`
         + ` タグ: rows=${got.tagRows} overflow=${got.tagOverflow} 高さの差=${got.tagHeightSpread}px`
         + ` 折り返し=${got.tagWrapped}/語名=${got.tagWrappedEn} 印=${got.tagMarks} 語釈=${got.tagWithGloss} script=${got.tagScripts}`
@@ -1292,40 +1344,54 @@ try {
       if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
       if (got.bodyOverflow !== 0) bad.push('本文が横に溢れない');
       if (got.scripts !== 0) bad.push('script タグを実行しない');
-      if (!got.backupText.includes('最後に取った') && !got.backupText.includes('まだ取っていません')) {
-        bad.push('最後に取った時刻（か「まだ取っていません」）');
-      }
-      if (want && want.snaps > 0 && got.snaps < 1) bad.push(`直近の一覧を出す（${want.snaps} 個ある）`);
-      if (want && want.snaps === 0 && !got.backupText.includes('まだ控えはありません')) {
-        bad.push('控えが 0 のときの 1 行');
-      }
-      if (got.snaps > 0 && !/日次|いま取る|版を上げる前|表の形を変える前/.test(got.backupText)) {
-        bad.push('控えの種類を語で出す');
+      // **読み取り専用のときは「バックアップの欄」が案内に置き換わる**（控えの時刻・一覧は出ない。§6・C-3）
+      const isRo = Boolean(want && want.readOnly) || got.readonly;
+      if (!isRo) {
+        if (!got.backupText.includes('最後に取った') && !got.backupText.includes('まだ取っていません')) {
+          bad.push('最後に取った時刻（か「まだ取っていません」）');
+        }
+        if (want && want.snaps > 0 && got.snaps < 1) bad.push(`直近の一覧を出す（${want.snaps} 個ある）`);
+        if (want && want.snaps === 0 && !got.backupText.includes('まだ控えはありません')) {
+          bad.push('控えが 0 のときの 1 行');
+        }
+        if (got.snaps > 0 && !/日次|取り直す|版を上げる前|表の形を変える前/.test(got.backupText)) {
+          bad.push('控えの種類を語で出す');
+        }
+      } else if (!/DB を読み取り専用で開いています。/.test(got.backupText)
+        || !/image-reviewer restore/.test(got.backupText)) {
+        bad.push('読み取り専用の案内（1 行と復元の案内）');
       }
       if (got.marks.length !== (want ? want.roots : got.marks.length)) {
         bad.push(`置き場ごとに印を出す（${got.marks.length}）`);
       }
       if (want) {
-        if (want.failed && !got.failedText.includes(want.error.slice(0, 20))) {
+        // **読み取り専用のときは「最後の失敗」の欄を出さない**（案内がその場所を取る。§6・C-3）
+        if (!want.readOnly && want.failed && !got.failedText.includes(want.error.slice(0, 20))) {
           bad.push('最後の失敗を全文で出す');
         }
-        if (want.failed && !got.failedVisible) bad.push('失敗がスクロール無しで見える');
+        if (!want.readOnly && want.failed && !got.failedVisible) bad.push('失敗がスクロール無しで見える');
         if (want.readOnly !== got.readonly) bad.push(`読み取り専用の見せ方（${want.readOnly}）`);
         if (want.marks !== got.marks.filter((m) => m === '印あり').length) {
           bad.push(`印ありの数=${want.marks}`);
         }
       }
       if (!got.readonly) {
-        if (!got.nowVisible) bad.push('「いま取る」が見える');
+        if (!got.nowVisible) bad.push('「取り直す」が見える');
         if (!got.saveVisible) bad.push('置き場を変える欄が見える');
         if (!pressed || !pressed.pressedAllow) bad.push('印のボタンを押せない');
         else if (allowPosts.length !== 1) bad.push(`印の POST=${allowPosts.length}`);
         else if (JSON.parse(String(allowPosts[0].body || '{}')).allow !== pressed.allowWant) {
           bad.push(`押した向きの allow を送る（${pressed.allowWant}）`);
         } else if (allowPosts[0].actor !== 'human') bad.push(`人だと名乗る（${allowPosts[0].actor}）`);
-        if (!pressed || !pressed.pressedNow) bad.push('「いま取る」を押せない');
+        // **（P8-5 の監査 C-1）押している間は押せない**（二度押しでも POST は 1 回）
+        if (pressed && pressed.allowBusy !== true) {
+          bad.push(`印のボタンは押している間は押せない（C-1。二度押し=${pressed.pressedAllowTwice}）`);
+        }
+        if (!pressed || !pressed.pressedNow) bad.push('「取り直す」を押せない');
         else if (nowPosts.length !== 1 || nowPosts[0].method !== 'POST') {
-          bad.push(`「いま取る」の POST=${nowPosts.length}`);
+          bad.push(`「取り直す」の POST=${nowPosts.length}`);
+        } else if (pressed.nowBusy !== true) {
+          bad.push(`「取り直す」も押している間は押せない（二度押し=${pressed.pressedNowTwice}）`);
         }
         if (!pressed || !pressed.pressedSave) bad.push('「保存する」を押せない');
         else if (savePosts.length !== 1 || savePosts[0].method !== 'PATCH') {
@@ -1334,7 +1400,7 @@ try {
           !== 'D:\\gui-layout-backups') {
           bad.push('入力した置き場を送る');
         }
-        if (pressed && !/置き場を変えました|この置き場で段 3 を許します|いま取りました/.test(pressed.msg)) {
+        if (pressed && !/置き場を変えました|この置き場で段 3 を許します|取り直しました/.test(pressed.msg)) {
           bad.push(`押した結果を 1 行で出す（${String(pressed.msg).slice(0, 24)}）`);
         }
       } else if (/st-now|st-save/.test(got.backupText)) {

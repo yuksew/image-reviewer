@@ -1072,6 +1072,19 @@ function hitOf(selector, data = {}, extra = {}) {
   return { ...node, closest: (sel) => (sel === selector ? node : null) };
 }
 
+/** **描いた HTML の中のボタン**を 1 つ見る（`disabled` かどうか）。
+ *
+ * 本物のブラウザは **`disabled` のボタンに `click` を届けない**（これが「二度押しでも 1 回」の
+ * 仕組み。P8-5 の監査 C-1）。この作り物の DOM はそこまで知らないので、**描いた HTML から見て**
+ * 「人の二度押しの 2 回目が届くか」を決める（`gui_layout` の本物の Chrome が最終の確認）。
+ */
+function buttonIn(containerId, className) {
+  const html = String(el(containerId).innerHTML || '');
+  const tag = new RegExp(`<button class="${className}"[^>]*>`).exec(html);
+  if (!tag) return { seen: false, disabled: true };
+  return { seen: true, disabled: /(^|\s)disabled(\s|>)/.test(tag[0]) };
+}
+
 /** `GET /api/pending-deletes` に**人だと名乗るヘッダ**が付いているか（P8-3 の穴）。 */
 let pendingGetHeaders = null;
 const asHumanFetch = globalThis.fetch;
@@ -1091,6 +1104,9 @@ globalThis.fetch = async (url, options) => {
 // `GET /api/roots` を読む。**押す検査**は本物の委譲の聞き手を叩く（`fetch` は飲む）。
 let ASSET_PATHS = { a1: 'C:\\other\\A1.png', a2: 'C:\\other\\A2.png' };  // 既定は**印のある**置き場
 let ASSETS_FAILS = false;
+// **（P8-5 の監査 D-5）一覧の上限を超える置き場**の道: 一覧に無い枚は `/api/assets/<id>` で引く。
+// `null` なら 404（引けない）＝安全側（段 3 を出さない）
+let SINGLE_ASSET = null;
 let SCAN_NOW = { scanning: false, started_at: null, elapsed_sec: null, scans: 1,
                  note: '走査していません。' };
 const BACKUP_BODY = {
@@ -1115,6 +1131,10 @@ const BACKUP_BODY = {
 };
 let BACKUP_NOW = BACKUP_BODY;
 let BACKUP_STATUS = 200;
+// **（P8-5 の監査 C-3・D-3）読み取り専用の理由と案内**（`GET /api/health/db?full=0`）。
+// **語彙は API の物**（`malformed` / `unreadable` / `unopenable` / `version_ahead` /
+// `pre_migrate_backup_failed`）を使う（`pre_topup_backup_failed` / `ahead` は API に無い）
+let HEALTH_BODY = { mode: 'ok', reason: 'ok', read_only: false, guidance: null };
 let SETTINGS_FAILS = null;             // 422 の本文を入れると失敗の道を見られる
 let settingsWrites = [];               // 人だけの口に**名乗っているか**を見る
 
@@ -1133,10 +1153,24 @@ globalThis.fetch = async (url, options) => {
     settingsWrites.push({ url: u, method, headers: options?.headers || null,
                           body: options?.body });
   }
+  // **（P8-5 の監査 D-5）1 枚の口**（`/api/assets/<id>`）。**一覧より先に見る**（前方一致が被る）
+  if (u.startsWith('/api/assets/')) {
+    asked.push(u);
+    const id = decodeURIComponent(u.slice('/api/assets/'.length).split('?')[0]);
+    if (!SINGLE_ASSET) return res({ detail: 'asset not found' }, 404);
+    // **本物の形**（`store.asset` は `locations` を返す。`path` は無い）
+    return res({ id, sha256: 'x', size: 1, locations: [
+      { path: SINGLE_ASSET.path, display_path: SINGLE_ASSET.path, is_primary: 1, missing_at: null },
+    ] });
+  }
   if (u.startsWith('/api/assets')) {
     asked.push(u);
     if (ASSETS_FAILS) return res({ detail: '読めません' }, 503);
     return res({ items: Object.entries(ASSET_PATHS).map(([id, path]) => ({ id, path })) });
+  }
+  if (u.startsWith('/api/health/db')) {
+    asked.push(u);
+    return res(HEALTH_BODY);
   }
   if (u.startsWith('/api/scan')) {
     asked.push(u);
@@ -1578,8 +1612,9 @@ check(el('stat-scan').hidden === true, '取れないときは出さない（古�
 check(stUi.lastTakenAt(BACKUP_NOW) === '2026-10-18T03:15:00Z',
   `最後に取った時刻は daily / manual だけから（pre-topup を数えない。D-5）: ${stUi.lastTakenAt(BACKUP_NOW)}`);
 check(stUi.kindText('pre-topup') === '表の形を変える前の控え'
-  && stUi.kindText('daily') === '日次' && stUi.kindText('nazo') === 'その他',
-  '控えの種類は利用者の言葉で出す（`kind` をそのまま出さない）');
+  && stUi.kindText('daily') === '日次' && stUi.kindText('manual') === '取り直す'
+  && stUi.kindText('nazo') === 'その他',
+  '控えの種類は利用者の言葉で出す（`kind` をそのまま出さない。文言表は「取り直す」。D-1）');
 writes.length = 0;
 settingsWrites.length = 0;
 await stUi.showSettings();
@@ -1588,17 +1623,38 @@ check(bkHtml.includes('最後に取ったのは') && bkHtml.includes(pdUi.fmtWhe
   `最後に取った時刻を出す: ${(bkHtml.match(/最後に取ったのは[^<]*/) || [])[0]}`);
 check(bkHtml.includes('C:\\work\\image-reviwer\\.backup\\daily') && bkHtml.includes('設定の値です'),
   '置き場と、それが設定の値か既定かを出す');
-check(bkHtml.includes('今日の分は取りました'), '今日の分の状態を出す');
+check(bkHtml.includes('今日の分は取れています。'), '今日の分の状態を出す（文言表の文。D-2）');
+check(!bkHtml.includes('（次は'), '「今日の分」に括弧を重ねない（API の `next_run_note` は出さない。D-2）');
 check(bkHtml.includes('3 個の控えがあります（直近 7 個を残します）'), '控えの数と残す数を出す');
 check(bkHtml.includes("[WinError 5] アクセスが拒否されました: "
   + "'C:\\Users\\yukse\\image-reviewer-backups'"),
   `最後の失敗を**全文**で出す（B-1'）: ${(bkHtml.match(/st-failed[\s\S]{0,60}/) || [])[0]}`);
 check(bkHtml.includes('置き場を作れないときは、書き込める場所に変えてください。'),
   '次にできることを 1 行で出す');
-check(bkHtml.includes('20261018-121500') && bkHtml.includes('日次')
+check(bkHtml.includes('20261018-121500') && bkHtml.includes('日次') && bkHtml.includes('取り直す')
   && bkHtml.includes('表の形を変える前の控え'), '直近の一覧を種類つきで出す');
+check(/class="st-now"[^>]*>取り直す</.test(bkHtml),
+  `ボタンは「取り直す」（文言表が正。D-1）: ${(bkHtml.match(/class="st-now"[^>]*>[^<]*/) || [])[0]}`);
+check(bkHtml.includes('placeholder="絶対パス"'), '置き場の入力に「絶対パス」と書く（D-9）');
 check(bkHtml.includes('image-reviewer restore') && !bkHtml.includes('st-restore'),
   '復元はコマンドだと書く（画面から戻さない。§3.3）');
+
+// 19b. 「今日の分」は API の `today_done` から組む（`next_run_note` をそのまま出さない。D-2）
+BACKUP_NOW = { ...BACKUP_BODY, today_done: false };
+await stUi.showSettings();
+check(String(el('st-backup').innerHTML || '').includes('今日の分はまだです。'),
+  'まだの日は「今日の分はまだです。」と出す（D-2）');
+
+// 19c. **読めない控え**（`manifest.json` が無い物）も語で出す
+//      （P8-5 の監査 D-6。壊し試験 G11「文言を消しても緑」だった穴）
+BACKUP_NOW = { ...BACKUP_BODY, snapshots: [...BACKUP_BODY.snapshots,
+  { name: '20261018-130000', kind: 'manual', created_at: '2026-10-18T04:00:00Z',
+    bytes: 1000, ok: false }] };
+await stUi.showSettings();
+check(String(el('st-backup').innerHTML || '').includes('控えを読めません'),
+  '読めない控えは「控えを読めません」と出す（D-6）');
+BACKUP_NOW = BACKUP_BODY;
+await stUi.showSettings();
 
 // 20. 設定の画面: 置き場ごとの「段 3 を許す」印（Q8）
 let rtHtml = String(el('st-roots').innerHTML || '');
@@ -1626,6 +1682,22 @@ check(settingsWrites[0]?.headers?.['X-Image-Reviewer-Actor'] === 'human',
 check(String(el('st-msg').innerHTML || '').includes('この置き場で段 3 を許します。'),
   `押した結果を 1 行で知らせる: ${String(el('st-msg').innerHTML || '').slice(0, 60)}`);
 
+// 21b. **二度押し**（1 回目の応答が返る前に 2 回目を押す。**P8-5 の監査 C-1**）→ POST は 1 回
+writes.length = 0;
+settingsWrites.length = 0;
+el('st-roots').dispatch('click', { target: hitOf('.st-allow', { id: 'd:\\lib', allow: 'true' }) });
+const allowBusy = buttonIn('st-roots', 'st-allow');
+check(allowBusy.seen && allowBusy.disabled,
+  `印のボタンは押している間は押せない（「取り直す」と同じ形。C-1）: ${JSON.stringify(allowBusy)}`);
+// 本物のブラウザは `disabled` のボタンに 2 回目を届けない（届く形なら押して数える）
+if (allowBusy.seen && !allowBusy.disabled) {
+  el('st-roots').dispatch('click', { target: hitOf('.st-allow', { id: 'd:\\lib', allow: 'true' }) });
+}
+await tick();
+await tick();
+const dblPosts = writes.filter((w) => w.url.includes('/allow-stage3'));
+check(dblPosts.length === 1, `印のボタンの二度押しでも POST は 1 回: ${dblPosts.length} 回`);
+
 // 22. **押す検査**: 印を外す（allow: false）
 writes.length = 0;
 el('st-roots').dispatch('click', { target: hitOf('.st-allow', { id: 'c:\\other', allow: 'false' }) });
@@ -1635,17 +1707,22 @@ const offPosts = writes.filter((w) => w.url.includes('/allow-stage3'));
 check(offPosts.length === 1 && JSON.parse(String(offPosts[0]?.body || '{}')).allow === false,
   `印を外すときは allow: false: ${offPosts[0]?.body}`);
 
-// 23. **押す検査**: 「いま取る」→ `POST /api/backup`（同じ日でも必ず新しく取る。§3.3）
+// 23. **押す検査**: 「取り直す」→ `POST /api/backup`（同じ日でも必ず新しく取る。§3.3）
 writes.length = 0;
 settingsWrites.length = 0;
 el('st-backup').dispatch('click', { target: hitOf('.st-now', {}) });
+const nowBusy = buttonIn('st-backup', 'st-now');
+check(nowBusy.seen && nowBusy.disabled, `「取り直す」も押している間は押せない: ${JSON.stringify(nowBusy)}`);
+if (nowBusy.seen && !nowBusy.disabled) {
+  el('st-backup').dispatch('click', { target: hitOf('.st-now', {}) });
+}
 await tick();
 await tick();
 const nowPosts = writes.filter((w) => w.url === '/api/backup' && w.method === 'POST');
-check(nowPosts.length === 1, `「いま取る」は 1 回だけ叩く: ${nowPosts.length} 回`);
+check(nowPosts.length === 1, `「取り直す」は二度押しでも 1 回だけ叩く: ${nowPosts.length} 回`);
 check(settingsWrites.some((w) => w.url === '/api/backup'
-  && w.headers?.['X-Image-Reviewer-Actor'] === 'human'), '「いま取る」も人だけの口');
-check(String(el('st-msg').innerHTML || '').includes('いま取りました'), '取れたことを 1 行で知らせる');
+  && w.headers?.['X-Image-Reviewer-Actor'] === 'human'), '「取り直す」も人だけの口');
+check(String(el('st-msg').innerHTML || '').includes('取り直しました'), '取れたことを 1 行で知らせる');
 
 // 24. **押す検査**: 置き場を変える → `PATCH /api/settings`
 el('st-dir').value = 'D:\\image-reviewer-backups';
@@ -1673,7 +1750,10 @@ check(String(el('st-msg').innerHTML || '').includes('bad'), '失敗は失敗の�
 SETTINGS_FAILS = null;
 
 // 25. 読み取り専用のときの案内（`GET /api/backup` が 503。P8-4 の再確認 D-2）
+//     **語彙は API の物**（`GET /api/health/db` の `reason`。D-3）
 BACKUP_STATUS = 503;
+HEALTH_BODY = { mode: 'read_only', reason: 'malformed', read_only: true,
+                guidance: 'バックアップから戻してください: image-reviewer restore <フォルダ>' };
 await stUi.showSettings();
 const roHtml = String(el('st-backup').innerHTML || '');
 check(roHtml.includes('DB を読み取り専用で開いています。'), '読み取り専用だと 1 行で言う');
@@ -1682,7 +1762,36 @@ check(roHtml.includes('image-reviewer restore'), '復元の案内を出す');
 check(!/st-now|st-save/.test(roHtml),
   '書き込むボタンは出さない（押せないのではなく置かない）');
 check(el('st-brief').textContent === '読み取り専用', `見出しも読み取り専用: ${el('st-brief').textContent}`);
+const roAllow = buttonIn('st-roots', 'st-allow');
+check(roAllow.seen && roAllow.disabled,
+  `読み取り専用では印のボタンも押せなくする（§6「書き込みのボタンは押せなくする」）: ${JSON.stringify(roAllow)}`);
+check(String(el('st-roots').innerHTML || '').includes('読み取り専用で開いているので、印は変えられません。'),
+  '印が変えられない理由を 1 行で出す');
+
+// 25b. **版が新しい DB**（`GET /api/backup` は 200 だが `read_only`。§6・C-3）
 BACKUP_STATUS = 200;
+BACKUP_NOW = { ...BACKUP_BODY, read_only: true };
+HEALTH_BODY = { mode: 'read_only', reason: 'version_ahead', read_only: true,
+                guidance: 'DB の版がこのアプリより新しいので、読み取り専用で起動しています。'
+                  + '新しいアプリで開くか、バックアップから戻してください: '
+                  + 'image-reviewer restore <バックアップのフォルダ>' };
+await stUi.showSettings();
+const aheadHtml = String(el('st-backup').innerHTML || '');
+check(aheadHtml.includes('DB を読み取り専用で開いています。'), '200 でも `read_only` なら 1 行で言う（C-3）');
+check(aheadHtml.includes('DB の版がこのアプリより新しいものです。'),
+  `理由は API の語彙（\`version_ahead\`）で出す（D-3）: ${(aheadHtml.match(/st-warn[^<]*/) || [])[0]}`);
+check(aheadHtml.includes('新しいアプリで開くか'), 'API の案内（`guidance`）をそのまま出す（D-3）');
+check(!/st-now|st-save/.test(aheadHtml), '200 の読み取り専用でも書き込むボタンは置かない（C-3）');
+check(el('st-brief').textContent === '読み取り専用', `見出しも読み取り専用: ${el('st-brief').textContent}`);
+
+// 25c. 語彙の残り（`unreadable` / `unopenable` / `pre_migrate_backup_failed` が API の物）
+HEALTH_BODY = { mode: 'unusable', reason: 'unreadable', read_only: true,
+                guidance: 'DB を開けません（ファイルが壊れています）。' };
+await stUi.showSettings();
+check(String(el('st-backup').innerHTML || '').includes('DB を開けませんでした（ファイルが壊れています）。'),
+  '`unreadable` も語で出す（D-3。API の語彙に揃えた）');
+HEALTH_BODY = { mode: 'ok', reason: 'ok', read_only: false, guidance: null };
+BACKUP_NOW = BACKUP_BODY;
 await stUi.showSettings();
 
 // ---- P8-5: 最近の削除の段 3 の出し分け（Q8）と走査中の 1 行 ----
@@ -1717,6 +1826,22 @@ check(!pdConfirm.includes('value="3"'), '確かめられないときも段 3 を
 check(pdConfirm.includes('置き場を確かめられないので、段 3 は出していません。'),
   `確かめられなかったと言う: ${(pdConfirm.match(/置き場を確かめ[^<]*/) || [])[0]}`);
 ASSETS_FAILS = false;
+
+// 28b. **一覧の上限（2000 枚）を超える置き場**（P8-5 の監査 D-5）。
+//      一覧に選んだ枚が無いので、**1 枚の口**（`/api/assets/<id>`）で引く
+ASSET_PATHS = {};                                            // 一覧には 1 枚も無い
+SINGLE_ASSET = { path: 'C:\\other\\A1.png' };                 // `C:\other` は印あり
+await pdUi.showPending('?ids=a1,a2');
+pdConfirm = String(el('pd-confirm').innerHTML || '');
+check(pdConfirm.includes('value="3"'),
+  '一覧に無い枚は 1 枚の口で引いて段 3 を出す（D-5。2000 枚を超える置き場）');
+check(asked.some((u) => u.startsWith('/api/assets/')), '1 枚の口を引く（足りない枚だけ）');
+// 1 枚の口も引けないときは**出さない**（安全側）
+SINGLE_ASSET = null;
+await pdUi.showPending('?ids=a1,a2');
+check(!String(el('pd-confirm').innerHTML || '').includes('value="3"'),
+  '1 枚の口も引けないときは段 3 を出さない（安全側）');
+ASSET_PATHS = { a1: 'C:\\other\\A1.png', a2: 'C:\\other\\A2.png' };
 await pdUi.showPending('?ids=a1,a2');
 
 // 29. **走査中の 1 行**（`GET /api/scan`。走査は削除と同じ錠を取る）

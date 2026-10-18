@@ -511,3 +511,4 @@ uv run --no-sync --with jsonschema python tools/check_contract_p8.py       # 契
 
 次のセッションが作業を進めたら、**このファイルを更新**してください（§1 の状態・§3 の次の手順・§7 の判断待ち）。
 `docs/p6-morning-report.md` は「利用者に読ませる」用途、**この引継書は「次のエージェントに読ませる」用途**です。
+- **未解決（2026-10-18）**: **アプリのプロセスから %USERPROFILE% に書けない**（C:\Users\yukse\image-reviewer-backups を WinError 5 で作れない。**同じ持ち主のシェルからは作れる**。CFA は無効・ACL も正常・系譜は Explorer → cmd → uv → exe）。**回避策として settings.backup_dir を C:\work\image-reviwer\.backup\daily\ にした**（利用者の決定）。**別ドライブにしたい場合はこの謎を先に解く**（#/settings から戻せる）。

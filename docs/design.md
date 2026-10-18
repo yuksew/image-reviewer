@@ -548,9 +548,9 @@ CREATE TABLE tag_gloss (
 
 | 表 | 定義している文書 | 何のため |
 | --- | --- | --- |
-| `phash_band` | [`duplicates-deletion-backup.md`](duplicates-deletion-backup.md) §2.2 | 準重複の候補を絞る（8bit × 8 本の帯） |
-| `duplicate_exclusion` | 同 §2.4 | 「別物として確定」した組 |
-| `deletion_log` | 同 §3.3 | 削除の段階・保留領域・取り消し・purge_at |
+| `phash_band` | [`duplicates-deletion-backup.md`](duplicates-deletion-backup.md) §2.2（**形は P8 で作り直した。§5.8 が正**） | 準重複の候補を絞る（**4bit × 16 本**。**距離 ≤ 15 なら 1 本は必ず一致する**） |
+| `duplicate_exclusion` | 同 §2.4 | 「別物として確定」した組（**§5.8**） |
+| `deletion_log` | 同 §3.3 | 削除の段階・保留領域・取り消し・purge_at（**§5.8**） |
 | `location_history` | 同 §1.4 | 同じパスの内容が入れ替わった事実 |
 | `recipe_record` | [`workflow-reproduction.md`](workflow-reproduction.md) §4.9 | **（廃止。2026-10-17）** 生成条件の記録。P7 で作って消した（§16.5） |
 | `recipe_export` | 同 §4.9 | **（廃止）** 書き出したグラフ（印・attempt_id・seed） |
@@ -560,6 +560,29 @@ CREATE TABLE tag_gloss (
 > **点検で見つかった誤り**: §5 にこれらが無いのに §14 の工程が前提にしていた。
 > 表を**写す**のではなく**参照する**形にして直した（写すと必ず食い違う。実際に
 > `asset` 表の写しが `kind` / `source_url` / `ref_tags` を落としていた）。
+
+---
+
+### 5.8 P8（重複・削除・バックアップ）で作った表（v6）
+
+**P8 で作った。** `SCHEMA_VERSION = 6`（`_migrate_v6()`。P7 が使って v5 に戻した番号を、この段で使い直した）。
+**DDL と列の意味の正は [`p8-design.md`](p8-design.md) §2.1**（ここには一覧だけ置く。§5.7 と同じ約束で**定義を二重に書かない**）:
+
+| 表・列 | 何 | 備考 |
+| --- | --- | --- |
+| **`asset.deleted_at`**（列） | 論理削除（**段 1**）。**NULL = 生きている**。**行は消さない**（判断と来歴を残す） | §5.1 の `asset` に既に書いてあった物を実装した（**列なので `CHECK` は付けられない**＝値の検査はサービス層） |
+| **`deletion_log`**（表） | 削除の台帳。段（1/2/3）・パス・`hold_path`・`remaining_sec`・`purge_at`・`restored_at`・`request_id`・`reason`・**`stuck_reason`**（戻せなかった理由。`target_exists` / `move_failed` / `different` / `missing`）・`actor`（`human` / `agent`） | **削除後も消さない**。`asset` に `REFERENCES` を張らない（台帳は画像より長く生きる） |
+| **`delete_request`**（表） | **要求の単位**の `client_token` と `result_json`（同じ token の再送は前の結果を返す） | 一括は 1 要求で最大 200 行を書くので、`client_token` を**行に持たせると 2 行目で UNIQUE に当たる**（点検 A2） |
+| **`duplicate_exclusion`**（表） | 「別物として確定」した組。`reason` / `actor` / `at` | `PRIMARY KEY (a_id, b_id)` ＋ **`CHECK (a_id < b_id)`**（`(A,B)` と `(B,A)` を別行にしない）。**解除できる** |
+| **`phash_band`**（表） | 準重複の候補を絞る帯。`PRIMARY KEY (asset_id, band)` | **4bit × 16 本**（**`CHECK (band BETWEEN 0 AND 15)`**・`length(value) = 1`）。**書き手は `store.set_hashes` の 1 か所**。**距離 ≤ 15 の保証**（鳩の巣）・**16 以上は帯で絞らず総当たり** |
+| **`pending_delete_preview`**（表） | 一括削除の**凍結**（`preview_id`・凍結した一覧・`expires_at`・`actor`） | **実行時に評価し直さない**。失効は既定 10 分。**実行後も行は消さない**（`result_json` を再送に返す） |
+| **`root.allow_stage3`**（列） | その置き場で**実ファイルの削除（段 3）を許すか** | **既定は 0（許さない）**（利用者の回答 Q8。**別のツールの管理下を守るための印**）。実データは `illust-authoring` の置き場（262 / 263 枚）にだけ 1 が立っている |
+| **`job.cancel_requested`**（列） | 背景ジョブの**中断の印** | `JobService` と `DuplicatesService` が**同じ列を見る**（前の版は各サービスが自分のメモリに印を持ち、`POST /api/jobs/{id}/cancel` で**ハッシュのジョブが止まらなかった**）。**再起動をまたいでも残る** |
+
+- **版を上げずに形を足した物**（`deletion_log.stuck_reason`）は **`db.TOP_UP_COLUMNS` が正**（`_top_up_v6` と `missing_top_ups()` が同じ表を見る）。
+  **変える前に `pre-topup-<日時>/` の控えを取る**（§0.12-6 と同じ規律）。
+- **`asset.deleted_at` は資産の単位・削除は場所の単位。** 印を立てるのは**生きている `asset_location` が 0** か
+  **生きた段 1 の行がある**ときだけ（場所が 2 つある画像の片方を消しただけで一覧から消さない）。
 
 ---
 
@@ -699,43 +722,78 @@ GET    /api/presets
 POST   /api/presets               {name, note?, source_asset_id?}
 GET    /api/presets/{id}/record   -- 条件の写し（コピー用）
 
-# 重複と削除（duplicates-deletion-backup.md）
-GET    /api/duplicates/exact      ?cursor=&limit=
-GET    /api/duplicates/near       ?cursor=&limit=&max_distance=6
-POST   /api/duplicates/exclude    {a_id, b_id, reason?}       -- PK は (min,max) に正規化して入れる
-DELETE /api/duplicates/exclude    {a_id, b_id}
-                                  -- **解除の口を用意する**（点検 C10。「別物として確定」を間違えたときに戻せないと、
-                                  -- その組が二度と候補に出ない）。順序に依らず同じ行を指すよう (min,max) で正規化
-POST   /api/locations             {asset_id, path, kind}       -- 場所を足す
-DELETE /api/locations             {asset_id, path, stage:1|2|3}
-                                  -- stage 3 は 5 分間取り消せる（保留領域へ移して後で消す）
+# 重複と削除（duplicates-deletion-backup.md。**P8 で実装**。決定は §16.6）
+GET    /api/duplicates/exact      ?limit=
+                                  -- 完全重複（同じ内容が 2 か所以上）。**この実データでは 0 群**なので
+                                  -- count: 0 と message を返す（**空の一覧を黙って出さない**）
+GET    /api/duplicates/near       ?max_distance=6&limit=
+                                  -- 準重複（pHash のハミング距離 ≤ max_distance）。**計算はしない**
+                                  -- （未計算は unhashed で返す。計算は下の POST）。各群に suggested_id と
+                                  -- reason（**代表の推薦**。§0.9）・max_distance_within。**頁送りは無い**
+POST   /api/duplicates/compute    {force?}                     -- 足りない pHash を計算する背景ジョブ（202）
+POST   /api/duplicates/exclude    {a_id, b_id, reason?}        -- 「別物として確定」（(min,max) に正規化）
+POST   /api/duplicates/exclude/remove {a_id, b_id}             -- **解除**（必須。点検 C10）
+                                  -- **`DELETE` に本文を持たせない**ので、解除も `POST`（§0.15 の 1）
+GET    /api/duplicates/exclusions ?limit=                      -- 確定した組の一覧（解除の画面が読む）
+POST   /api/locations/delete      {asset_id, path, stage:1|2|3, reason?, client_token?, confirm_last_copy?}
+                                  -- **`POST`**（`DELETE` に本文を持たせない。§0.15 の 1）。**段 1〜3**
+                                  -- stage は **1 / 2 / 3 の整数だけ**（`true` や `3.9` は 422。丸めない）
+                                  -- **最後の 1 つを段 3 で消すには `confirm_last_copy: true`**（無ければ 409 last_copy）
+                                  -- `client_token` の再送は 200 で前の結果（**二重に消さない**）
 POST   /api/locations/bulk-delete/preview
                                   {scope:{kind:'folder'|'group'|'query'|'assets', id?, query?, asset_ids?[]},
                                    stage:1|2|3}
-                                  -- 対象を 1 回だけ解決して凍結する（点検 A6）
-                                  -- → {preview_id, items:[{asset_id, path, size, mtime_ns}], count, bytes,
-                                  --     frees:{bytes, at, note}, expires_at}
-POST   /api/locations/bulk-delete {preview_id, confirm:true}
-                                  -- 凍結した一覧だけを消す。実行時に評価し直さない
-                                  -- 1 件ずつ (size, mtime_ns) を再照合し、食い違いは skipped にして
-                                  -- **その項目だけ飛ばす**（残りは消す）
-                                  -- preview_id は既定 10 分で失効。失効したら何も消さず 409 preview_expired
-GET    /api/pending-deletes       -- 取り消せる削除の一覧（残り時間つき）
-POST   /api/pending-deletes/{id}/undo
-POST   /api/locations/relink      {asset_id, path}             -- 参照切れのつなぎ直し
-GET    /api/trash                 ?cursor=
-POST   /api/trash/restore         {deletion_id}
+                                  -- 対象を 1 回だけ解決して**凍結**する（点検 A6）
+                                  -- → {preview_id, items:[{asset_id, path, display_path, size, mtime_ns}],
+                                  --     count, bytes, frees:{bytes, at, note}, expires_at,
+                                  --     last_copies, not_allowed}
+                                  -- **エージェントは 200 枚を超えたら 422 too_many**（**1 枚も消さない**。人に上限は無い）
+                                  -- `folder` は**登録した `root` の下だけ**（外は 422 bad_scope）
+POST   /api/locations/bulk-delete {preview_id, confirm:true, client_token?, confirm_last_copy?}
+                                  -- **凍結した一覧だけ**を消す。実行時に評価し直さない
+                                  -- 1 件ずつ (size, mtime_ns) を**凍結した値と実ファイルの両方**と再照合し、
+                                  -- 食い違いは skipped にして**その項目だけ飛ばす**（残りは消す）
+                                  -- preview_id は既定 10 分で失効。失効したら**何も消さず 409 preview_expired**
+GET    /api/pending-deletes       -- **最近の削除**（段 1〜3。残り時間・stuck_reason・**誰が消したか**）
+                                  -- **残り時間を減らさない**（減らすのはタイマー）。拾い物は found で出す
+POST   /api/pending-deletes/{id}/undo {as_copy?}
+                                  -- **取り消す**（**上書きしない**。埋まっていれば 409 target_exists で**止めて尋ねる**）
+                                  -- **人だけ**が `as_copy: true`（`<名前>.<連番>.<拡張子>` で戻す）
+POST   /api/deletions/{id}/undo   {as_copy?}                   -- 同じ道（段 1〜3 に効く）
+GET    /api/deletions             ?limit=                      -- 削除の台帳（deletion_log）
+GET    /api/deletions/trash       ?limit=                      -- ゴミ箱（段 2。日付は現地）
+GET    /api/deletions/previews/{preview_id}                    -- 凍結の 1 件（失効しても 409 を返せるように残す）
+GET    /api/trash                 ?limit=                      -- ゴミ箱の一覧（既存の名）
+POST   /api/trash/restore         {deletion_id}                -- ゴミ箱から戻す（**人だけ**）
+POST   /api/deletions/{id}/purge  {confirm:true}               -- **いま消す**（保留領域の実体を今すぐ消す。**人だけ**）
+POST   /api/locations             {asset_id, path, kind}       -- 場所を足す（**まだ無い**）
+POST   /api/locations/relink      {asset_id, path, mode:'nearby'|'exact'}
+                                  -- 参照切れのつなぎ直し（**まだ無い**。**P8 では作らなかった**。
+                                  -- 別の段で作る。`docs/p8-6-relink.md` を見よ。`missing_at` と
+                                  -- `location_history` の道は既にある）
 
-# バックアップ
+# 走査と置き場（P8）
+GET    /api/scan                  -- 走査中かどうか（**読むだけ**。{scanning, started_at, elapsed_sec}）
+                                  -- `scan_guard()` は削除と取り消しを**待たせる**（409 は返さない）
+GET    /api/roots                 -- 登録した置き場（`id` は正規化した鍵）と **allow_stage3**。**読むだけ**
+POST   /api/roots/{id}/allow-stage3 {allow:true|false}         -- **段 3 を許す印**（**人だけ**。Q8）
+                                  -- **scan で新しく増えた置き場は印なし**で入る（段 1・2 まで）
+
+# バックアップ（P8-4）
 POST   /api/backup                {include_library:false, out?}
-POST   /api/backup/restore        {path, force:false}
-GET    /api/settings
-PATCH  /api/settings              {comfyui_url?, watch?, tagger?, translate?, data_dir?, backup_dir?,
-                                   preview_ttl_sec?, undo_window_sec?, theme?, thresholds?}
-                                  -- 設定は DB に持つ（ファイルを手で編集させない）
-                                  -- backup_dir の既定は <data> の外（点検 B3。§15 リスク 11）
-                                  -- preview_ttl_sec は一括削除の凍結の有効期限（既定 600。点検 A6）
-                                  -- undo_window_sec は実削除の取り消しの窓（既定 300。アプリ稼働時間で数える）
+                                  -- **いま 1 回取る**（必ず新しく取る＝`<YYYYMMDD>-<HHMMSS>/`）。
+                                  -- 自動の日次は同じ日なら取らない（30 秒ごとに「今日の分が無ければ取る」）
+GET    /api/backup                -- 直近のスナップショット・最後に取った時刻・置き場・次の予定・`last_error`
+GET    /api/health/db             ?full=0|1
+                                  -- `quick_check` / `integrity_check` と**読み取り専用かどうか**
+                                  -- （**例外も「壊れている」に数える**。既定は full=1）
+POST   /api/backup/restore        {path, force:false}          -- **作らない**（**復元は CLI**。点検 G8）
+GET    /api/settings              -- 設定。**いまの `PATCH` が受けるのは `backup_dir` だけ**
+PATCH  /api/settings              {backup_dir}
+                                  -- **人だけ**。**その場で形を見る**（相対パス・ファイル・無いドライブ・
+                                  -- `<data>` の中は 422 bad_backup_dir）
+                                  -- 既定は `<data>` の外（`%USERPROFILE%\image-reviewer-backups`。§15 リスク 11）
+                                  -- ComfyUI・タガー・閾値・テーマなどの設定は DB に在るが、**変える口はまだ無い**
 
 # ComfyUI の監視（生成の瞬間の値を捕まえる）
 POST   /api/comfyui/watch         {enabled, base_url, output_dir}   -- 必要なときだけ手で開始
@@ -758,6 +816,15 @@ GET    /api/events                -- 走査・ハッシュ・サムネ・タグ�
 2. `<data>/export/review.json` — 同じ内容をファイルにも書く（サーバを立てずに読める）。
 
 契約は [`schemas/review-export.schema.json`](../schemas/review-export.schema.json) に JSON Schema（draft 2020-12）で固定する。
+
+**P8 で足した契約は 1 つだけ**: [`schemas/backup-manifest.schema.json`](../schemas/backup-manifest.schema.json)
+（日次スナップショットの `manifest.json`。版・作った時刻・件数・含めた範囲・DB の `sha256`。
+**`restore`（CLI）が復元の前に自分で読む**。`abi` は `0.1` のまま＝足すだけ）。決定は §16.6。
+
+**`review-export.schema.json`（`review.json`）は P8 で変えていない。** 段 1〜3 で外した資産も**判断つきで出し続ける**
+（実体が無いことは既存の `missing` で表せるので欄が要らない）。**「足していない」ことはテストで固定してある**
+（`p8-design.md` §6.1・§6.3）。**`deletion-ledger`（`deletions.json`）は作らない**
+（人が読む台帳は `review.json` と `deletion_log` で足りる。点検 G8）。
 
 外部契約として守る性質:
 
@@ -1151,6 +1218,16 @@ URL で名前付きワークフローを開く手段が無いため、次の順�
 - 未判断の画像にエージェントの推しを付けることは自由（`review_request` に残る）。
   人の判断と **両方を残す**（利用者の回答）。**AI の下書きは自動でキープにしない。**
   人が押すまでは未判断のままにする。
+- **削除と取り消しは人とエージェントの両方**（**P8。利用者の回答 Q1・Q2**。§16.6）。**「判断（`decision`）は人だけ」は変えない**
+  ——削除の台帳（`deletion_log`）は判断の台帳と**別物**である。
+  - **`actor` を必ず残す**（`deletion_log.actor` に `human` / `agent`。**語彙外は 422**）し、**画面にも「誰が消したか」を出す**。
+  - **窓（実削除の 5 分）は誰でも同じ**。**エージェントは 1 回の要求で 200 枚まで**
+    （超えたら **422 `too_many` で 1 枚も消さない**＝部分適用しない。**人に上限は無い**。preview が件数と合計バイトを見せるのが守り）。
+  - **取り消しもエージェントに許すが、自分が消した物だけ**（他人の分は **403 `not_yours`**）。
+    **人は誰の削除でも戻せる**（導線を出しておいて戻せないのでは「人が気づいて戻す」が成り立たない）。
+    **別名で戻す（`as_copy`）は人だけ**（**403 `human_only`**）。
+  - **除外・ゴミ箱からの復元・バックアップ・設定は `human` だけ。** `require_human()` は**1 か所のまま**にして、
+    **削除の 3 口と自分の分の `undo` だけ**を開ける（**後で「人だけ」に戻すのは 1 行**）。
 
 ### 9.6 エージェントからの要求（R10）
 
@@ -1265,13 +1342,13 @@ POST /api/review-requests
 | まとまりレビュー | キープする 1 枚を決める（R6） | 1 枚に決める / 全部ボツ / 保留 | 同 §2.4, §11 |
 | 比較 | 2〜8 枚を比べる | 見方の切替、同期ズーム、並び替え、来歴の差分 | [`comparison.md`](comparison.md) |
 | 要求の一覧 | エージェントの要求をさばく（R10） | 開いて決める / あとで / 断る | `frontend-design.md` §4.4 |
-| 重複 | 完全重複と準重複の整理 | 代表を選ぶ、別物として確定、削除へ | [`duplicates-deletion-backup.md`](duplicates-deletion-backup.md) |
+| 重複 | 完全重複と準重複の整理（**P8-3 で作った**） | 代表を選ぶ、別物として確定と解除、しきい値の切り替え、削除へ回す | [`duplicates-deletion-backup.md`](duplicates-deletion-backup.md)、`frontend-design.md` §6, §11 |
 | **条件の記録と再利用**（**廃止（2026-10-17。利用者の判断）**） | 生成条件の記録、判定（完全/近似/不可）、印つきの書き出し、結果の照合、合否、プリセット（R12） | 書き出す、結果をひも付ける、合否を記録する、条件をコピーする | [`workflow-reproduction.md`](workflow-reproduction.md)、`frontend-design.md` §4.7 |
-| **最近の削除** | **取り消せる削除**（残り時間つき）を常設で見せる | 取り消す、待って消す | `frontend-design.md` §4.6 |
+| **最近の削除** | **取り消せる削除**（残り時間つき）を常設で見せる。**ゴミ箱はこの画面の中**（別の `#/trash` は作らない） | 取り消す、別名で戻す、いま消す、待って消す | `frontend-design.md` §4.6 |
 | 取り込み | 走査の設定、進行、失敗の一覧 | ルート追加、参照/取込、URL とクリップボード、走査の開始 | `frontend-design.md` §3 |
 | タグ | 語の一覧、件数、日本語の語釈 | 一括タグ付け、語釈の確認と修正 | 同 §8.4 |
 | ジョブ | 走査・ハッシュ・サムネ・タグ付け・訳・監視の進み | 中断、再開、失敗の再試行 | 同 §7 |
-| 設定 | 接続（ComfyUI のみ）、タガー、閾値、置き場、バックアップ、テーマ | 接続テスト、監視の開始/停止、バックアップと復元 | 同 §5, §11 |
+| 設定 | 接続（ComfyUI のみ）、タガー、閾値、**バックアップ**（最後に取った時刻・直近 7 個・いま取る・失敗の全文・置き場）、**置き場ごとの「段 3 を許す」印**、テーマ | 接続テスト、監視の開始/停止、バックアップを取る、置き場を変える、印の付け外し | 同 §5, §11 |
 
 - 未判断を**既定の絞り込み**にする（開いた瞬間に「次に判断すべきもの」が出る）。
 - 状態は URL に持たせる（`#/library?folder=...&state=unreviewed`）。戻る・再読込に耐える。
@@ -1304,8 +1381,9 @@ POST /api/review-requests
 | 詳細表示（1024 サムネ） | 200ms 以内（生成済み） | **未計測** | 目標 |
 | 比較の 8 枚表示 | 400ms 以内（生成済み） | **未計測** | 目標 |
 | タグ付け | 0.5 秒/枚（GPU、初回を除く） | **未再計測**（実機の記録値を目標として据える） | 実測（別環境） |
-| pHash の全件計算 1 万枚 | 2 分以内 | **未計測**（8ms/枚 は見積り。`comparison.md` §4） | 見積り |
-| 日次バックアップ | 5 秒以内 | **未計測** | 目標 |
+| pHash の全件計算 1 万枚 | **3 分以内** | **14.8 ms/枚（復号込み）→ 1 万枚で約 2.5 分**（実データ 263 枚の未計算 172 枚が 2.6 秒。**P8-1 の実測**。`comparison.md:283` の「復号＋両ハッシュで 14.1 ms/枚」と一致） | 実測から導出 |
+| 日次バックアップ | 5 秒以内 | **37 ms**（35〜46。実データの複製・温まった状態で 5 回の中央値。**P8-4 の実測**。§12.3） | 実測 |
+| 復元（`restore`） | 10 秒以内 | **11 ms**（11〜13。`<data>` を丸ごと消した状態から 263 枚・判断 3 件。**P8-4 の実測**） | 実測 |
 | 判断の記録 | 100ms 以内（台帳＋現在値。書き出しは除く） | **未計測** | 目標 |
 
 **1 万枚の総量は 11.1 GB とする。** 実測した 1,028 枚は 1.14 GB（1.11 MB/枚）なので、
@@ -1358,6 +1436,27 @@ PRAGMA foreign_keys = ON;
 - 画像は `loading="lazy"`、`decoding="async"`、`width`/`height` を先に指定してガタつきを消す。
 - 判断は**楽観的更新**（押した瞬間に印を変え、失敗したら戻す）。
 - 進捗は SSE（`/api/events`）。1 秒ポーリングをやめる。
+
+### 12.3 重複・削除・バックアップの性能（**P8 の実測**）
+
+**測った物と未計測を分ける**（P4 の教訓）。出所は `p8-design.md` §7 と P8-1〜P8-4 の実装・監査の記録。
+
+| 操作 | 実測 | 条件 |
+| --- | --- | --- |
+| pHash の全件計算（263 枚・未計算 172 枚） | **2.6 秒・14.8 ms/枚**（復号込み） | 実データ。**1 万枚で約 2.5 分**（§12.1 の「3 分以内」はここから） |
+| 完全重複の検出 | **0.1 ms** | 実データ 263 枚（`GROUP BY` 1 本。**この実データでは 0 群**） |
+| 準重複の検出（263 枚） | **帯の候補づくり 46〜52 ms**・（距離 ≥ 16 のとき）**総当たり 2〜8 ms** | `tools/probe_p8.py --duplicates`。**距離 0〜64 のすべてで総当たりと一致・取りこぼし 0** |
+| 準重複の検出（1 万枚の合成） | **SQL の自己結合 7.56 秒・Python の辞書 1.13 秒・int の総当たり 7.8 秒**（≤ 6 で 67,705 組が一致） | **合成データ**（実データではない）。**いまの実装（帯ごとの照会）での 1 万枚は未計測**（1 万枚では帯の候補が数百万組になり、合成では測り切れなかった）。263 枚は 50 ms なので、**辞書方式に替えるかは 1 万枚が現実になってから決める** |
+| 段 3 の移動（`os.rename`） | **1 GB の疎ファイルでも 0.24 ms**（密な 256 MB は 0.19 ms） | **ファイルの大きさに依らない**（名前の付け替え） |
+| 一括削除の再照合 | **未計測** | 目標は 1,000 件で 1 秒以内（`os.stat` 1 回/件） |
+| 日次バックアップ | **37 ms**（35〜46。5 回の中央値） | 実データの複製・温まった状態。DB 1.0 MB ＋ `sidecar` 1 ＋ `export` 1。**写しを開いて `quick_check` → `integrity_check` する分も含む** |
+| 復元（`restore`） | **11 ms**（11〜13） | `<data>` を丸ごと消した状態から 263 枚・判断 3 件。**`db_sha256` の照合 1 回を含む** |
+| `--include-library`（画像の実体も控える） | **未計測** | 実データなら 292 MB。**測り方から決める**（`p8-4-audit-triage.md` §H。P9 の候補） |
+
+- **帯（`phash_band`）の保証は距離 15**。**16 以上は帯で絞らず総当たりに落とす**。
+  **8bit × 8 本の前の版は距離 7 までしか保証が無く、≤ 12 で 3 組・≤ 16 で 72 組を取りこぼした**（P8-1 の監査 B-1。実測）。
+- **候補の距離を取る前に、16 進の帯を `int(hex, 16)` にしておく**（文字列のまま `hash_distance` を回さない。**0.48 秒 → 0.19 秒**）。
+- **計測は別々の入力で、測り方（何回の中央値か）を書く**（P4・P6 の教訓）。**キャッシュに当たった値を実測と呼ばない。**
 
 ---
 
@@ -1449,15 +1548,21 @@ C:\work\image-reviewer\
 | **P5-3 比較の重い見方** | 差分ヒートマップ、似ている順、`comparison_cache`、pHash/dHash の背景ジョブ | 近い組でヒートマップが出る／pHash の実測を記録する |
 | **P6 要求と注記** | `review_request`（受付・上書き・一覧・閉じる・断る）、要求の一覧画面、AI の下書きの表示、`annotation`（矩形と楕円、座標 JSON と切り出し） | エージェントが要求を投げ、投げてすぐ返る（**R10**）。要求の一覧から開いて判断し、判断で閉じる。AI の推しと理由が両方残る。囲んでメモを付け、座標と切り出しを書き出せる（**R11**） |
 | **P7 条件の記録**（**廃止（2026-10-17。利用者の判断）**） | 作って消した（v6 の 6 表・再現キー・判定・印つきの書き出し・監視での結果の紐付け・合否・画面 2 つ）。理由と消した物は [`p7-decision.md`](p7-decision.md) | 完了条件は無い（**R12 は見送り**）。設計と監査の記録は `docs/p7-*.md` に歴史として残す |
-| **P8 重複・削除・バックアップ** | 完全重複と準重複の検出、重複の整理、削除の 3 段階、**5 分の取り消し**、再リンク、日次バックアップ、`backup` / `restore` | 重複候補が出て代表を選べる。**実削除のあと 5 分以内なら取り消せ、元の場所に別のファイルがあっても上書きしない**。DB を消しても sidecar と PNG から来歴を組み直せる（[`duplicates-deletion-backup.md`](duplicates-deletion-backup.md)） |
+| **P8 重複・削除・バックアップ**（**済み。2026-10-18**） | 完全重複と準重複の検出、重複の整理、削除の 3 段階、**5 分の取り消し**、日次バックアップ、`backup` / `restore` / `rebuild-metadata`。**再リンクは P8 では作らなかった**（下の 1 行） | 重複候補が出て代表を選べる。**実削除のあと 5 分以内なら取り消せ、元の場所に別のファイルがあっても上書きしない**。DB を消しても sidecar と PNG から来歴を組み直せる（[`duplicates-deletion-backup.md`](duplicates-deletion-backup.md)） |
 | **P9 仕上げ** | 性能調整、**未計測の項目（1024px サムネ、一覧 API、表示速度）を実測**、テストの締め、exe 化の判断 | **§12.1 の「目標」の行がすべて実測で裏づけられる**。全テスト green |
 
 **順序は点検 G11 で確定**: **P5（判断と比較）を先に**やる。判断がこの道具の主目的で、
 来歴の表示はプロトタイプで既に足りているため。P4（タグ）は判断の材料として後から厚くする。
 下の表は番号順だが、**着手は P1 → P2 → P3 → P5 → P6 → P4 → P7 → P8 → P9** とする
-（**P7（条件の記録）は 2026-10-17 に廃止した**ので、次は **P8**）。
+（**P7（条件の記録）は 2026-10-17 に廃止し、P8 は 2026-10-18 に完了した**ので、**次は P9（仕上げ）**）。
 **P8（重複と削除）を P5 より先にしない**（重複の整理がまとまりレビューを使うため）。
 **P5 の前に A5（エージェントは判断を書けない）を実装する**（台帳の意味が変わるため）。
+
+**P8 の合格の線は P8-1〜P8-4**（**P8-0 は機能を足さない**＝表と契約だけの段。**P8-5 は画面の仕上げなので数えない**＝P5-3 と同じ扱い）。
+**再リンク（専門 §4 の「近くを探す・場所を指定」・合格の線 9）は P8 では作らなかった**——P8-3 は指示書の段で
+「重複と削除の画面」に置き換わり、`POST /api/locations/relink` は**まだ無い**（§6.1 の `POST /api/locations/relink`）。
+`missing_at`・`location_history`・`hash_file` の道は既にあるので、口とサービスだけで足りる。**別の段で作る**
+（実装の記録は `docs/p8-6-relink.md`）。**トレイ（常駐）も作っていない**（常駐の実装がリポジトリに無い。§16.6）。
 
 **P5 は 4 つに分ける**（P5-0 / P5-1 / P5-2 / P5-3。点検 G1・G2・G10。
 中身と完了条件の正は [`p5-design.md`](p5-design.md) §0.1）。**合格の線は P5-2 まで**で、
@@ -1475,7 +1580,7 @@ C:\work\image-reviewer\
 - 注記は「0〜1 の座標が往復する」「切り出しが囲んだ範囲ちょうど」。
 - 削除は「段 3 のあと 5 分以内なら戻る」「**アプリを閉じている間は時間が進まない**」
   「**`asset_location` に無いパスは触らない**（完全一致）」「`(size, mtime_ns)` が変わっていた項目だけ飛ばす」
-  「元の場所が埋まっていたら**上書きせず別名で戻す**」「起動時に消さない」。
+  「元の場所が埋まっていたら**上書きせず 409 で止めて尋ねる**（別名は人だけが選ぶ）」「起動時に消さない」。
 - 一括削除は「**preview で凍結した一覧だけ**を消す」「preview が失効したら何も消さず 409」。
 - 書き出しは**スキーマ検証**（`schemas/review-export.schema.json` で `jsonschema` 検証）と**決定性**で確かめる。
   決定性は **`generated_at` を除いて** 2 回出して比べる（時刻を含めたまま比べると必ず落ちる。
@@ -1484,10 +1589,12 @@ C:\work\image-reviewer\
   `location_history` に 1 行残り、古い `asset` の判断が失われないこと（§5.1。点検で見つかった誤り）。
 - **64bit の値**を確かめる: seed に `18446744073709551615`、pHash に `ffffffffffffffff` を入れ、
   往復して同じ値になること（§5.1 の表）。
-- **帯索引**を確かめる: 距離 6 までの組を必ず候補に挙げ、距離 7 でも取りこぼさないこと
-  （8bit × 8 本。`duplicates-deletion-backup.md` §2.2。点検で鳩の巣原理の誤りを指摘された）。
+- **帯索引**を確かめる: 距離 **0〜64 のすべて**で、帯が挙げた候補と**総当たり**が一致すること
+  （**4bit × 16 本**。**距離 ≤ 15 は必ず候補に挙がる**。`p8-design.md` §2.1。前の版の 8bit × 8 本は
+  **≤ 12 で 3 組・≤ 16 で 72 組を取りこぼした**＝P8-1 の監査 B-1 の実測）。
 - **取り消しの上書き防止**を確かめる: 削除した場所に別のファイルを置いてから取り消しを試み、
-  **上書きされずに別名で復元される**こと（`duplicates-deletion-backup.md` §3.4）。
+  **上書きせず 409 `target_exists` で止まる**こと（**人だけ** `as_copy: true` で `<名前>.<連番>.<拡張子>` に戻せる。
+  `os.rename` を `os.replace` に替えると**元の場所の別のファイルが壊れる**ので、この試験は決定的に落ちる）。
 - **Host / Origin の検査**を確かめる: `Host: evil.example` と、他オリジンの `Origin` を付けた
   状態変更要求が 403 になること（§6.3.1）。
 - 画面はヘッドレスで通し確認する（ブラウザが無ければ exit 77 で飛ばす）。
@@ -1501,7 +1608,7 @@ C:\work\image-reviewer\
 | 1 | **既存画像の英訳が原文として出せない** | 出所を分けて保持し、訳し直しには画面で印を付ける。黙って原文のように見せない（§7.3） |
 | 2 | ComfyUI の URL でワークフローを開けない | 書き出し＋D&D を主経路にする。`install` が失敗しても「JSON を保存」で目的を果たせるようにする（§7.4） |
 | 3 | GPU の VRAM 競合（ComfyUI とタガー） | タガーの同時実行を 1 に絞り、セマフォで直列化する。GPU を選べる。CPU へ落ちる。生成中は譲る設定を持つ（§8.2）。**このツールは生成を実行しない**ので、競合するのはタガーと訳し直しだけ |
-| 4 | 参照切れ（画像の移動・削除） | 内容を正体にして場所を従属させる。`missing_at` を立てて消さず、ハッシュで再リンクする。判断は内容に付くので失われない（`duplicates-deletion-backup.md` §1, §4） |
+| 4 | 参照切れ（画像の移動・削除） | 内容を正体にして場所を従属させる。`missing_at` を立てて消さず、ハッシュで再リンクする。判断は内容に付くので失われない（`duplicates-deletion-backup.md` §1, §4）。**（P8 の実績）`missing_at` の道と `location_history` は動いているが、再リンクの口（`POST /api/locations/relink`）は P8 では作らなかった**（§14 の下） |
 | 5 | **誤って消してしまう（戻せない）** | 実削除は確認 1 回のあと**保留領域へ移すだけ**にし、5 分間は取り消せる。触ってよいのは**登録済みの `asset_location` に実在するパスそのものだけ**（`normalize_path` の**完全一致**。点検 B1 で「登録ルートの外は触らない」から置き換えた。ルートを持つのはフォルダ走査だけで、D&D・URL・要求で登録した画像には適用できないため）。一括削除は**凍結した一覧だけ**を消し（点検 A6）、`(size, mtime_ns)` が変わっていた項目は**その項目だけ飛ばす**（`duplicates-deletion-backup.md` §3.2, §3.4, §3.5） |
 | 6 | 1 万枚の `review.json` が大きい | 範囲指定と、まとまりごとのファイル書き出しを用意する（§9.4） |
 | 7 | タガーの誤り（手の破綻を読めない等） | 限界を画面に書く。機械の印は下書きに留め、自動でキープにしない（§8.3） |
@@ -1683,6 +1790,50 @@ P7（R12）は [`p7-design.md`](p7-design.md) に沿って P7-0〜P7-4 を作り
 
 ---
 
+### 16.6 P8（重複・削除・バックアップ）で確定したこと
+
+P8 の設計 [`p8-design.md`](p8-design.md) §0 が**拘束力のある差分**で、点検
+（[`p8-review-report.md`](p8-review-report.md) ＋ [`p8-review-triage.md`](p8-review-triage.md)）と
+6 小段（P8-0〜P8-5）の実装と監査（[`p8-0-audit-report.md`](p8-0-audit-report.md) /
+[`p8-1-audit-report.md`](p8-1-audit-report.md) / [`p8-2-audit-report.md`](p8-2-audit-report.md) ＋
+[`p8-2-audit-recheck.md`](p8-2-audit-recheck.md) / [`p8-3-audit-report.md`](p8-3-audit-report.md) ＋
+[`p8-3-audit-recheck.md`](p8-3-audit-recheck.md) / [`p8-4-audit-report.md`](p8-4-audit-report.md) ＋
+[`p8-4-audit-recheck.md`](p8-4-audit-recheck.md) / [`p8-5-audit-report.md`](p8-5-audit-report.md)）を経て、
+**利用者が Q1〜Q8 を確定**した。
+**2026-10-18 に P8 完了**（**合格の線は P8-1〜P8-4**。P8-5 は画面の仕上げで数えない）。
+**監査の判定はどれも「合格（条件つき）」で、指摘は全部反映した**（P8-3 の再確認だけ「合格（条件なし）」）。
+**P8-5 の条件 3 件だけは未反映**（段 3 の印のボタンが二度押しで 2 回 POST・`gui_layout --screen asset` が
+印の無い置き場で必ず NG・版が新しい DB で設定の書き込みボタンが押せるまま。`p8-5-audit-report.md`。直し方は `handoff.md` §3 の 0）。
+本文（本設計書）に反映済み:
+
+| 論点 | 決定 | 反映先 |
+| --- | --- | --- |
+| **利用者の回答 Q1〜Q8**（2026-10-17） | **Q1 段 3 を許す**（アプリから実ファイルまで消せる）／**Q2 削除はエージェントにも許す**（**推奨の「人だけ」を利用者が覆した**）／**Q3 しきい値は ≤ 6 を既定**（画面で ≤ 3 / ≤ 6 / ≤ 10）／**Q4 代表の推薦の規則はこれでよい**（推薦するだけ・自動で外さない）／**Q5 同じ seed の群は重複として出さない**（別の一覧も作らない）／**Q6 置き場は `%USERPROFILE%\image-reviewer-backups`**（別ドライブも設定で指定可）／**Q7 保留領域は知らせるだけ**（黙って消さない）／**Q8 別のツールの管理下の置き場にも段 3 の印を付ける** | §6.1, §5.8, §9.5, §12.3 |
+| **Q2 の帰結 a〜f** | **`actor` を必ず `deletion_log` に残す**（語彙外は 422）／**画面に「誰が消したか」を出す**／**5 分の窓は誰でも同じ**／**エージェントは 1 回 200 枚まで**（超えたら **422 `too_many` で 1 枚も消さない**。人に上限は無い）／**取り消しの導線を目立つ所に**（`#/pending-deletes` ＋ 上部バー。トレイは作らない）／**取り消しもエージェントに許すが自分が消した物だけ**（**人は誰の削除でも戻せる**・`as_copy` は人だけ） | §9.5, §11, §6.1 |
+| **削除の 3 段階** | **段 1 = カタログから外す**（`asset.deleted_at`。行は消さない）／**段 2 = ゴミ箱**（`<data>/trash/<日付>/`。日付は現地）／**段 3 = 実ファイルの削除**（`<data>/pending-delete/<id>/` へ移してから） | §5.8, §6.1 |
+| **5 分の窓は単調時計で数える** | **`remaining_sec` を `time.monotonic` で減らす**（**壁時計では数えない**）。**スリープ・終了の間は進まない**。`purge_at` は画面に出す目安で、**自動削除の判定には使わない**。**起動時には絶対に消さない**（残り時間を引き継いで戻す）。**1 秒未満の端数は次の周期に繰り越す** | §6.1, §12.3 |
+| **取り消しは `os.rename`**（**`os.replace` は既存を黙って上書きする**＝実測） | 埋まっていれば **`409 target_exists` で止めて尋ねる**（`FileExistsError`＝WinError 183。**`exists` の事前検査は要らない**）。**人だけ `as_copy: true`** で `<名前>.<連番>.<拡張子>`。**失敗したら `purge_at` を NULL に**して自動削除から外す | §6.1, §12.3 |
+| **一括削除は凍結 → 実行** | **凍結した一覧だけを消す**（実行時に `scope` を評価し直さない）。実行の直前に **1 件ずつ `(size, mtime_ns)` を凍結の値と実ファイルの両方**と再照合し、食い違った項目だけ `skipped`。**失効（既定 10 分）したら 1 件も消さず 409** | §6.1, §5.8 |
+| **「最後の 1 つ」は 409** | 段 3 で最後の 1 つを消すには **`confirm_last_copy: true`**（無ければ **409 `last_copy`。1 枚も消さない**）。**要るのは段 3 の一括だけ**（段 1・2 は内容が失われない） | §6.1 |
+| **別ボリュームは 409** | 保留領域と対象が別ボリュームなら **409 `cross_volume`**（段 2 でも段 3 でも）。コピーになって待たされ、途中で失敗すると中途半端になるため**安全側に倒す**（画面にはエクスプローラで消す案内） | §6.1 |
+| **段 3 の印（`root.allow_stage3`）** | **置き場ごとに「段 3 を許す」印**。**印が無い置き場は段 1・2 まで**（**409 `stage_not_allowed`**）。印は**利用者の明示の意思表示**（Q8）で、**画面（`#/settings`）から付け外しできる**（人だけ） | §5.8, §6.1, §11 |
+| **既定は印なし** | **既定は 0**（安全側）。**走査で新しく増えた置き場も印なし**で入る。実データは `illust-authoring` の置き場（262 / 263 枚）にだけ 1 が立っている | §5.8, §6.1 |
+| **重複は pHash ≤ 6・確実な順** | 準重複は**ハミング距離 ≤ 6 を既定**（画面で切り替え）。**並びは群の中の最大距離が小さい順**（確実な物から）。**代表は推薦するだけ**（人が選んだ物 → 画素数 → サイズ → `mtime_ns` → id の順。**自動では外さない**）。**完全重複はこの実データで 0 群**なので、空のときは「完全重複はありません」と 1 行出す | §6.1, §12.3 |
+| **同じ seed の群は出さない** | `meta` の `seed` が同じ 19 群（最大 31 枚）は**別の絵**（点検の実測: 群の中の pHash 距離は中央値 28〜30）。**重複としても「同 seed」としても出さない**（Q5） | §6.1 |
+| **帯の保証は距離 15** | `phash_band` は **4bit × 16 本**（前の版の 8bit × 8 本は**距離 7 までしか保証が無く、≤ 12 で 3 組・≤ 16 で 72 組を取りこぼした**＝実測）。**16 以上は帯で絞らず総当たり**に落とす | §5.8, §12.3 |
+| **バックアップは `<data>` の外・日次・増分・7 世代** | 既定は **`%USERPROFILE%\image-reviewer-backups\<YYYYMMDD>\`**（`<data>` の中は 422。**`<data>` を消したときに備える物を `<data>` の中に置かない**）。**起動時と 30 秒ごとに「今日の分が無ければ取る」**（「いま取る」は必ず新しく取る）。**変わらないファイルは `os.link` で共有**（増分）。**直近 7 世代**を残し、**自分の名前で `manifest.json` を持つ物だけ**を掃除の対象にする | §6.1, §12.3 |
+| **壊れた写しは採用しない** | 日次は**写しを作り終えた後に、写しを開いて `quick_check` → `integrity_check`**。通らなければ**その世代を採用しない**（一時フォルダを捨て、`last_error` に残し、**古い世代を掃除しない**）。**元の接続の `quick_check` も見て、走ったまま壊れていれば読み取り専用に切り替える** | §6.1 |
+| **`restore` は sha256 を照合** | **取り出す前に `manifest.db_sha256` を照合**（違えば **409 `bad_backup`**、`--force` で進む。CLI は 1 行で出す）。置き換えは**一時名に写して `os.replace` → その後に `-wal` / `-shm` を消す**。**掴まれていれば何も壊さずに 409 `restore_failed` の 1 行**（トレースバックを出さない） | §6.1 |
+| **読み取り専用で起動する道** | 壊れた DB・**DB の版 > バイナリの版**・版を上げる前の控えが取れない、のいずれでも**起動を拒否しない**——**読み取り専用で起動して復元を案内**する。**読める口は読み**（壊れたページを触った口は **503 `read_only`**）、**書き込みの口は 503**。**画面そのもの（`/` と静的ファイル）は通す** | §6.1 |
+| **`import` で `create_app()` を走らせない** | `import image_reviewer.app` で**実データを書き込み可で開かない**（遅延 `__getattr__`・`serve` は `--factory`・pytest は収集の前に `IMAGE_REVIEWER_DATA` をテストの中へ向ける）。**事故は実データで起きた**（版を上げずに `ALTER` した）ため、**版を上げない形の変更の前にも `pre-topup-*` の控えを取る** | §5.8 |
+| **再リンクは P8 では作らなかった** | `POST /api/locations/relink` は**まだ無い**（P8-3 が「重複と削除の画面」に置き換わった）。**別の段で作る**（実装の記録は `docs/p8-6-relink.md`）。**トレイ（常駐）も作っていない**（常駐の実装がリポジトリに無い） | §6.1, §14 |
+
+**P8 完了時の数（実測）**: `pytest` **477 件**・`gui_smoke` **291 検査**・`gui_layout` **10 画面＋`pending --ids`**（11 本）
+すべて ok。**実データは v6・263 枚・判断 3 件・削除 0 件**（利用者が押した「別物として確定」1 件と「まとまり」1 件は残っている）。
+**この 11 本は段 3 の印を立てた複製で回した物**で、**印を外すと `--screen asset` が 3 窓とも NG になる**（`p8-5-audit-report.md` C-2）。
+
+---
+
 ## 17. 用語
 
 | 語 | 意味 |
@@ -1708,6 +1859,12 @@ P7（R12）は [`p7-design.md`](p7-design.md) に沿って P7-0〜P7-4 を作り
 | **印（marker）** | 書き出したグラフの `filename_prefix` に入れる識別子。できた画像を書き出しに結び付ける |
 | 監視（watcher） | ComfyUI の `/api/jobs` を見て、生成の瞬間の値（英訳）と結果を捕まえる仕組み |
 | 保留領域（pending-delete） | 実削除の前に 5 分間だけ置く場所。そこから戻せる |
+| **段 1 / 2 / 3** | 削除の 3 段階（**カタログから外す / ゴミ箱へ移す / 実ファイルを消す**）。この順に取り返しがつかない（§16.6） |
+| **窓** | 実削除のあと**取り消せる 5 分**。**アプリが動いていた時間**で数える（スリープ・終了の間は進まない。単調時計） |
+| **凍結（preview）** | 一括削除の対象を**1 回だけ解決して保存**した物（`pending_delete_preview`）。**実行時に評価し直さない** |
+| **帯（`phash_band`）** | 64bit の pHash を **4bit × 16 本**に割った物。**距離 ≤ 15 なら必ず 1 本は一致する**（16 以上は総当たり） |
+| **代表** | 重複の群で残す 1 枚。**推薦するだけ**（自動では外さない） |
+| **除外** | 「別物として確定」した組（`duplicate_exclusion`）。**解除できる** |
 | sidecar | `<data>/sidecar/<sha256>.json`。**PNG から取り直せない来歴の唯一の置き場** |
 
 ---

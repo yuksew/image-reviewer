@@ -187,7 +187,12 @@ CREATE TABLE IF NOT EXISTS asset_meta (
   extracted_at TEXT NOT NULL
 );
 
--- パスの中身が入れ替わった履歴
+-- パスの中身が入れ替わった履歴・場所を繋ぎ直した履歴（P8-6 で 3 列足した）
+-- - `path` は**人が見る表記**（`display_path`）。鍵（`normalize_path`）は `asset_location` が正
+-- - `reason` は 'replaced'（同じパスの中身が入れ替わった）/ 'relinked'（参照切れを繋ぎ直した）。
+--   **古い行は NULL**（列を足す前の入れ替わり。読む側は NULL を 'replaced' と同じに扱う）
+-- - `to_path` は再リンクの**移動先**（入れ替わりの行は NULL）
+-- - `actor` は再リンクした人（`human` / `agent`。走査の入れ替わりは NULL）
 CREATE TABLE IF NOT EXISTS location_history (
   id                   INTEGER PRIMARY KEY AUTOINCREMENT,
   asset_id             TEXT NOT NULL,
@@ -195,7 +200,13 @@ CREATE TABLE IF NOT EXISTS location_history (
   size                 INTEGER,
   mtime_ns             INTEGER,
   replaced_by_asset_id TEXT,
-  replaced_at          TEXT NOT NULL
+  replaced_at          TEXT NOT NULL,
+  -- ★ P8-6。**（P8-6 の設計の穴）** 設計 §0.11 は「`location_history` に『入れ替わった』
+  --   『繋ぎ直した』を残す」と言うが、**この 2 つを区別する列が無かった**ので足した。
+  --   版は上げない（`TOP_UP_COLUMNS` が既存の DB にも当てる＝`pre-topup-*` の控えが付く）
+  to_path              TEXT,
+  reason               TEXT CHECK (reason IN ('replaced', 'relinked')),
+  actor                TEXT CHECK (actor IN ('human', 'agent'))
 );
 
 -- まとまりの項目（枚数の上限は無い。点検 B6/G8）
@@ -730,6 +741,16 @@ TOP_UP_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("deletion_log", "stuck_reason",
      "ALTER TABLE deletion_log ADD COLUMN stuck_reason TEXT"
      " CHECK (stuck_reason IN ('target_exists', 'move_failed', 'different', 'missing'))"),
+    # **（P8-6）再リンクを履歴に残す**（移動先・理由・人）。
+    # 設計 §0.11 は「入れ替わった」「繋ぎ直した」を `location_history` に残せと言うが、
+    # **この 2 つを区別する列が無かった**（`path` は移動元、`replaced_by_asset_id` は入れ替わりの相手）。
+    # **`DDL` にも同じ 3 列がある**（新しい DB はそちらで作る。**列の順序は末尾で揃えてある**）
+    ("location_history", "to_path", "ALTER TABLE location_history ADD COLUMN to_path TEXT"),
+    ("location_history", "reason",
+     "ALTER TABLE location_history ADD COLUMN reason TEXT"
+     " CHECK (reason IN ('replaced', 'relinked'))"),
+    ("location_history", "actor",
+     "ALTER TABLE location_history ADD COLUMN actor TEXT CHECK (actor IN ('human', 'agent'))"),
 )
 
 

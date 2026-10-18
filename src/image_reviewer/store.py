@@ -245,10 +245,16 @@ class Store:
         }
 
     def location_history(self) -> list[dict]:
-        """パスの中身が入れ替わった履歴（`store.data["location_history"]` の代わり）。"""
+        """パスの中身が入れ替わった履歴・場所を繋ぎ直した履歴（`store.data["location_history"]` の代わり）。
+
+        **（P8-6）`to_path` / `reason` / `actor` も返す。** `reason` が `'relinked'` の行は
+        再リンク（参照切れの繋ぎ直し）で、`to_path` が移動先。`'replaced'` は同じパスの中身が
+        入れ替わった行（**この列を足す前の古い行は `None`** なので、読む側は `'replaced'` と同じに扱う）。
+        """
         with self._lock:
             rows = self._con.execute(
-                "SELECT id, asset_id, path, size, mtime_ns, replaced_by_asset_id, replaced_at"
+                "SELECT id, asset_id, path, size, mtime_ns, replaced_by_asset_id, replaced_at,"
+                " to_path, reason, actor"
                 " FROM location_history ORDER BY id"
             ).fetchall()
         return [dict(r) for r in rows]
@@ -334,7 +340,7 @@ class Store:
                 ).fetchone()
                 self._con.execute(
                     "INSERT INTO location_history(asset_id, path, size, mtime_ns,"
-                    " replaced_by_asset_id, replaced_at) VALUES (?,?,?,?,?,?)",
+                    " replaced_by_asset_id, replaced_at, reason) VALUES (?,?,?,?,?,?,'replaced')",
                     (old_id, old["display_path"], old["size"], old["mtime_ns"], asset_id, now),
                 )
                 self._con.execute("DELETE FROM asset_location WHERE path = ?", (key,))

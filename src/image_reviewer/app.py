@@ -33,6 +33,7 @@ from .api import export as export_api
 from .api import groups as groups_api
 from .api import requests as requests_api
 from .api import reviews as reviews_api
+from .api import relink as relink_api
 from .api import roots as roots_api
 from .api import tags as tags_api
 from .api import review_error_handler, sqlite_error_handler
@@ -43,6 +44,7 @@ from .duplicates import DuplicatesService
 from .export import ExportService
 from .gloss import GlossService
 from .jobs import JobService
+from .relink import RelinkService
 from .review import ReviewError, ReviewService
 from .review_requests import ReviewRequestService
 from .scan import scan as run_scan
@@ -119,6 +121,9 @@ def create_app() -> FastAPI:
     deletions_svc = DeletionService(store)
     # P8-4: 日次バックアップ（**30 秒の周期**で「今日まだなら取る」。点検 B2）
     backup_svc = BackupService(store)
+    # P8-6: 参照切れの再リンク（`GET /api/locations/missing` と `POST /api/locations/relink`）。
+    # **タイマーも背景の仕事も無い**（人が押したときだけ、ファイルを動かさず登録を直す）
+    relink_svc = RelinkService(store)
     if not read_only:
         exporter.flush_dirty()
 
@@ -172,6 +177,8 @@ def create_app() -> FastAPI:
     app.state.duplicates = duplicates_svc
     app.state.deletions = deletions_svc
     app.state.backup = backup_svc
+    #: P8-6: 参照切れの再リンク（**人だけ**。`GET` の一覧は人もエージェントも読める）
+    app.state.relink = relink_svc
     #: P8-4: 起動の前に見た DB の状態（`GET /api/health/db` と middleware が見る）
     app.state.db_state = db_state
     app.add_exception_handler(ReviewError, review_error_handler)
@@ -247,6 +254,9 @@ def create_app() -> FastAPI:
     # 置き場の印（`/api/roots`）
     app.include_router(backup_api.router)
     app.include_router(roots_api.router)
+    # P8-6: 参照切れ（`GET /api/locations/missing` と `POST /api/locations/relink`）。
+    # **載せ忘れると守り（Host / Origin / Content-Type）が効かない**ので `tests/test_relink.py` で見る
+    app.include_router(relink_api.router)
 
     def _asset_or_404(asset_id: str) -> dict:
         asset = store.asset(asset_id)

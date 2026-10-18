@@ -103,9 +103,18 @@ def location_row(store: Store, asset_id: str) -> dict:
 
 
 def missing_keys(store: Store) -> set[str]:
+    """**参照切れの行の鍵**（登録したままの古いパス）。"""
     with store.locked() as con:
         return {r["path"] for r in con.execute(
             "SELECT path FROM asset_location WHERE missing_at IS NOT NULL")}
+
+
+def move(src: Path, to: Path) -> Path:
+    """**アプリの外で動かす**（`shutil.move` は親が無いと落ちるので作る）。"""
+    to = Path(to)
+    to.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(to))
+    return to
 
 
 class World:
@@ -129,11 +138,16 @@ class World:
         to = Path(to)
         if new_name:
             to = to.parent / new_name
-        to.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(self.src), str(to))
+        move(self.src, to)
         stats = scan(self.store, [str(self.root)])
         assert stats["missing"] == 1, stats
         return to
+
+    def add_root(self, folder: Path) -> Path:
+        """**走査しない置き場**を登録する（その中のファイルは**まだ登録されていない**）。"""
+        folder.mkdir(parents=True, exist_ok=True)
+        self.store.set_roots([str(folder)])
+        return folder
 
     def relink(self, **kwargs) -> dict:
         return RelinkService(self.store).relink(asset_id=self.asset_id, **kwargs)
@@ -232,7 +246,7 @@ def test_the_content_is_compared_by_sha256(world: World):
     assert got.value.status == 409 and got.value.code == "hash_mismatch"
     assert got.value.details["actual"] == sha_of(other)
     # **1 バイトも変わっていない**（missing_at も履歴もそのまま）
-    assert missing_keys(world.store) == {normalize_path(moved)}
+    assert missing_keys(world.store) == {normalize_path(world.src)}
     assert world.store.location_history() == []
 
 
@@ -241,13 +255,14 @@ def test_the_same_name_with_another_content_is_refused_in_nearby(world: World):
 
     壊すと落ちる: 名前が一致しただけで繋ぐ（**別の絵が繋がる**）。
     """
-    moved = world.move_away(world.tmp / "elsewhere" / "a.png")       # 元の名前を残して退避
-    make_png(world.root / "a.png", seed=42)                          # 同じ名前の別の絵
+    found = world.add_root(world.tmp / "elsewhere")
+    make_png(found / "a.png", seed=42)                               # 同じ名前の別の絵
+    moved = world.move_away(world.tmp / "lost" / "a.png")            # 元の名前を残して退避
     with pytest.raises(ReviewError) as got:
-        world.relink(mode="nearby")
+        world.relink(mode="nearby", path=str(found))
     assert got.value.status == 409 and got.value.code == "hash_mismatch"
-    assert got.value.details["candidates"] == [str(world.root / "a.png")]
-    assert missing_keys(world.store) == {normalize_path(moved)}
+    assert got.value.details["candidates"] == [str(found / "a.png")]
+    assert missing_keys(world.store) == {normalize_path(world.src)}
 
 
 # ---- 2. 二重登録しない ----
@@ -261,14 +276,14 @@ def test_a_path_registered_to_another_asset_is_refused(world: World):
     """
     other = make_png(world.root / "b.png", seed=7)
     other_id = register(world.store, other)
-    moved = world.move_away(world.tmp / "elsewhere" / "a.png")
+    world.move_away(world.tmp / "elsewhere" / "a.png")
     with pytest.raises(ReviewError) as got:
         world.relink(path=str(other), mode="exact")
     assert got.value.status == 409 and got.value.code == "path_taken"
     assert got.value.details["asset_id"] == other_id
     # **両方とも元のまま**（b の登録も、a の参照切れも）
     assert world.store.location_of(other)["asset_id"] == other_id
-    assert missing_keys(world.store) == {normalize_path(moved)}
+    assert missing_keys(world.store) == {normalize_path(world.src)}
 
 
 def test_a_path_already_registered_to_the_same_asset_is_refused(world: World):
@@ -277,33 +292,64 @@ def test_a_path_already_registered_to_the_same_asset_is_refused(world: World):
     壊すと落ちる: 同じ画像の場所を 2 つにする（主キーに当たって 500 になるか、
     場所の数が増える）。
     """
-    copy = world.tmp / "elsewhere" / "a.png"
-    copy.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(world.src, copy)
+    copy = move(world.src, world.tmp / "elsewhere" / "a.png")
     register(world.store, copy)                       # 同じ内容 → 同じ asset に 2 つ目の場所
-    moved = world.move_away(world.tmp / "lost" / "a.png")
+    shutil.copy2(copy, world.src)                     # 元の場所にも同じ物を戻して走査する
+    scan(world.store, [str(world.root)])
+    move(world.src, world.tmp / "lost" / "a.png")
+    scan(world.store, [str(world.root)])              # 元の場所だけが参照切れになる
+    assert missing_keys(world.store) == {normalize_path(world.src)}
     with pytest.raises(ReviewError) as got:
         world.relink(path=str(copy), mode="exact")
     assert got.value.status == 409 and got.value.code == "already_registered"
-    assert missing_keys(world.store) == {normalize_path(moved)}
+    assert len(world.store.asset(world.asset_id)["locations"]) == 2
 
 
 # ---- 3. 近くを探す（nearby）----
 
 
-def test_nearby_finds_the_file_with_the_same_name_in_the_same_root(world: World):
-    """**同じ置き場の中を同じファイル名で探し、ハッシュが一致すれば繋ぐ**（設計 §0.11）。
+def test_nearby_finds_the_file_with_the_same_name_in_a_registered_root(world: World):
+    """**登録した置き場を同じファイル名で探し、ハッシュが一致すれば繋ぐ**（設計 §0.11）。
+
+    ここは「**まだ走査していない置き場**へ動いた」場合（走査は知らないパスの画像を
+    その場で登録するので、走査済みの置き場の中で動いた物は既に繋がっている）。
 
     壊すと落ちる: 名前で絞らずに**置き場の画像を全部ハッシュする**（遅い）、
-    置き場の外まで歩く（`bad_scope` を返さない）、見つけた物を返さない。
+    置き場の外まで歩く、探したフォルダを返さない。
     """
-    moved = world.move_away(world.root / "sub" / "a.png")
+    other = world.add_root(world.tmp / "elsewhere")     # 走査していない置き場
+    moved = world.move_away(other / "sub" / "a.png")
     got = world.relink(mode="nearby")
     assert got["relinked"] is True and got["mode"] == "nearby"
     assert got["to_path"] == str(moved)
     assert got["searched"] >= 1 and got["candidates"] == [str(moved)]
+    assert sorted(got["folders"]) == sorted([str(world.root), str(other)])
     assert got["unreadable"] == [] and got["candidates_truncated"] is False
     assert location_row(world.store, world.asset_id)["path"] == normalize_path(moved)
+
+
+def test_nearby_can_be_pointed_at_a_folder(world: World):
+    """**人が探すフォルダを指定できる**（置き場の外でも、読むだけなら歩いてよい）。
+
+    壊すと落ちる: 置き場の下しか許さない（外へ動いたファイルを繋げない）。
+    """
+    outside = world.tmp / "moved-here"
+    moved = world.move_away(outside / "a.png")
+    got = world.relink(mode="nearby", path=str(outside))
+    assert got["to_path"] == str(moved)
+    assert got["folders"] == [str(outside)]
+
+
+def test_nearby_accepts_a_file_and_uses_its_folder(world: World):
+    """**ファイルを渡されたらその親を探す**（画面がファイル選択の値をそのまま渡せる）。
+
+    壊すと落ちる: ファイルを渡すと 404 にする（画面が 2 通りの値を組み分ける必要が出る）。
+    """
+    outside = world.tmp / "moved-here"
+    moved = world.move_away(outside / "a.png")
+    got = world.relink(mode="nearby", path=str(moved))
+    assert got["to_path"] == str(moved)
+    assert got["folders"] == [str(outside)]
 
 
 def test_nearby_is_deterministic_and_reports_the_others(world: World):
@@ -312,34 +358,45 @@ def test_nearby_is_deterministic_and_reports_the_others(world: World):
     壊すと落ちる: 並べずに選ぶ（同じ入力で答えが変わる）、`also_found` を出さない
     （**黙って捨てない**の家風）。
     """
-    moved = world.move_away(world.root / "b" / "a.png")
-    shutil.copy2(moved, world.root / "a" / "a.png")
+    other = world.add_root(world.tmp / "elsewhere")
+    moved = move(world.src, other / "b" / "a.png")
+    scan(world.store, [str(world.root)])                 # 元の置き場を走査 → 参照切れ
+    second_copy = other / "a" / "a.png"
+    second_copy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(moved, second_copy)
     got = world.relink(mode="nearby")
-    first = str(world.root / "a" / "a.png")
-    second = str(world.root / "b" / "a.png")
+    first = str(other / "a" / "a.png")
+    second = str(other / "b" / "a.png")
     assert got["to_path"] == first, "大小文字を畳んだ順で先の物を選ぶ"
     assert got["also_found"] == [second]
     assert got["candidates"] == [first, second]
 
 
-def test_nearby_refuses_when_there_is_no_root_to_search(world: World):
-    """登録した置き場の下に無い場所は、**探すフォルダを要求する**（422 `bad_scope`）。
+def test_nearby_refuses_when_there_is_no_root_to_search(tmp_path: Path):
+    """置き場が 1 つも無ければ、**探すフォルダを要求する**（422 `bad_scope`）。
 
     壊すと落ちる: 置き場が無いのに**ディスク全体を歩く**（勝手に外まで探しに行く）。
+    ここは `World` を使わない（`World` は走査で置き場を 1 つ登録するため）。
     """
-    outside = world.tmp / "outside"
-    outside.mkdir(parents=True, exist_ok=True)
-    lone = make_png(outside / "lonely.png", seed=3)
-    lone_id = register(world.store, lone)             # root の下ではない登録
-    shutil.move(str(lone), str(outside / "gone.png"))
-    scan(world.store, [str(outside)])                 # 走査で参照切れにする
-    with pytest.raises(ReviewError) as got:
-        RelinkService(world.store).relink(asset_id=lone_id, mode="nearby")
-    assert got.value.status == 422 and got.value.code == "bad_scope"
-    # **フォルダを渡せば探す**（人が指定する形）
-    found = RelinkService(world.store).relink(asset_id=lone_id, mode="nearby",
-                                              path=str(outside))
-    assert found["to_path"] == str(outside / "gone.png")
+    store = Store(tmp_path / "data")
+    try:
+        outside = tmp_path / "outside"
+        outside.mkdir(parents=True, exist_ok=True)
+        lone = make_png(outside / "lonely.png", seed=3)
+        lone_id = register(store, lone)               # 走査していない＝置き場も無い
+        assert store.roots() == []
+        move(lone, outside / "lonely.png.bak")
+        store.mark_missing(set(), [str(outside)])     # 走査の代わりに印だけ立てる
+        assert missing_keys(store) == {normalize_path(lone)}
+        with pytest.raises(ReviewError) as got:
+            RelinkService(store).relink(asset_id=lone_id, mode="nearby")
+        assert got.value.status == 422 and got.value.code == "bad_scope"
+        # **フォルダを渡せば探す**（人が指定する形）
+        shutil.move(str(outside / "lonely.png.bak"), str(outside / "lonely.png"))
+        found = RelinkService(store).relink(asset_id=lone_id, mode="nearby", path=str(outside))
+        assert found["to_path"] == str(outside / "lonely.png")
+    finally:
+        store.close()
 
 
 def test_nearby_says_not_found_when_the_name_is_absent(world: World):
@@ -353,6 +410,24 @@ def test_nearby_says_not_found_when_the_name_is_absent(world: World):
         world.relink(mode="nearby")
     assert got.value.status == 404 and got.value.code == "not_found"
     assert got.value.details["searched"] == 0
+
+
+def test_a_file_moved_inside_a_scanned_root_is_already_linked_by_the_scan(world: World):
+    """**走査済みの置き場の中で動いた物は、走査が既に繋いでいる**（専門 §4 の表）。
+
+    同じ `asset` に場所が 2 つ（生きている新しい場所＋参照切れの古い場所）になり、
+    `nearby` は **409 `already_registered`** で断る（**3 つ目の場所を作らない**）。
+
+    壊すと落ちる: 二重登録の検査を外す（場所が 3 つになる）、走査の `register` を
+    変える（別の `asset` が 2 つできる）。
+    """
+    moved = world.move_away(world.root / "sub" / "a.png")   # 同じ置き場の中
+    live = [l for l in world.store.asset(world.asset_id)["locations"] if not l["missing_at"]]
+    assert [l["path"] for l in live] == [str(moved)], "走査が新しい場所を登録していない"
+    with pytest.raises(ReviewError) as got:
+        world.relink(mode="nearby")
+    assert got.value.status == 409 and got.value.code == "already_registered"
+    assert len(world.store.asset(world.asset_id)["locations"]) == 2
 
 
 # ---- 4. 元の場所に戻ってきた（履歴を増やさない）----
@@ -386,12 +461,12 @@ def test_the_endpoint_is_human_only(app_env):
     src = make_png(root / "a.png", seed=1)
     scan(store, [str(root)])
     asset_id = store.location_of(src)["asset_id"]
-    shutil.move(str(src), str(tmp / "elsewhere" / "a.png"))
+    moved = move(src, tmp / "elsewhere" / "a.png")
     scan(store, [str(root)])
-    body = {"asset_id": asset_id, "path": str(tmp / "elsewhere" / "a.png"), "mode": "exact"}
+    body = {"asset_id": asset_id, "path": str(moved), "mode": "exact"}
     got = client.post("/api/locations/relink", headers=AGENT, json=body)
     assert got.status_code == 403 and got.json()["code"] == "human_only"
-    assert missing_keys(store) == {normalize_path(tmp / "elsewhere" / "a.png")}
+    assert missing_keys(store) == {normalize_path(src)}
     # **読むのは人もエージェントも可**
     assert client.get("/api/locations/missing", headers=AGENT).status_code == 200
     # 人が押せば通る
@@ -487,8 +562,8 @@ def test_two_missing_locations_need_from_path(app_env):
     shutil.copy2(first, second)
     register(store, second)
     scan(store, [str(tmp / "other")])
-    shutil.move(str(first), str(tmp / "lost1" / "a.png"))
-    shutil.move(str(second), str(tmp / "lost2" / "a.png"))
+    move(first, tmp / "lost1" / "a.png")
+    move(second, tmp / "lost2" / "a.png")
     scan(store, [str(root), str(tmp / "other")])
     assert len(missing_keys(store)) == 2
 
@@ -514,37 +589,41 @@ def test_the_missing_list_shows_where_and_why(app_env):
     client, app, store, tmp = app_env
     root = tmp / "library"
     src = make_png(root / "a.png", seed=1)
+    other = make_png(root / "b.png", seed=2)
     scan(store, [str(root)])
     asset_id = store.location_of(src)["asset_id"]
-    moved = tmp / "elsewhere" / "a.png"
-    shutil.move(str(src), str(moved))
+    other_id = store.location_of(other)["asset_id"]
+    moved = move(src, tmp / "elsewhere" / "a.png")
     scan(store, [str(root)])
 
     body = client.get("/api/locations/missing", headers=HUMAN).json()
     assert body["total"] == 1 and body["count"] == 1 and body["unlisted"] == 0
     item = body["items"][0]
-    assert item["asset_id"] == asset_id and item["key"] == normalize_path(moved)
+    # **鍵は登録したままの古いパス**（動いた先はまだ知らない。そこを `to_path` で繋ぐ）
+    assert item["asset_id"] == asset_id and item["key"] == normalize_path(src)
     assert item["path"] == str(src)                   # 登録した表記（display_path）
     assert item["sha256"] == sha_of(moved)
     assert item["missing_at"] and item["deleted"] is False
+    assert item["other_live_locations"] == 0
     assert item["roots"] == [str(root)] and item["active_deletion_id"] is None
     assert "relink" in body["hint"]
 
-    # **段 3 で消した物は既定で出さない**（`excluded_deleted` に数える）
+    # **段 3 で消した物は既定で出さない**（削除も `missing_at` を立てるので区別が要る）
     with store.transaction() as con:
         con.execute("UPDATE root SET allow_stage3 = 1 WHERE path = ?", (normalize_path(root),))
     deleted = client.post("/api/locations/delete", headers=HUMAN,
-                          json={"asset_id": asset_id, "path": str(src), "stage": 3,
+                          json={"asset_id": other_id, "path": str(other), "stage": 3,
                                 "confirm_last_copy": True})
     assert deleted.status_code == 200, deleted.text
     after = client.get("/api/locations/missing", headers=HUMAN).json()
-    assert after["total"] == 0 and after["excluded_deleted"] == 1
+    assert after["total"] == 1 and after["excluded_deleted"] == 1
     with_deleted = client.get("/api/locations/missing?include_deleted=1", headers=HUMAN).json()
-    assert with_deleted["total"] == 1 and with_deleted["items"][0]["deleted"] is True
-    assert with_deleted["items"][0]["active_deletion_id"] == deleted.json()["deletion_id"]
+    assert with_deleted["total"] == 2
+    gone = [i for i in with_deleted["items"] if i["asset_id"] == other_id][0]
+    assert gone["deleted"] is True and gone["active_deletion_id"] == deleted.json()["deletion_id"]
     # `limit` は数を切っても**数は切らない**（`unlisted` に出す）
     limited = client.get("/api/locations/missing?include_deleted=1&limit=0", headers=HUMAN).json()
-    assert limited["count"] == 0 and limited["total"] == 1 and limited["unlisted"] == 1
+    assert limited["count"] == 0 and limited["total"] == 2 and limited["unlisted"] == 2
 
 
 def test_the_missing_list_writes_nothing(app_env):
@@ -557,7 +636,7 @@ def test_the_missing_list_writes_nothing(app_env):
     root = tmp / "library"
     src = make_png(root / "a.png", seed=1)
     scan(store, [str(root)])
-    shutil.move(str(src), str(tmp / "elsewhere" / "a.png"))
+    move(src, tmp / "elsewhere" / "a.png")
     scan(store, [str(root)])
 
     def snapshot() -> tuple:
@@ -647,13 +726,16 @@ def test_nearby_candidates_are_capped(tmp_path: Path, monkeypatch):
     world = World(tmp_path)
     try:
         monkeypatch.setattr(relink, "NEARBY_CANDIDATE_LIMIT", 2)
+        other = world.add_root(world.tmp / "elsewhere")
         for i in range(4):
-            shutil.copy2(world.src, world.root / f"sub{i}" / "a.png")
-        moved = world.move_away(world.tmp / "elsewhere" / "a.png")
+            copy = other / f"sub{i}" / "a.png"
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(world.src, copy)
+        moved = world.move_away(world.tmp / "lost" / "a.png")   # 元の名前は残さない
         got = world.relink(mode="nearby")
         assert got["candidates_truncated"] is True
         assert got["searched"] == 2 and len(got["candidates"]) == 2
-        assert got["to_path"] == str(world.root / "sub0" / "a.png")
+        assert got["to_path"] == str(other / "sub0" / "a.png")
         assert moved.is_file()                        # 元のファイルもそのまま
     finally:
         world.close()

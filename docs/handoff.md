@@ -1,4 +1,4 @@
-# 引継書 — image-reviewer / **P8 完了**（重複・削除・バックアップ。2026-10-18 時点）
+# 引継書 — image-reviewer / **P8 完了＋P8-6（参照切れの再リンク）完了**（2026-10-18 時点）
 
 このセッション（dsh・ワークツリー `dsh`）で進めた内容と、**次のセッションがそのまま続けられる形**の引継ぎです。
 読む順: **§0 危険な操作 → §1 いまの状態 → §2 Fable との往復 → §3 次の手順**。細部は §4 以降。
@@ -78,11 +78,12 @@
 >   **利用者が自分の端末（sandbox の外）で 8790 を立て直す**必要がある（「取っていない（不安）」への答えは、
 >   コードではなく**この 1 操作**で完成する）。P8-5 で**上部バーと `#/settings` に失敗の全文を出す**ようにしたので、
 >   いまは画面で見える。
-> - **⚠ 再リンク（合格の線 9）は P8 では作っていない。** 指示書の段で **P8-3 が「重複と削除の画面」に置き換わり**、
->   `POST /api/locations/relink` は**実装されていない**（`src/` の全ルートに無い。`p8-3-implementation-brief.md` と
->   `p8-3-audit-report.md` の題名も「画面」）。`missing_at`・`location_history`・`hash_file` の道は既にあるので、
->   口とサービスだけで足りる。**別の段で作る**（実装の記録は `docs/p8-6-relink.md`。`design.md` §6.1 と §14 の下に
->   「**まだ無い**」と明記した）。**トレイ（常駐）も無い**（常駐の実装がリポジトリに無い。`design.md` §16.6）。
+> - **再リンク（合格の線 9）は P8-6 として作った（2026-10-18）。** P8-3 が指示書の段で「重複と削除の画面」に
+>   置き換わって残っていた物で、口は `POST /api/locations/relink`（**人だけ**。`exact` / `nearby`）と
+>   `GET /api/locations/missing`（**読むだけ**）の 2 つ。**中身の `sha256` が一致したときだけ繋ぎ、pHash は使わない**。
+>   **ファイルは 1 つも動かさない**（`asset_location` の 1 行を `UPDATE` し、`location_history` に 1 行残す）。
+>   **画面は無い（口だけ）**。実装の記録は [`p8-6-relink.md`](p8-6-relink.md)（**事故 3 件目**と `create_app()` の硬化もそこ）。
+>   `design.md` の §5.1・§5.8・§6.1・§14・§15・§16.6 に反映した。**トレイ（常駐）も無い**（常駐の実装がリポジトリに無い。`design.md` §16.6）。
 > - **次の段は P9（仕上げ）**。未計測の性能（1024px サムネ・一覧 API・表示速度・**`--include-library` の 292 MB**）の
 >   実測、テストの締め、**exe 化の判断**（[`design.md`](design.md) §14 の P9 の行）。
 >
@@ -93,6 +94,8 @@
 > ⑧ **版を上げずに表を変えるときも控えを取る**（`stuck_reason` の事故）／⑨ **長い会話の fork は文脈が尽きる**（重い段は素の `subagent`）／
 > ⑩ **画面の検査の前提は実装が変わると古くなる**（`--screen asset` が印なしで必ず NG＝P8-5 の監査 C-2）／
 > ⑪ **`busy` を付け忘れたボタンは二度押しで 2 回 POST**（P8-5 の監査 C-1）。
+> ⑫ **`create_app()` を env 無しで呼ぶと実データを書き込み可で開く**（P8-6 の事故 3 件目。`import` で走る・
+>   検証スクリプトが呼ぶ・検証サーバに env を付け忘れる、の 3 つの型はどれも同じ形。**開く前に `RuntimeError`** にして塞いだ）。
 
 ---
 
@@ -103,6 +106,7 @@
 | **利用者のアプリを止める/干渉する** | `image-reviewer serve --port 8790` が動いていて（`Get-Process image-reviewer` で確かめる。**2026-10-18 08:38 起動の個体**は**画面が P8-5・裏側が P8-4 まで**）、**`.venv` の exe を握っています** | **`uv run …` は `os error 32` で落ちます。必ず `uv run --no-sync …`** か `.venv\Scripts\python.exe` を使ってください。**止めない**（止めてよいかは利用者に確認） |
 | **実データ `.data/` を書き換える** | 実データは **v6**（2026-10-18 時点: **263 枚・判断 3 件・削除 0 件**・`duplicate_exclusion` 1・`review_group` 1）。**移行待ちはもう無い**（v6 に上がり、**画面は P8-5・裏側のプロセスは P8-4 まで**で稼働中） | **`mode=ro` でしか開かない**。**壊す試験・検証は必ず複製で**（複製は `sqlite3` の `backup()`。**`cp` だけだと WAL が抜けて判断 3 件が消える**）。使い捨ては `.tmp-audit-redo/` |
 | **版を上げずに表を変える**（`ALTER TABLE` のトップアップ） | P8-4 で実データに `deletion_log.stuck_reason` が**控え無しで**足された（事故 2 件目） | **変える前に `pre-topup-<日時>/` の控えを取る**（`pre-migrate-*` と同じ）。**足す物の一覧は `db.TOP_UP_COLUMNS` が正** |
+| **`IMAGE_REVIEWER_DATA` を付けずに `create_app()` を呼ぶ** | **P8-6 の事故 3 件目**（検証スクリプトが env を付け忘れ、**実データを書き込み可で開いた**。`location_history` の 3 列と `settings.backup.last_error` が書き換わり、**行の変化は 0**） | **`create_app()` は env が無ければ開く前に `RuntimeError`**（**1 バイトも書かない**）。**既定の `.data` を明示的に指すのは `cli serve`（`serve_data_dir()`）だけ**。**実データを触り得るコマンドには必ず `IMAGE_REVIEWER_DATA=<複製>`**（`mode=ro` も同じ）。控えは `.backup/pre-p8-6-20261018-100443/` |
 | **バックアップをエージェントの sandbox の中で取ろうとする** | 既定の置き場 `%USERPROFILE%\image-reviewer-backups` は **sandbox の子プロセスからは書けない**（`WinError 5`。P8-4 の再確認 B-1'）。いまの 8790 もこれで**日次が 0 個** | 検証では `IMAGE_REVIEWER_BACKUP_DIR` か `--out` で**リポジトリの中の `<data>` の外**へ向ける。**実機の日次は利用者が sandbox の外で 8790 を立て直してから**（`GET /api/backup` の `count` が 1 以上になったことを確かめる） |
 | `.backup/` を消す | 移行前の控え | `C:\work\image-reviwer\.backup\`（**9 フォルダ**。`pre-p4-*` / `pre-p7-removal*` / `pre-p8-0-*` / `pre-p8-4-20261017-232148` / **`pre-p8-6-20261018-100443`（再リンクの実装の開始）**）。**消さない** |
 | 8790 を検証に使う | 利用者のアプリが使用中 | 検証のサーバは **8791〜8799** を使う |
@@ -136,15 +140,18 @@
 | **P8-0（v6 の表と契約）** | **完了**。v6 の 5 表（`deletion_log` / `delete_request` / `duplicate_exclusion` / `phash_band` / `pending_delete_preview`）＋列（`asset.deleted_at` / `root.allow_stage3` / `job.cancel_requested`）・`backup-manifest` の契約・`review.json` を変えないテスト。**機能は足さない**（合格の線 1）。**索引名が DB 全体で一意**な罠をここで踏んだ（`ux_delete_token`） | `docs/p8-0-implementation.md`、`docs/p8-0-audit-report.md` ＋ [`p8-0-audit-triage.md`](p8-0-audit-triage.md) |
 | **P8-1（重複の検出と整理）** | **完了 → 監査「合格（条件つき）」→ 全部反映**。pHash の背景ジョブ（`POST /api/duplicates/compute`）・**帯を 4bit × 16 本に作り直した**（監査 B-1）・完全重複と準重複・`suggested_id`・除外と解除・まとまり。**実データで 21 群 / 57 枚**（完全重複 0 群） | `docs/p8-1-implementation.md`、`docs/p8-1-audit-report.md` ＋ [`p8-1-audit-triage.md`](p8-1-audit-triage.md) |
 | **P8-2（削除の 3 段階と 5 分の取り消し）** | **完了 → 監査「合格（条件つき）」→ 全部反映**（A3 窓の間は `missing_at`・B-1 台帳を先に書く・B-2 失敗したら `purge_at` を NULL・B-3 実削除は錠の下・C-1 人は誰の削除でも戻せる・C-2 `S_IWRITE`・C-3 資産と場所の単位）。再確認の軽微 2 件も反映 | `docs/p8-2-implementation.md`、`docs/p8-2-audit-report.md` ＋ [`p8-2-audit-recheck.md`](p8-2-audit-recheck.md) / [`p8-2-audit-recheck-triage.md`](p8-2-audit-recheck-triage.md) ＋ triage |
-| **P8-3（重複と削除の画面）** | **完了 → 監査「合格（条件つき）」→ 反映 → 再確認「合格（条件なし）」**。`#/duplicates`・`#/pending-deletes`・削除の入口 3 つ（拡大・下部バー・まとまり）・`tools/gui_layout_seed.py`（前提の行を複製の中に作る）。**再リンクはこの段に来ず、未実装のまま**（下の「未着手」） | `docs/p8-3-implementation.md`、`docs/p8-3-audit-report.md` ＋ [`p8-3-audit-recheck.md`](p8-3-audit-recheck.md) ＋ [`p8-3-audit-triage.md`](p8-3-audit-triage.md) |
+| **P8-3（重複と削除の画面）** | **完了 → 監査「合格（条件つき）」→ 反映 → 再確認「合格（条件なし）」**。`#/duplicates`・`#/pending-deletes`・削除の入口 3 つ（拡大・下部バー・まとまり）・`tools/gui_layout_seed.py`（前提の行を複製の中に作る）。**再リンクはこの段に来ず、後の P8-6 で実装した**（下の P8-6 の行） | `docs/p8-3-implementation.md`、`docs/p8-3-audit-report.md` ＋ [`p8-3-audit-recheck.md`](p8-3-audit-recheck.md) ＋ [`p8-3-audit-triage.md`](p8-3-audit-triage.md) |
 | **P8-4（バックアップと復元）** | **完了 → 監査「合格（条件つき）」→ 全部反映**（B-1 **壊れた写しを採用しない**・C-1 `restore` は `db_sha256` を照合・C-2 掴まれていれば 409 の 1 行・C-3 読み取り専用でも読める口は読める・D-2 `pre-topup-*` の控え・G-8 `import` で `create_app()` を走らせない）。**実機の日次だけは未達**（sandbox。再確認 B-1'） | `docs/p8-4-implementation.md`、`docs/p8-4-audit-report.md` ＋ [`p8-4-audit-recheck.md`](p8-4-audit-recheck.md) ＋ [`p8-4-audit-triage.md`](p8-4-audit-triage.md) |
-| **P8-5（画面の仕上げ。合格の線に数えない）** | **完了 → 監査は「合格（条件つき）」**。`#/settings` のバックアップ（最後の失敗の全文・7 世代・いま取る・置き場）と**置き場ごとの「段 3 を許す」印**・上部バーの「バックアップに失敗しています」と「走査中です」・段 3 の出し分け・文言の追い込み。**トレイは作らない**（常駐の実装が無い）。口は `GET /api/scan` の 1 つだけ足した。**条件 3 件（C-1〜C-3）は未反映**（下の「次の手順」の 0） | `docs/p8-5-implementation.md`、[`p8-5-audit-report.md`](p8-5-audit-report.md) |
-| **P8 の合格の線（P8-1〜P8-4）** | **済み。2026-10-18**（**再リンク＝線 9 だけは未実装**）。決定は [`docs/design.md`](design.md) §16.6 に反映済み。**画面の仕上げ（P8-5）は監査の条件 3 件が残っている** | `docs/design.md` §14・§16.6、[`p8-5-audit-report.md`](p8-5-audit-report.md) |
+| **P8-5（画面の仕上げ。合格の線に数えない）** | **完了 → 監査は「合格（条件つき）」**。`#/settings` のバックアップ（最後の失敗の全文・7 世代・**取り直す**・置き場）と**置き場ごとの「段 3 を許す」印**・上部バーの「バックアップに失敗しています」と「走査中です」・段 3 の出し分け・文言の追い込み。**トレイは作らない**（常駐の実装が無い）。口は `GET /api/scan` の 1 つだけ足した。**条件 3 件（C-1〜C-3）は未反映**（下の「次の手順」の 0）。**画面の語は「取り直す」に統一した**（下の 0 の D-1） | `docs/p8-5-implementation.md`、[`p8-5-audit-report.md`](p8-5-audit-report.md)、[`p8-5-audit-triage.md`](p8-5-audit-triage.md) |
+| **P8-6（参照切れの再リンク。合格の線 9）** | **完了。2026-10-18**（**監査はこれから**）。`POST /api/locations/relink`（**人だけ**。`exact` = 新しいファイル / `nearby` = 探すフォルダ）と `GET /api/locations/missing`（**読むだけ**）・`location_history` に `to_path` / `reason` / `actor`（**版は上げない**＝`pre-topup-*` の控え）・**`create_app()` の硬化**（**`IMAGE_REVIEWER_DATA` が無ければ開かない**）・**事故 3 件目**（実データに 3 列が控え無しで入った。**行の変化は 0**。控え `.backup/pre-p8-6-20261018-100443/`）。**画面は作っていない**（口だけ）。`tools/probe_p8.py --relink` が **16 行すべて OK**・`pytest` **507 件** | [`p8-6-relink.md`](p8-6-relink.md) |
+| **P8 の合格の線（P8-1〜P8-4）** | **済み。2026-10-18**（**残っていた再リンク＝線 9 も P8-6 で実装済み**）。決定は [`docs/design.md`](design.md) §16.6 に反映済み。**画面の仕上げ（P8-5）は監査の条件 3 件が残っている** | `docs/design.md` §14・§16.6、[`p8-5-audit-report.md`](p8-5-audit-report.md)、[`p8-6-relink.md`](p8-6-relink.md) |
 | **P9（仕上げ）** | 未着手（**次は P9**） | [`docs/design.md`](design.md) §14 |
 
-**いまの数（実測。2026-10-18 に私が回した）**: `pytest` **477 件**・`gui_smoke` **291 検査**（すべて ok）・
-`gui_layout` **10 画面＋`pending --ids` の 11 本**（すべて ok）。`SCHEMA_VERSION = 6`。
-**実データは v6・263 枚・判断 3 件・削除 0 件**（利用者が押した「別物として確定」1 件と「まとまり」1 件は残っている）。
+**いまの数（実測。2026-10-18）**: `pytest` **507 件**（2 回回して 35.9 / 40.5 秒）・`gui_smoke` **310 検査**
+（2 回とも ok / NG 0。**P8-5 の条件の直しが並行して入った時点**）・`gui_layout` **10 画面＋`pending --ids` の 11 本**（**P8-6 の記録**が
+段 3 の印を立てた複製 8791 で回してすべて ok。**文書の反映のときには回していない**）。`SCHEMA_VERSION = 6`。
+**実データは v6・263 枚・判断 3 件・削除 0 件・`missing_at` 0 件**（利用者が押した「別物として確定」1 件と
+「まとまり」1 件は残っている）。
 
 ### いま走っているもの
 
@@ -157,9 +164,10 @@
 ### 未着手
 
 - **P8-5 の監査の条件 3 件（C-1〜C-3）**: **未反映**（→ **§3 の 0** に直し方つき）。
-- **再リンク（P8 の合格の線 9）**: `POST /api/locations/relink`。**P8 では作らなかった**（P8-3 が画面の段に置き換わった）。
-  `missing_at`・`location_history`・`hash_file` の道は既にあるので、**口とサービスだけで足りる**。**別の段で作る**
-  （実装の記録は `docs/p8-6-relink.md`。`design.md` §6.1 と §14 の下に「**まだ無い**」と明記した）。
+- **再リンク（P8 の合格の線 9）**: **口は P8-6 で実装済み**（`POST /api/locations/relink` は**人だけ**で
+  `exact` / `nearby`、`GET /api/locations/missing` は**読むだけ**。**中身の `sha256` が一致したときだけ繋ぎ、
+  `pHash` は使わない**。実装の記録は [`p8-6-relink.md`](p8-6-relink.md)）。**残っているのは画面**（P8 では
+  作らないと決めたまま。`design.md` §6.1）。**P8-6 の監査もこれから**。
 - **P9（仕上げ）**: 未計測の性能の実測（**1024px サムネイル・一覧 API・グリッドの表示速度・`--include-library` の 292 MB**）・
   テストの締め・**exe 化の判断**（[`design.md`](design.md) §14 の P9 の行）。
 - **トレイ（タスクトレイ常駐）**: **常駐の実装がリポジトリに無い**ので作っていない。作る段で `frontend-design.md` §11 の
@@ -168,14 +176,16 @@
   `userdata` への設置・タグの統合と改名・本格的な検索・プリセットの画面。
 - **実機の日次バックアップ**: **利用者が sandbox の外で 8790 を立て直す**（それだけで取れるようになる。
   `count` が 1 以上になったことを 1 度確かめる）。
-- **`README.md` と `docs/design.md` の本体は反映済み**（README は 477 件・291 検査・10 画面＋`pending --ids`・
-  P8 の文書表・未実装の一覧。design.md は §5.8・§6.1・§6.2・§9.5・§11・§12.1・§12.3・§14・§15・§16.6）。
-  **`docs/p8-*.md` は歴史としてそのまま**（§16.6 に決定を集約した）。
+- **`README.md` と `docs/design.md` の本体は反映済み**（README は 507 件・310 検査・10 画面＋`pending --ids`・
+  P8 の文書表（**P8-6 の行**）・未実装の一覧。design.md は §5.1・§5.8・§6.1・§6.2・§9.5・§11・§12.1・§12.3・
+  §14・§15・§16.6。**P8-6 の反映は §5.1・§5.8・§6.1・§14・§15・§16.6**）。
+  **`docs/p8-*.md` は歴史としてそのまま**（§16.6 に決定を集約した。**例外は P8-6 の記録 `p8-6-relink.md`**＝
+  履歴ではなく**いまの実装の記録**）。
 
 ### セッションを切り替えるときの注意
 
 **進行中の作業は無いので、いつ切っても安全です。** ただし次のセッションの最初に**これを回して緑を確かめてください**:
-`uv run --no-sync pytest -q`（**477 passed が期待値**）と `node tools/gui_smoke.mjs`（**291 ok / NG 0**）。
+`uv run --no-sync pytest -q`（**507 passed が期待値**）と `node tools/gui_smoke.mjs`（**310 ok / NG 0**）。
 **`git` 管理です**（`https://github.com/yuksew/image-reviewer`）。ただし**エージェントはコミットしない**（親が行う）。
 控えは `.backup/`（**9 フォルダ**。**消さない**）。
 
@@ -267,17 +277,20 @@ D-7 §11 のトレイの 1 行 など）。
 | 2 回目以降の走査（差分なし・10 秒以内） | **未計測** |
 | 一括削除の再照合（1,000 件で 1 秒以内） | **未計測**（§12.3） |
 | `--include-library`（実データ 292 MB）の所要 | **未計測**（P8-4 の再確認 H。**測り方から決める**） |
+| 再リンクの `nearby`（1 万枚の置き場で同じ名前を探す） | **未計測**（実データは 263 枚。**ハッシュするのは同じ名前の候補だけ**＝上限 200。`p8-6-relink.md` §7） |
 | タグ付け 0.5 秒/枚（GPU） | **未再計測**（いまは ComfyUI の IllustTagger 0.27 秒/枚） |
 
 **計測の作法**（家風）: **別々の入力**で測る（`execution_cached` に当てない）・**何回の中央値かを書く**・
 **「未計測」を「未計測」と書く**。**exe 化の判断**（`pystray` とショートカット起動）とテストの締めも P9。
 
-### 2. 再リンク（P8 の合格の線 9）— **別の段**
+### 2. 再リンク（P8 の合格の線 9）— **済み（P8-6。監査待ち）**
 
-`POST /api/locations/relink`（**近くを探す**・**場所を指定**。**`sha256` が一致しなければ 409 `hash_mismatch`**）。
+`POST /api/locations/relink`（**近くを探す**＝`nearby`・**場所を指定**＝`exact`。**人だけ**。
+**`sha256` が一致しなければ 409 `hash_mismatch`**）と `GET /api/locations/missing`（**読むだけ**）。
 設計は `p8-design.md` §0.11 と §3.2、元ネタは [`duplicates-deletion-backup.md`](duplicates-deletion-backup.md) §4。
-**実装の記録は `docs/p8-6-relink.md`**（この文書を書いている時点ではまだ無い。**`.backup/pre-p8-6-20261018-100443` が
-既にあるので、実装は始まっている**）。**終わったら `design.md` §6.1 の「**まだ無い**」と §14 の下の 1 行を直す**。
+**実装の記録は [`p8-6-relink.md`](p8-6-relink.md)**（**16 行すべて OK**・`pytest` 507 件・**事故 3 件目**と
+`create_app()` の硬化もそこ）。**`design.md` の「まだ無い」は §5.1・§5.8・§6.1・§14・§15・§16.6 で直した**。
+**残っているのは画面と監査**（**「自動（走査のたびに繋ぐ）」は作らないと決めた**＝`duplicates-deletion-backup.md` §4）。
 
 ### 3. 利用者に頼む 1 操作（バックアップ）
 
@@ -292,8 +305,8 @@ D-7 §11 のトレイの 1 行 など）。
 
 ```powershell
 $env:UV_CACHE_DIR = "C:\work\image-reviwer\.uv-cache"
-uv run --no-sync pytest -q                      # 477 件
-node tools/gui_smoke.mjs                        # 291 ok（軽い DOM。CSS を持たない）
+uv run --no-sync pytest -q                      # 507 件
+node tools/gui_smoke.mjs                        # 310 ok（軽い DOM。CSS を持たない）
 # 本物の Chrome。サーバは実データのコピーで立てる（8791〜）。前提の行は seed が複製の中に作る
 $env:IMAGE_REVIEWER_DATA = "C:\work\image-reviwer\.tmp-audit-redo\data-XXXX"
 uv run --no-sync python -X utf8 tools/gui_layout_seed.py --data $env:IMAGE_REVIEWER_DATA `
@@ -346,6 +359,11 @@ uv run --no-sync --with jsonschema python tools/check_contract_p8.py       # 契
   - **`--include-library`（292 MB）は未計測。**
   - **実データの重複**: **21 群 / 57 枚**（距離 ≤ 6。**完全重複 0 群**）。距離 ≤ 3 で 17 群・≤ 10 で 28 群。
     pHash は **263 / 263 枚**に入っている（帯は 4,208 行＝263 × 16）。
+- **P8-6（再リンク。2026-10-18。正は [`p8-6-relink.md`](p8-6-relink.md)）**: `tools/probe_p8.py --relink` が
+  **16 行すべて OK**（実データの複製。`TestClient` で本物の HTTP）／`pytest` **507 件**（P8-5 の 477 ＋ 新規 30。
+  **私が 2 回回して 35.9 / 40.5 秒**）／`gui_smoke` **310 検査・NG 0**（**P8-5 の条件の直しが並行して入った時点**）／
+  `gui_layout` **11 本すべて ok**（**P8-6 の記録**が複製 8791 で。**文書の反映のときには回していない**）。
+  **`nearby` の 1 万枚での時間は未計測**（実データは 263 枚）。
 - **実データ**: **v6・263 枚・判断 3 件・削除 0 件**（`deletion_log` も `delete_request` も 0 行）。
   `duplicate_exclusion` 1 件・`review_group` 1 件（`kind='duplicates'`）は**利用者が押した物**。WAL は**畳まないと判断が消える**（複製は `sqlite3` の `backup()` で）。
 - **語彙**: CSV 10,861 行（general 8,106 / character 2,751）。**キャラ名の 51% が括弧を含む**（`rem_(re:zero)`）。
@@ -424,8 +442,10 @@ uv run --no-sync --with jsonschema python tools/check_contract_p8.py       # 契
 1. **★ 8790 を sandbox の外（自分の端末）で立て直す**（**バックアップのため**）。いまは `%USERPROFILE%\image-reviewer-backups` に
    書けず、**日次が 0 個**（`last_error` に `WinError 5`）。立て直したら `GET /api/backup` の `count` が
    1 以上になったことを 1 度確かめる。**置き場を変えて凌ぐ**なら `PATCH /api/settings {"backup_dir": "<data> の外>"`。
-2. **再リンク（P8 の合格の線 9）を作るか、いつ作るか。** 推奨: **次の段のどれかで作る**
-   （`missing_at`・`location_history`・`hash_file` が既にあるので、口とサービスだけ。`docs/p8-6-relink.md`）。
+2. **再リンクの画面を作るか、いつ作るか。** **口は P8-6 で作った**（`POST /api/locations/relink` は**人だけ**・
+   `GET /api/locations/missing` は読むだけ。**画面は無い**＝対象の枚を一覧で見て「近くを探す」「場所を指定」を
+   押す画面。`docs/frontend-design.md` に項目が無いので、作るなら画面設計から）。推奨: **P9 の後半**
+   （再リンクが要るのは「実体を動かした・消した」ときで、いまは口で足りる。`docs/p8-6-relink.md`）。
 3. **トレイ（タスクトレイ常駐）を作るか。** いまは**常駐の実装がリポジトリに無い**ので、画面の一覧と入口から外してある
    （`frontend-design.md` §3・§4.5・§4.6・§11）。**利用者の当初の回答は「トレイに出す」**なので、作る段を決める
    （推奨: ショートカット起動と一緒に、P9 の後半）。
@@ -447,12 +467,13 @@ uv run --no-sync --with jsonschema python tools/check_contract_p8.py       # 契
 
 | 何 | どこ |
 | --- | --- |
-| 全体の設計（正） | [`design.md`](design.md)（**P8 の決定は §16.6**。表は §5.8・口は §6.1・性能は §12.3・段は §14） |
+| 全体の設計（正） | [`design.md`](design.md)（**P8 の決定は §16.6**。表は §5.8・口は §6.1・性能は §12.3・段は §14。**P8-6 の再リンクは §5.1・§5.8・§6.1・§14・§15・§16.6**） |
 | フロントの設計 | [`frontend-design.md`](frontend-design.md)（画面一覧は §3。**削除と重複は §4.6**・文言は §6・細部は §11） |
 | 段ごとの設計 | [`p8-design.md`](p8-design.md)（**§0 が拘束力のある差分**） / `p5-design.md` / `p6-design.md` / `p4-design.md` |
 | P8 の点検と仕分け | [`p8-review-report.md`](p8-review-report.md) ＋ [`p8-review-triage.md`](p8-review-triage.md) |
 | P8 の監査と仕分け | [`p8-0-audit-report.md`](p8-0-audit-report.md) / [`p8-1-audit-report.md`](p8-1-audit-report.md) / [`p8-2-audit-report.md`](p8-2-audit-report.md) ＋ [`p8-2-audit-recheck.md`](p8-2-audit-recheck.md) / [`p8-3-audit-report.md`](p8-3-audit-report.md) ＋ [`p8-3-audit-recheck.md`](p8-3-audit-recheck.md) / [`p8-4-audit-report.md`](p8-4-audit-report.md) ＋ [`p8-4-audit-recheck.md`](p8-4-audit-recheck.md)（＋各 `p8-*-audit-triage.md`） |
 | P8 の実装の記録（自分で決めた点・穴） | `docs/p8-{0,1,2,3,4,5}-implementation.md` |
+| **P8-6（参照切れの再リンク）の実装の記録** | [`p8-6-relink.md`](p8-6-relink.md)（**履歴ではなく、いまの実装の記録**。`POST /api/locations/relink` と `GET /api/locations/missing`・`location_history` の 3 列・`create_app()` の硬化・**事故 3 件目**・**設計の穴 6 件**・申し送り） |
 | 帯の取りこぼしの調査 | [`p8-3-band-miss.md`](p8-3-band-miss.md)（8bit × 8 本 → 4bit × 16 本） |
 | 前の段の記録（歴史） | `docs/p4-*` / `docs/p5-*` / `docs/p6-*` / `docs/p7-*`（P7 は廃止。[`p7-decision.md`](p7-decision.md)） |
 | 朝のまとめ（利用者向け） | [`p6-morning-report.md`](p6-morning-report.md)（P8 は利用者への問いを §0.14 で先に済ませた） |

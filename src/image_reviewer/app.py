@@ -60,12 +60,31 @@ _STARTED_AT = STARTED_AT
 
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
 
+#: データ置き場を指す環境変数（P8-6）。**これが無いと `create_app()` は開かない。**
+DATA_ENV = "IMAGE_REVIEWER_DATA"
+#: 既定の置き場。**`cli serve`（利用者の本来の起動）だけ**がこれを明示的に指す（P8-6）
+DEFAULT_DATA_DIR = REPO_DIR / ".data"
+
 
 def data_dir() -> Path:
-    return Path(os.environ.get("IMAGE_REVIEWER_DATA", REPO_DIR / ".data"))
+    """データ置き場。**環境変数が無ければ既定**（`cli` が明示的に指す。`create_app` は断る）。"""
+    return Path(os.environ.get(DATA_ENV) or DEFAULT_DATA_DIR)
 
 
 def create_app() -> FastAPI:
+    """アプリを作る。**（P8-6）`IMAGE_REVIEWER_DATA` が無ければ実データを開かない。**
+
+    事故 3 件の型（P8-4 の監査 G-8／G-9 と、P8-6 の 3 件目）はどれも
+    「**明示的に呼ばれた `create_app()` が、環境変数の無いまま既定の `.data` を
+    書き込み可で開いた**」ことから始まっている（`import` で走る・検証スクリプトが呼ぶ・
+    検証サーバに env を付け忘れる）。**開く前に断る**（1 バイトも書かない）。
+    利用者の本来の起動（`image-reviewer serve`）は `cli.cmd_serve` が
+    **既定の `.data` を明示的に指してから**ここへ来る。
+    """
+    if not (os.environ.get(DATA_ENV) or "").strip():
+        raise RuntimeError(
+            "実データを開こうとしています。IMAGE_REVIEWER_DATA=<複製> を付けてください"
+            "（アプリは `image-reviewer serve` から起動してください）")
     # P8-4（設計 §0.12-5・§10-12・§10-13）: **開く前に健全性を見る**。
     # 壊れている（2 ページ目を潰した形・開けない形）か、DB の版がバイナリより新しければ
     # **読み取り専用で開く**（壊れた DB に書き込んで傷を広げない）。判定は
@@ -493,6 +512,8 @@ def __getattr__(name: str):
     ここで**初めて触られたとき**に作る（PEP 562 のモジュール `__getattr__`）。
     `uvicorn image_reviewer.app:app` も `image_reviewer.app:create_app --factory` も
     どちらも通る。**`import image_reviewer.app` だけでは何も開かない。**
+    **（P8-6）`IMAGE_REVIEWER_DATA` が無ければ `create_app()` が断る**ので、
+    `image_reviewer.app:app` を env 無しで起動しても実データは開かない。
     """
     if name == "app":
         return create_app()

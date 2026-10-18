@@ -111,15 +111,39 @@ def cmd_capture(args) -> int:
         store.close()
 
 
+def serve_data_dir() -> str:
+    """**`serve` が使うデータ置き場**（P8-6）。
+
+    `create_app()` は `IMAGE_REVIEWER_DATA` が無ければ**断る**（実データを事故で開かない
+    ため）。利用者の本来の起動（`image-reviewer serve`）はここで**既定の `.data` を
+    明示的に指してから**アプリを作る（今までどおり動く）。
+
+    環境変数が既にあればそのまま使う（複製のサーバを立てるときはここで複製を指せる）。
+    """
+    import os
+
+    from .app import DATA_ENV, DEFAULT_DATA_DIR
+
+    raw = (os.environ.get(DATA_ENV) or "").strip()
+    if not raw:
+        raw = str(DEFAULT_DATA_DIR)
+        os.environ[DATA_ENV] = raw                     # **明示的に**指す（既定のまま開かせない）
+    return raw
+
+
 def cmd_serve(args) -> int:
     """サーバを起動する。
 
     **（P8-4 の監査 G-8）`--factory` で作る。** `image_reviewer.app` を import した
     だけで実データを開かないようにしたので（モジュールの `__getattr__`）、
     `create_app` を名指しで渡す方が意図がはっきりする。
+
+    **（P8-6）`serve_data_dir()` を先に通す。** ここで env を立てないと `create_app()` が
+    断る（＝`import` でも素の `create_app()` でも実データを開けない）。
     """
     import uvicorn
 
+    serve_data_dir()
     uvicorn.run("image_reviewer.app:create_app", factory=True,
                 host=args.host, port=args.port, log_level="info")
     return 0

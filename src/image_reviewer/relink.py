@@ -207,6 +207,7 @@ class RelinkService:
         candidates: list[str] = []
         unreadable: list[str] = []
         truncated = False
+        folders: list[str] = []
         if mode == "exact":
             chosen = Path(given)
             if chosen.is_dir():
@@ -217,7 +218,7 @@ class RelinkService:
                                   details={"path": given, "mode": mode})
             others: list[Path] = []
         else:
-            chosen, others, searched, candidates, unreadable, truncated = \
+            chosen, others, searched, candidates, unreadable, truncated, folders = \
                 self._search_nearby(target, given, roots)
 
         new_display = str(chosen)
@@ -288,7 +289,8 @@ class RelinkService:
         }
         if mode == "nearby":
             out.update({"searched": searched, "candidates": candidates,
-                        "unreadable": unreadable, "candidates_truncated": truncated})
+                        "unreadable": unreadable, "candidates_truncated": truncated,
+                        "folders": folders})
             if others:
                 # 同じ中身が他にもあった（**選ばなかった物も出す**。黙って捨てない）
                 out["also_found"] = [str(p) for p in others]
@@ -383,9 +385,14 @@ class RelinkService:
         """**同じファイル名を探し、ハッシュが一致する物だけ**を候補にする（設計 §0.11）。
 
         - `given` があればそのフォルダ（ファイルを渡されたらその親）
-        - 無ければ**その場所が入っている登録済みの置き場**（`roots`）。**無ければ 422 `bad_scope`**
-          （ディスク全体を勝手に歩かない）
+        - 無ければ**登録した置き場ぜんぶ**を同じファイル名で歩く。**置き場が 1 つも無ければ
+          422 `bad_scope`**（ディスク全体を勝手に歩かない）
         - 候補は `NEARBY_CANDIDATE_LIMIT` まで（**打ち切ったら数を返す**）
+
+        **（実装で分かったこと）** 走査は「知らないパスの画像」をその場で登録するので、
+        **走査した置き場の中で動いたファイルは走査の時点で既に繋がっている**
+        （専門 §4 の表のとおり）。`nearby` が効くのは「**まだ走査していない置き場**へ動いた」
+        ときと「**人が探すフォルダを指定した**」ときである。
         """
         name = file_name_of(target["display_path"])
         folders: list[Path] = []
@@ -398,10 +405,10 @@ class RelinkService:
                                   details={"path": given, "mode": "nearby"})
             folders = [picked]
         else:
-            folders = [Path(r) for r in roots if is_under(target["display_path"], r)]
+            folders = [Path(r) for r in roots]
             if not folders:
                 raise ReviewError(
-                    422, "この場所は登録した置き場の下にないので、探すフォルダを指定してください",
+                    422, "登録した置き場が無いので、探すフォルダを指定してください",
                     code="bad_scope",
                     details={"path": target["display_path"], "roots": roots, "mode": "nearby"})
         found: list[Path] = []
@@ -431,11 +438,16 @@ class RelinkService:
                 code="hash_mismatch",
                 details={"mode": "nearby", "name": name, "expected": target["sha256"],
                          "candidates": found, "unreadable": unreadable})
-        return matches[0], matches[1:], len(found), found, unreadable, truncated
+        return (matches[0], matches[1:], len(found), found, unreadable, truncated,
+                [str(f) for f in folders])
 
     @staticmethod
     def _kept(con, asset_id: str) -> dict:
-        """**判断・タグ・来歴を保ったまま**であることを応答で見せる（消していない証拠）。"""
+        """**判断・タグ・来歴を保ったまま**であることを応答で見せる（消していない証拠）。
+
+        `has_provenance` の意味は `app.py` の一覧と同じ（**中身のある来歴**があるか。
+        `register()` は `meta` が空でも行を作るので、行の有無では判定しない）。
+        """
         return {
             "decisions": int(con.execute(
                 "SELECT count(*) AS n FROM decision WHERE subject_type = 'asset'"
@@ -447,7 +459,9 @@ class RelinkService:
                 "SELECT count(*) AS n FROM asset_location WHERE asset_id = ?",
                 (asset_id,)).fetchone()["n"]),
             "has_provenance": bool(con.execute(
-                "SELECT 1 FROM asset_meta WHERE asset_id = ?", (asset_id,)).fetchone()),
+                "SELECT 1 FROM asset_meta WHERE asset_id = ?"
+                "   AND meta_json IS NOT NULL AND meta_json NOT IN ('null', '{}')",
+                (asset_id,)).fetchone()),
         }
 
 

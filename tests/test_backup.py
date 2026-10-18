@@ -1764,7 +1764,9 @@ def test_get_endpoints_write_nothing(tmp_path, monkeypatch):
         for path in ("/api/health", "/api/health/db", "/api/backup", "/api/settings",
                      "/api/roots", "/api/assets", "/api/stats", "/api/pending-deletes",
                      "/api/trash", "/api/deletions", "/api/duplicates/near",
-                     "/api/duplicates/exact", "/api/tags"):
+                     "/api/duplicates/exact", "/api/tags",
+                     # P8-6: 参照切れの一覧（**読むだけ**。繋ぎ直しは `POST`）
+                     "/api/locations/missing"):
             resp = client.get(path, headers=HUMAN)
             assert resp.status_code < 500, f"{path}: {resp.status_code} {resp.text[:200]}"
 

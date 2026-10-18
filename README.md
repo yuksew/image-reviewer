@@ -10,8 +10,9 @@
 > （書き込み権限がこのパスに固定されているため、`C:\work\image-reviewer` の作成が拒否される）。
 > 手順は [`docs/design.md`](docs/design.md) §16.2 の 1 を参照。文書内の名前は既に `image-reviewer` にしてある。
 
-- 状態: **P5（判断と比較）・P6（要求と注記）・P4（タグと語釈）・P8（重複・削除・バックアップ）が動く。
-  テスト 477 件**（`uv run --no-sync pytest -q` を自分で回して実測。`gui_smoke` **291 検査**・
+- 状態: **P5（判断と比較）・P6（要求と注記）・P4（タグと語釈）・P8（重複・削除・バックアップ）・
+  P8-6（参照切れの再リンク）が動く。テスト 507 件**（`uv run --no-sync pytest -q` を自分で 2 回回して実測。
+  `gui_smoke` **310 検査**（2 回とも ok / NG 0）・
   `gui_layout` **10 画面＋`pending --ids`** もすべて ok）。各段は
   設計 → Fable の点検 → 小段ごとの実装 → **Fable が実行込みで監査** → 指摘の反映、で進めている
   （P8 は [`docs/p8-design.md`](docs/p8-design.md) とその点検・監査
@@ -21,8 +22,10 @@
   **P8-5（設定と文言の仕上げ）の条件 3 件だけは未反映**——「段 3 を許す」印のボタンが二度押しで 2 回 POST される・
   `gui_layout --screen asset` が印の無い置き場で必ず NG・版が新しい DB で設定の書き込みボタンが押せるまま
   （[`docs/p8-5-audit-report.md`](docs/p8-5-audit-report.md)。直し方は [`docs/handoff.md`](docs/handoff.md) §3 の 0）。
-- **参照切れの再リンク（P8 の合格の線 9）は作っていない**（P8 の途中で P8-3 が「重複と削除の画面」の段に
-  置き換わったため）。**別の段で作る**（`docs/p8-6-relink.md`）。
+- **参照切れの再リンク（P8 の合格の線 9）は P8-6 で作った**（2026-10-18。P8 の途中で P8-3 が「重複と削除の
+  画面」の段に置き換わり、線 9 だけが残っていた）。`POST /api/locations/relink`（**人だけ**）と
+  `GET /api/locations/missing`（**読むだけ**）の 2 つの口で、**中身の `sha256` が一致したときだけ繋ぐ**
+  （**pHash は使わない**）。**画面は無い（口だけ）**。`docs/p8-6-relink.md`。
 - **条件の記録（P7。R12）は作ったが廃止した**（2026-10-17、利用者の判断。PNG を ComfyUI にドラッグすればワークフローが戻るので記録は重複で、
   ja2en の英訳ももう一度実行すれば取れるため。消した物と控えは [`docs/p7-decision.md`](docs/p7-decision.md)、記録は `docs/p7-*.md` に残す）。
 - 進め方: **DeepSeek が設計書を書く → Claude Code の Fable が点検 → DeepSeek が実装 → Fable が監査**
@@ -35,8 +38,8 @@ uv sync
 uv sync --extra tagger                      # 内蔵タガー（onnxruntime。任意。入れると `auto` が内蔵を選ぶ）
 uv run image-reviewer scan --root 'C:\work\illust-authoring\.store\anima-dev'
 uv run image-reviewer serve --port 8790     # → http://127.0.0.1:8790
-uv run --no-sync pytest -q                  # 477 件
-node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。291 検査）
+uv run --no-sync pytest -q                  # 507 件
+node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。310 検査）
 # 画面の計測（本物の Chrome）は**複製で立てたサーバ**へ。実データの 8790 では回さない（§「gui_layout は…」）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --count 8          # 比較（3 窓）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen requests  # 要求の一覧
@@ -55,6 +58,7 @@ uv run python tools/probe_p8.py --duplicates       # 重複の検出（P8 の線
 uv run python tools/probe_p8.py --delete           # 削除の 3 段階と 5 分の取り消し（線 5〜8）
 uv run python tools/probe_p8.py --backup           # 日次バックアップと健全性（線 10・12）
 uv run python tools/probe_p8.py --restore          # 復元と組み直し（線 11）
+uv run python tools/probe_p8.py --relink           # 参照切れの再リンク（P8-6 の線 9）
 uv run python tools/probe_p8.py --all              # 全部（自分で立てたサーバと一時の置き場を使い、後始末する）
 uv run image-reviewer backup --out <dir>           # いま 1 回取る（--include-library で画像の実体も）
 uv run image-reviewer restore <dir>                # 戻す（先に manifest の db_sha256 を照合。--force で進む）
@@ -84,7 +88,9 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 **削除と取り消し**（`#/pending-deletes`。**段 1 印 / 段 2 ゴミ箱 / 段 3 実削除**の 3 段階。**実削除は 5 分以内なら戻せる**。
 一括削除は**凍結 → 実行**。**誰が消したか**を残し、**エージェントも消せるが 1 回 200 枚まで**）、
 **バックアップと復元**（`#/settings` と上部バーの 1 行。日次スナップショット・7 世代・
-`backup` / `restore` / `rebuild-metadata`）**まで**。
+`backup` / `restore` / `rebuild-metadata`）、
+**参照切れの再リンク**（**口だけ**。`POST /api/locations/relink` は**人だけ**で、
+**中身の `sha256` が一致したときだけ繋ぐ**。`GET /api/locations/missing` で一覧が引ける）**まで**。
 
 - **バックアップは `<data>` の外（既定 `%USERPROFILE%\image-reviewer-backups`）に日次で取る。**
   `<data>` ごと消しても、そこから戻せる（`image-reviewer restore <dir>`。`<data>` の中は置き場にできない）。
@@ -93,7 +99,8 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
   常駐の実装がリポジトリに無い）**・**P2（カタログ。仮想フォルダ・スマートフォルダ・
   ドラッグ&ドロップ / クリップボード / URL の取込）**・**P3 の残り（`userdata` への設置・
   タグの統合と改名・本格的な検索・グラフの ComfyUI への設置）**・**プリセットの画面**・
-  **参照切れの再リンク（P8 では作らなかった。`docs/p8-6-relink.md`）**・
+  **参照切れの再リンクの画面（口だけは P8-6 で作った。`POST /api/locations/relink`・
+  `GET /api/locations/missing`。`docs/p8-6-relink.md`）**・
   **`--include-library` の所要時間（未計測。実データなら 292 MB）**。
 - 記録は [`docs/prototype-notes.md`](docs/prototype-notes.md)。実データで確かめた結果もそこにある。
 
@@ -142,6 +149,7 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/p8-0-implementation.md`](docs/p8-0-implementation.md) | **P8-0 の実装の記録**（v6 の表と `backup-manifest` の契約。機能は足さない） | — |
 | [`docs/p8-1-implementation.md`](docs/p8-1-implementation.md) | **P8-1 の実装の記録**（pHash の背景ジョブ・帯・完全重複と準重複・代表の推薦・除外と解除） | — |
 | [`docs/p8-2-implementation.md`](docs/p8-2-implementation.md) · [`docs/p8-3-implementation.md`](docs/p8-3-implementation.md) · [`docs/p8-4-implementation.md`](docs/p8-4-implementation.md) · [`docs/p8-5-implementation.md`](docs/p8-5-implementation.md) | **P8-2〜P8-5 の実装の記録**（削除の 3 段階と凍結 / 重複と削除の画面 / バックアップと復元 / 設定と文言の仕上げ） | — |
+| [`docs/p8-6-relink.md`](docs/p8-6-relink.md) | **P8-6（参照切れの再リンク）の実装の記録**（`POST /api/locations/relink` と `GET /api/locations/missing`・`location_history` の 3 列・`create_app()` の硬化・**事故 3 件目**・設計の穴 6 件・申し送り） | — |
 | [`docs/p8-audit-brief-p8-0.md`](docs/p8-audit-brief-p8-0.md)（1・2・4 も同形） | P8 の監査の指示書 | — |
 | [`docs/p8-0-audit-report.md`](docs/p8-0-audit-report.md) · [`docs/p8-1-audit-report.md`](docs/p8-1-audit-report.md) · [`docs/p8-2-audit-report.md`](docs/p8-2-audit-report.md) · [`docs/p8-3-audit-report.md`](docs/p8-3-audit-report.md) · [`docs/p8-4-audit-report.md`](docs/p8-4-audit-report.md) · [`docs/p8-5-audit-report.md`](docs/p8-5-audit-report.md) | **P8 の監査報告**（**実行込み**。判定はどれも「合格（条件つき）」→ 指摘は全部反映。**P8-5 の条件 3 件だけ未反映**） | — |
 | [`docs/p8-2-audit-recheck.md`](docs/p8-2-audit-recheck.md) · [`docs/p8-3-audit-recheck.md`](docs/p8-3-audit-recheck.md) · [`docs/p8-4-audit-recheck.md`](docs/p8-4-audit-recheck.md) | 監査の**再確認**（直した物が実行で直っているか。P8-3 は「合格（条件なし）」） | — |
@@ -237,14 +245,17 @@ P8-5 は画面の仕上げ）。各段を Fable が**実行込みで監査**し�
 （設計 [`docs/p8-design.md`](docs/p8-design.md)、点検 [`docs/p8-review-report.md`](docs/p8-review-report.md)、
 監査 [`docs/p8-0-audit-report.md`](docs/p8-0-audit-report.md) 〜 [`docs/p8-4-audit-report.md`](docs/p8-4-audit-report.md)
 と再確認 `docs/p8-*-audit-recheck.md`）。**実データは v6・263 枚・判断 3 件・削除 0 件**。
+**P8-5 のあとに、残っていた合格の線 9（参照切れの再リンク）を P8-6 として作った**（2026-10-18。
+[`docs/p8-6-relink.md`](docs/p8-6-relink.md)。**口は 2 つで、画面は無い**）。
 
 1. **次は P9（仕上げ）。** 未計測の性能を実測して [`docs/design.md`](docs/design.md) §12.1 の「目標」の行を
    裏づける（1024px サムネイル・一覧 API・グリッドの表示速度・**`--include-library` の所要時間**）。
    テストの締めと **exe 化の判断**も P9（同 §14）。
 2. **P8 で「この段では作らない」と決めたまま残っているもの**:
-   - **参照切れの再リンク**（`POST /api/locations/relink`）。**P8 では作らなかった**（P8-3 が「重複と削除の
-     画面」の段に置き換わった）。`missing_at`・`location_history`・`hash_file` の道は既にあるので、
-     口とサービスだけで足りる。**別の段で作る**（`docs/p8-6-relink.md`）。
+   - **参照切れの再リンクの画面**（**口は P8-6 で作った**＝`POST /api/locations/relink` は**人だけ**、
+     `GET /api/locations/missing` は**読むだけ**。**中身の `sha256` が一致したときだけ繋ぐ**。
+     **画面は無い**ので `GET /api/locations/missing` の `hint` に従って口で使う。
+     `docs/p8-6-relink.md`）。
    - **SSE（`GET /api/events`）は無い。** 画面は判断の応答（`reopened_group_ids` など）で組み直す。
    - **日次の全件書き出しと件数索引（`index.json`）は未着手。** 全件が出るのは手動の
      `POST /api/export/review.json` だけ（`GET` は返すだけで書かない）。

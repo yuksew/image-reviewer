@@ -715,23 +715,33 @@ const PRESS_LIBRARY_DELETES = `(async () => {
   return out;
 })()`;
 
-// 最近の削除で**押す**（取り消す・削除の確認の 2 段。POST は飲む）。
-// 凍結の応答は作り物を返すので、**サーバに凍結は作られない**
-const PRESS_PENDING = `(async () => {
+// 最近の削除で**押す**（取り消す・削除の確認・段ごとの実行。POST は飲む）。
+// 凍結と実行の応答は作り物を返すので、**サーバに凍結も削除も作られない**。
+//
+// **（ワーディングの修正 2）段ごとに「選ぶ → 消す内容を確かめる → 実行」を押し、
+// ボタンと結果の 1 行の語を拾う**（§6.1 の規則 4。前は段に関係なく「消す用意をする」だった）。
+// **実行すると確認の段は結果の 1 行に置き換わり、段を選び直せない**ので、段ごとに画面を開き直す
+// （呼ぶ側が `Page.navigate` してから、この式を段の数だけ評価する）。
+// `stage` に 0 を渡すと**取り消しだけ**を押す（`--ids` の無い画面）。
+const pressPendingAt = (stage) => `(async () => {
   const real = window.fetch;
   const json = (body, status = 200) => new Response(JSON.stringify(body),
     { status, headers: { 'Content-Type': 'application/json' } });
-  const preview = {
-    preview_id: 'gui-preview', stage: 1, count: 2, bytes: 2000000, last_copies: 0,
+  // **段はページが送った値から決める**（作り物が段をごまかさないように）
+  let stage = 1;
+  const previewOf = (s) => ({
+    preview_id: 'gui-preview', stage: s, count: 2, bytes: 2000000, last_copies: 0,
     expires_at: '2999-01-01T00:00:00Z', not_allowed: [], not_allowed_count: 0,
-    frees: { stage: 1, bytes: 0, at: null, note: 'カタログから外すだけです（容量は空きません）' },
+    frees: { stage: s, bytes: 0, at: null,
+             note: s === 3 ? '5 分の窓が過ぎた時点で空きます'
+                           : 'カタログから外すだけです（容量は空きません）' },
     items: [
       { asset_id: 'x1', path: 'd:\\\\lib\\\\x1.png', display_path: 'D:\\\\lib\\\\X1.png',
         size: 1000000, mtime_ns: 1 },
       { asset_id: 'x2', path: 'd:\\\\lib\\\\x2.png', display_path: 'D:\\\\lib\\\\X2.png',
         size: 1000000, mtime_ns: 2 },
     ],
-  };
+  });
   window.__posts = [];
   window.confirm = () => true;              // 「いま消す」の確認は自動で yes
   window.fetch = (url, opt = {}) => {
@@ -739,33 +749,52 @@ const PRESS_PENDING = `(async () => {
     if (method !== 'POST') return real(url, opt);
     const u = String(url);
     window.__posts.push({ url: u, body: opt.body || null });
-    if (u.includes('bulk-delete/preview')) return Promise.resolve(json(preview));
+    if (u.includes('bulk-delete/preview')) {
+      try { stage = Number(JSON.parse(opt.body || '{}').stage) || 1; } catch (error) { stage = 1; }
+      return Promise.resolve(json(previewOf(stage)));
+    }
     if (u.includes('/bulk-delete')) {
-      return Promise.resolve(json({ preview_id: 'gui-preview', stage: 1, deleted: [], skipped: [],
+      return Promise.resolve(json({ preview_id: 'gui-preview', stage, deleted: [], skipped: [],
                                     count: 2, bytes: 2000000, requested: 2, replayed: false }));
     }
     return Promise.resolve(json({ restored: true, deletion_id: 'gui' }));
   };
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-  const out = { pressedUndo: false, pressedPreview: false, pressedExec: false, error: null };
+  const out = { stage: ${stage}, offered: false, pressedUndo: false, pressedPreview: false,
+                pressedExec: false, error: null, items: 0, sumText: '', freesText: '',
+                execText: '', doneText: '' };
   try {
-    const undo = document.querySelector('#pd-running .pd-undo');
-    if (undo) { undo.click(); out.pressedUndo = true; await wait(400); }
-    const pv = document.querySelector('#pd-confirm .pd-preview');
-    if (pv) {
-      pv.click(); out.pressedPreview = true; await wait(600);
-      // **凍結した一覧は「消す用意」を押す前に測る**（押すと結果の 1 行に置き換わる）
-      out.items = document.querySelectorAll('#pd-confirm .pd-item').length;
-      out.itemsText = (document.querySelector('#pd-confirm .pd-items') || {}).textContent || '';
-      out.sumText = (document.querySelector('#pd-confirm .pd-sum') || {}).textContent || '';
-      out.freesText = (document.querySelector('#pd-confirm .pd-frees') || {}).textContent || '';
-      const exec = document.querySelector('#pd-confirm .pd-exec');
-      if (exec && !exec.disabled) { exec.click(); out.pressedExec = true; await wait(600); }
+    if (${stage} <= 1) {
+      const undo = document.querySelector('#pd-running .pd-undo');
+      if (undo) { undo.click(); out.pressedUndo = true; await wait(400); }
+    }
+    // **段 3 は許可の無い置き場では出ない**（Q8）。出ていなければ段は押さない。
+    // **早期に return しない**（投稿の一覧を付ける前に抜けると、押した POST を数え落とす）
+    const box = document.querySelector('#pd-confirm .pd-stage-box[value="${stage}"]');
+    if (box) {
+      out.offered = true;
+      box.checked = true;
+      box.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(300);
+      const pv = document.querySelector('#pd-confirm .pd-preview');
+      if (!pv) {
+        out.error = '「消す内容を確かめる」が無い';
+      } else {
+        pv.click(); out.pressedPreview = true; await wait(600);
+        // **凍結した一覧は「実行」を押す前に測る**（押すと結果の 1 行に置き換わる）
+        out.items = document.querySelectorAll('#pd-confirm .pd-item').length;
+        out.itemsText = (document.querySelector('#pd-confirm .pd-items') || {}).textContent || '';
+        out.sumText = (document.querySelector('#pd-confirm .pd-sum') || {}).textContent || '';
+        out.freesText = (document.querySelector('#pd-confirm .pd-frees') || {}).textContent || '';
+        out.execText = ((document.querySelector('#pd-confirm .pd-exec') || {}).textContent || '').trim();
+        const exec = document.querySelector('#pd-confirm .pd-exec');
+        if (exec && !exec.disabled) { exec.click(); out.pressedExec = true; await wait(600); }
+        out.doneText = ((document.querySelector('#pd-confirm .pd-done') || {}).textContent || '').trim();
+      }
     }
   } catch (error) { out.error = String(error); }
   window.fetch = real;
   out.posts = window.__posts;
-  out.doneText = (document.querySelector('#pd-confirm .pd-done') || {}).textContent || '';
   return out;
 })()`;
 
@@ -1272,8 +1301,29 @@ try {
         console.log(`NG   ${width}x${height} 最近の削除: 計測できません`);
         continue;
       }
-      const pressed = await evaluate(PRESS_PENDING);
-      const posts = (pressed && pressed.posts) || [];
+      // **（ワーディングの修正 2）段ごとに押す。** 実行すると確認の段は結果の 1 行に置き換わり、
+      // **段を選び直せない**ので、段ごとに画面を開き直してから押す（`--ids` が無ければ取り消しだけ）
+      const stageRuns = [];
+      if (IDS.length) {
+        for (const st of [1, 2, 3]) {
+          // **同じ URL へ `Page.navigate` しても再読込されない**（同じ文書のハッシュ移動になる）ので、
+          // **`about:blank` を挟んで画面を作り直す**。挟まないと 2 段目以降が「実行後の 1 行」のままになり、
+          // **段 2・3 のラジオが無い**（＝押せていないのに ok になる）
+          await send('Page.navigate', { url: 'about:blank' });
+          await sleep(200);
+          await send('Page.navigate', { url });
+          for (let i = 0; i < 60; i++) {
+            const one = await evaluate(MEASURE_PENDING);
+            if (one && one.confirmVisible) break;
+            await sleep(250);
+          }
+          stageRuns.push(await evaluate(pressPendingAt(st)));
+        }
+      } else {
+        stageRuns.push(await evaluate(pressPendingAt(0)));
+      }
+      const pressed = stageRuns[0];
+      const posts = stageRuns.flatMap((r) => (r && r.posts) || []);
       const undoPosts = posts.filter((p) => String(p.url).includes('/undo'));
       const pvPosts = posts.filter((p) => String(p.url).includes('/bulk-delete/preview'));
       const bulkPosts = posts.filter((p) => /\/bulk-delete$/.test(String(p.url)));
@@ -1321,17 +1371,61 @@ try {
       }
       if (IDS.length) {
         if (!got.confirmVisible) bad.push('削除の確認が見える');
-        if (!pressed || !pressed.pressedPreview) bad.push('「消す物を確かめる」を押せない');
-        else if (pvPosts.length !== 1) bad.push(`凍結の POST=${pvPosts.length}`);
-        if (pvPosts.length === 1 && pressed.items < 2) bad.push('凍結した一覧を出す');
-        if (pvPosts.length === 1 && !/2 枚/.test(pressed.sumText || '')) bad.push('凍結の件数を出す');
-        if (pvPosts.length === 1 && !/カタログから外すだけ/.test(String(pressed.freesText))) {
-          bad.push('いつ空くかを出す');
+        // **（ワーディングの修正 2）段ごとの語**（§6.1 の規則 4）。
+        // ボタンは**選んだ段の名前をそのまま動詞**にし、結果の 1 行はその過去形。
+        // **段 1・2 は窓が無い**ので「あと M:SS」を出さない（段 3 だけ出す。§4.6）
+        const WANT_STAGE = {
+          1: { button: '2 枚をカタログから外す', done: '2 枚をカタログから外しました。',
+               note: 'いつでも戻せます。' },
+          2: { button: '2 枚をゴミ箱へ移す', done: '2 枚をゴミ箱へ移しました。',
+               note: 'いつでも戻せます。' },
+          3: { button: '2 枚の実体を消す', done: '2 枚の実体を消しました。', note: null },
+        };
+        for (const run of stageRuns) {
+          const want = WANT_STAGE[run.stage];
+          if (!run.offered) continue;                 // 段 3 は許可の無い置き場では出ない（Q8）
+          if (run.stage === 3 && wantStage3 === false) bad.push('段 3 を出さない置き場で押せてしまう');
+          if (!run.pressedPreview) bad.push(`段 ${run.stage} の「消す内容を確かめる」を押せない`);
+          if (!String(run.execText).includes(want.button)) {
+            bad.push(`段 ${run.stage} の実行のボタン（${run.execText}）`);
+          }
+          if (run.items < 2) bad.push(`段 ${run.stage} の凍結した一覧を出す`);
+          if (!/2 枚/.test(run.sumText || '')) bad.push(`段 ${run.stage} の凍結の件数を出す`);
+          if (run.stage === 1 && !/カタログから外すだけ/.test(String(run.freesText))) {
+            bad.push('いつ空くかを出す（段 1）');
+          }
+          if (!run.pressedExec) bad.push(`段 ${run.stage} の実行を押せない`);
+          else if (!String(run.doneText).includes(want.done)) {
+            bad.push(`段 ${run.stage} の結果の 1 行（${run.doneText}）`);
+          }
+          if (want.note && !String(run.doneText).includes(want.note)) {
+            bad.push(`段 ${run.stage} の取り消しの案内（${run.doneText}）`);
+          }
+          if (run.stage === 3) {
+            if (!/あと \d+:\d\d は取り消せます。/.test(String(run.doneText))) {
+              bad.push(`段 3 は窓の残り時間を出す（${run.doneText}）`);
+            }
+          } else if (/あと \d+:\d\d/.test(String(run.doneText))) {
+            bad.push(`段 ${run.stage} は窓の残り時間を出さない（${run.doneText}）`);
+          }
+          if (/用意/.test(String(run.execText) + String(run.doneText))) {
+            bad.push(`段 ${run.stage} に「用意」を出さない（規則 4）`);
+          }
         }
-        if (pressed && pressed.pressedExec) {
-          if (bulkPosts.length !== 1) bad.push(`消す用意の POST=${bulkPosts.length}`);
-          else if (JSON.parse(String(bulkPosts[0].body || '{}')).confirm !== true) bad.push('confirm: true');
-          if (!/消す用意をしました/.test(pressed.doneText || '')) bad.push('用意ができた 1 行');
+        const execRuns = stageRuns.filter((r) => r.pressedExec);
+        if (execRuns.length !== bulkPosts.length) {
+          bad.push(`実行の POST=${bulkPosts.length}（押した段=${execRuns.length}）`);
+        } else if (bulkPosts.some((p) => JSON.parse(String(p.body || '{}')).confirm !== true)) {
+          bad.push('confirm: true');
+        }
+        const previewRuns = stageRuns.filter((r) => r.pressedPreview);
+        if (pvPosts.length !== previewRuns.length) {
+          bad.push(`凍結の POST=${pvPosts.length}（押した段=${previewRuns.length}）`);
+        }
+        // **画面に出ている段を全部押せたか**（作り直しに失敗して黙って飛ばすのを防ぐ）
+        const offeredStages = stageRuns.filter((r) => r.offered).map((r) => r.stage).join(',');
+        if (got.stageBoxes.length && offeredStages !== got.stageBoxes.join(',')) {
+          bad.push(`段ごとの押す検査（画面の段=[${got.stageBoxes.join(',')}] 押せた段=[${offeredStages}]）`);
         }
       }
       // **（P8-5）走査中の 1 行**（応答だけ差し替える。§4.6）
@@ -1360,7 +1454,11 @@ try {
         + `入口=${got.entryVisible} バー=${entry ? JSON.stringify(entry.text) : '—'} `
         + `(API の行数=${rowExpected} 窓=${windowExpected}) `
         + `確認=${got.confirmVisible}(${String(got.confirmText).trim().slice(0, 12)}) `
-        + `POST 取り消し=${undoPosts.length} 凍結=${pvPosts.length} 用意=${bulkPosts.length} `
+        + `POST 取り消し=${undoPosts.length} 確かめる=${pvPosts.length} 実行=${bulkPosts.length} `
+        + `段ごとのボタン=${stageRuns.filter((r) => r.stage > 0)
+          .map((r) => `${r.stage}:${r.offered ? r.execText : '—'}`).join(' / ') || '—'} `
+        + `段ごとの結果=${stageRuns.filter((r) => r.stage > 0)
+          .map((r) => `${r.stage}:${r.doneText || '—'}`).join(' / ') || '—'} `
         + `一覧=${(pressed || {}).items} script=${got.scripts} body=${JSON.stringify(got.bodyClass)} `
         + `走査中=${JSON.stringify(String((scan || {}).text).slice(0, 18))} `
         + `本物の走査=${(realScan || {}).caught} `

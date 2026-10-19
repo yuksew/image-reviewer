@@ -728,6 +728,18 @@ body.duplicating #duplicates, body.pending #pending {
 .dup-item img { width: 56px; height: 56px; object-fit: contain; background: var(--paper); flex: 0 0 auto; }
 .dup-no { font-size: 11px; color: var(--ink-muted); flex: 0 0 2em; }
 .dup-item .dup-on, .dup-item .dup-keep { flex: 0 0 auto; }
+/* **（利用者の要望）ラジオの「残す」は画面に見える語**にする（`title` だけにしない）。
+   縮こまらないよう `flex: 0 0 auto` のまま、英語の小さい字で添える */
+.dup-item .dup-keep {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; color: var(--ink-muted); cursor: pointer;
+}
+.dup-item.keep .dup-keep { color: var(--keep); font-weight: 700; }
+/* **（利用者の要望）群ごとの「残す 1 枚以外を削除へ回す」**は壊す操作への入口なので、
+   他の群のボタンと見分けが付くよう warn の色にする（押すのは人。確認は向こうの 3 段） */
+.dup-ghead .dup-keep-out { color: var(--warn); border-color: var(--warn); }
+.dup-ghead .dup-keep-out:hover:not(:disabled) { color: var(--warn); border-color: var(--warn); }
+.dup-held { font-size: 11px; color: var(--warn); }
 .dup-meta { font-size: 11px; color: var(--ink-muted); flex: 0 0 auto; }
 .dup-path {
   font-size: 11px; color: var(--ink-muted); flex: 1 1 12em; min-width: 0;

@@ -8,6 +8,9 @@
 // - **（監査の注意）開いた直後は 1 枚も選ばない。** 全部を選ぶのは人が押したときだけ
 //   （この画面の「削除へ回す」は壊す操作への入口なので、既定で選ばれた状態にしない）
 // - **ここでは消さない**。選んだ枚を `#/pending-deletes` へ**渡すだけ**（段の選択と確認はあちら）
+// - **（利用者の要望。P8-3 の追い足し）群ごとに「残す 1 枚以外を削除へ回す」**を置く
+//   （1 枚しかない群では押せない）。**「残す」に付けた 1 枚は、チェックが付いていても渡さない**
+//   （渡す直前に除く＝**二重の守り**。誤って残す物を消さない。`frontend-design.md` §4.6・§6）
 // - 除外（別物として確定）は**人だけ**の口（`403 human_only` が返る）
 // - `esc()` を必ず通す
 
@@ -116,6 +119,42 @@ export function allPicked() {
   return all.length > 0 && pickedIds().length === all.length;
 }
 
+/** その群の**残す 1 枚以外**の枚（群ごとの「残す 1 枚以外を削除へ回す」が渡す物）。
+ *
+ * 残す 1 枚（`view.keep`）が決まっていない・その群に無いときは**空**を返す
+ * （**何も残さずに全部を渡さない**）。1 枚だけの群も空になる（押せない。§4.6）。
+ */
+export function keepOutIds(i) {
+  const items = state.groups[i]?.items || [];
+  const keep = viewOf(i).keep;
+  if (!keep || !items.some((item) => item.id === keep)) return [];
+  return items.map((item) => item.id).filter((id) => id !== keep);
+}
+
+/** 群ごとのボタンが押せないときの理由（**人が次の手を選べるように `title` に出す**）。 */
+export function keepOutTitle(i) {
+  const items = state.groups[i]?.items || [];
+  const keep = viewOf(i).keep;
+  if (!keep || !items.some((item) => item.id === keep)) {
+    return '残す 1 枚が決まっていません。先に 1 枚を「残す」にしてください。';
+  }
+  if (items.length < 2) return 'この群は 1 枚だけです。削除へ回す枚がありません。';
+  return 'この群の「残す」以外を削除の確認へ回します。ここでは消しません。';
+}
+
+/** **残す 1 枚を落とす**（**二重の守り**。チェックの経路からも「残す」を渡さない）。
+ *
+ * 入口ごとに気をつけるのではなく、**渡す直前の 1 か所**で除く（§4.6）。
+ */
+export function withoutKept(ids) {
+  const kept = new Set();
+  state.groups.forEach((_group, i) => {
+    const keep = viewOf(i).keep;
+    if (keep) kept.add(keep);
+  });
+  return (ids || []).filter((id) => !kept.has(id));
+}
+
 // ---- 描く（文字列）----
 
 export function headHtml() {
@@ -174,6 +213,8 @@ export function groupHtml(group, i) {
   const view = viewOf(i);
   const items = group.items || [];
   const picked = view.on.size;
+  // **（利用者の要望）その群の「残す」以外**（群ごとのボタンが渡す物）。空なら押せない
+  const out = keepOutIds(i);
   const rows = items.map((item, position) => {
     const on = view.on.has(item.id);
     const keep = view.keep === item.id;
@@ -185,9 +226,12 @@ export function groupHtml(group, i) {
       + `<label class="dup-on" title="まとまりに入れる">`
       + `<input type="checkbox" class="dup-on-box" data-id="${esc(item.id)}" data-g="${i}"`
       + `${on ? ' checked' : ''}></label>`
-      + `<label class="dup-keep" title="残す 1 枚にする">`
+      // **（利用者の要望）「残す」を画面に見える語で出す**（`title` だけにしない。§6 の文言表）。
+      // 読み上げでも**どの 1 枚か**が分かるように `aria-label` を添える（見える語「残す」はそのまま）
+      + '<label class="dup-keep" title="この 1 枚を残す">'
       + `<input type="radio" name="dup-keep-${i}" class="dup-keep-box" data-id="${esc(item.id)}"`
-      + ` data-g="${i}"${keep ? ' checked' : ''}></label>`
+      + ` data-g="${i}" aria-label="${position + 1} 番を残す"${keep ? ' checked' : ''}>`
+      + '<span class="dup-keep-word">残す</span></label>'
       + `<span class="dup-no num">${position + 1}</span>`
       + `<img loading="lazy" decoding="async" src="/api/assets/${esc(item.id)}/thumb?size=256" alt="">`
       + `<span class="dup-meta num">${esc(item.width)} × ${esc(item.height)}`
@@ -205,6 +249,8 @@ export function groupHtml(group, i) {
       <span class="spacer"></span>
       <button class="dup-make" data-g="${i}"${picked < 2 ? ' disabled' : ''}>まとまりにする</button>
       <button class="dup-exclude" data-g="${i}"${picked !== 2 ? ' disabled' : ''}>別物として確定</button>
+      <button class="dup-keep-out" data-g="${i}"${out.length ? '' : ' disabled'}`
+      + ` title="${esc(keepOutTitle(i))}">残す 1 枚以外を削除へ回す</button>
     </div>
     <div class="dup-items">${rows}</div>
   </div>`;
@@ -240,14 +286,19 @@ export function listHtml() {
 
 export function barHtml() {
   const picked = pickedIds();
+  // **（利用者の要望）「残す」に付けた 1 枚はチェックが付いていても渡さない**ので、
+  // ボタンは**渡す枚**で数える（「何が起きるか」を言う。§6.1 の規則 4）
+  const send = withoutKept(picked);
+  const held = picked.length - send.length;
   const all = allPicked();
   return `<span class="dup-picked">選択 ${picked.length} 枚</span>`
+    + (held ? '<span class="dup-held">残す 1 枚は渡しません。</span>' : '')
     + '<span class="spacer"></span>'
     // **（監査の注意）既定では 1 枚も選ばない。** 全部を選ぶのは**人が押したときだけ**
     // （「全部選ぶ」は残す。危ないのは「既定で選ばれている」こと）
     + `<button class="dup-all">${all ? '全部外す' : '全部選ぶ'}</button>`
-    + `<button class="dup-delete"${picked.length ? '' : ' disabled'}>`
-    + `選んだ ${picked.length} 枚を削除へ回す</button>`
+    + `<button class="dup-delete"${send.length ? '' : ' disabled'}>`
+    + `選んだ ${send.length} 枚を削除へ回す</button>`
     + `<button class="dup-show-ex">別物として確定した組</button>`;
 }
 
@@ -403,10 +454,16 @@ async function cancelJob(id) {
   await pollJob();
 }
 
-function toDelete() {
-  const ids = pickedIds();
-  if (!ids.length) return;
-  toDeleteHash(ids);
+/** 削除へ回す（**渡す直前に「残す 1 枚」を除く**。段の選択と確認は `#/pending-deletes`）。
+ *
+ * **二重の守り**: 群ごとのボタンは `keep` を外して組んであるが、**チェックの経路
+ * （下部バー）からも混ざらない**ように、**渡す直前のここで 1 回**除く（§4.6）。
+ * 戻り値は**実際に渡した枚**（検査しやすい形にする）。
+ */
+export function toDelete(ids) {
+  const send = withoutKept(ids);
+  if (send.length) toDeleteHash(send);
+  return send;
 }
 
 /** 全部を選ぶ／外す（人が押したときだけ。**既定では選ばない**）。 */
@@ -431,6 +488,9 @@ export async function onClick(event) {
   if (makeBtn) { await makeGroup(Number(makeBtn.dataset.g)); return; }
   const exBtn = hit('.dup-exclude');
   if (exBtn) { await excludePair(Number(exBtn.dataset.g)); return; }
+  // **（利用者の要望）群ごとの「残す 1 枚以外を削除へ回す」**（その群の `keep` 以外の全部）
+  const outBtn = hit('.dup-keep-out');
+  if (outBtn) { toDelete(keepOutIds(Number(outBtn.dataset.g))); return; }
   const unexBtn = hit('.dup-unexclude');
   if (unexBtn) { await removeExclusion(unexBtn.dataset.a, unexBtn.dataset.b); return; }
   const showBtn = hit('.dup-show-ex');
@@ -441,7 +501,7 @@ export async function onClick(event) {
     return;
   }
   if (hit('.dup-all')) { toggleAll(); return; }
-  if (hit('.dup-delete')) toDelete();
+  if (hit('.dup-delete')) toDelete(pickedIds());
 }
 
 export function onChange(event) {

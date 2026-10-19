@@ -1237,6 +1237,12 @@ check(!/263 枚で 2\.6 秒/.test(dupHtml) && dupHtml.includes('絵を読んで�
   `秒数と枚数を埋め込まない（監査 G-4）: ${(dupHtml.match(/絵を読んで[^<]*/) || [])[0]}`);
 check(dupHtml.includes('&lt;script&gt;alert(1)&lt;/script&gt;') && !dupHtml.includes('<script>alert'),
   'パスの `<script>` を生のまま出さない');
+// **（利用者の要望）ラジオに「残す」を画面に見える語で出す**（`title` だけにしない。§6 の文言表）。
+// **タグの中の `title` ではなく、ラベルの中の要素**であることを見る（見えないと意味が無い）
+check(/<label class="dup-keep" title="[^"]*"><input type="radio"[^>]*><span class="dup-keep-word">残す<\/span><\/label>/.test(dupHtml),
+  'ラジオのラベルに「残す」を出す（title だけにしない）');
+check((dupHtml.match(/<span class="dup-keep-word">残す<\/span>/g) || []).length === 3,
+  `「残す」を行の数（3 枚）だけ出す: ${(dupHtml.match(/dup-keep-word/g) || []).length} 個`);
 // **（P8-3 の取り落とし調査）**「別物として確定」で隠れている組の数を出す。出さないと
 // **群が 1 つ足りないのが帯の取りこぼしに見える**（実データで実際にそう見えた）
 check(dupHtml.includes('別物として確定した 1 組は隠しています。'),
@@ -1300,11 +1306,18 @@ check(String(el('dup-headline').innerHTML || '').includes('#/group/grp-1'),
   '作ったまとまりへ行ける（まとまりレビュー）');
 
 // 5. **押す検査**: 「削除へ回す」→ 最近の削除へ**渡すだけ**（ここでは消さない）
+// **（利用者の要望）「残す」に付けた 1 枚（a2）は、チェックが付いていても渡さない**（二重の守り）。
+// 下部バーの枚数も**渡す枚**で数える（「これから何が起きるか」を言う。§6.1 の規則 4）
+check(String(el('dup-bar').innerHTML || '').includes('選んだ 2 枚を削除へ回す')
+  && String(el('dup-bar').innerHTML || '').includes('残す 1 枚は渡しません。'),
+  `チェック 3 枚でも「残す」を外した 2 枚で数える: `
+  + `${(String(el('dup-bar').innerHTML || '').match(/選んだ[^<]*/) || [])[0]}`);
 writes.length = 0;
 el('dup-bar').dispatch('click', { target: hitOf('.dup-delete', {}) });
 check(writes.length === 0, `重複の画面では消さない（POST ${writes.length} 回）`);
-check(location.hash === '#/pending-deletes?ids=a1,a2,a3',
-  `選んだ枚を削除の確認へ渡す: ${location.hash}`);
+check(location.hash === '#/pending-deletes?ids=a1,a3',
+  `選んだ枚を削除の確認へ渡す（「残す」の a2 は渡さない）: ${location.hash}`);
+check(!location.hash.includes('a2'), '「残す 1 枚」を行き先に入れない（二重の守り）');
 
 // 5b. **（監査 C-1）削除の入口が 3 つとも同じ行き先を使う**（組み立ては `pending.js` の 1 か所）。
 //     押さないテストは穴を隠すので、**下部バーの入口とまとまりの入口も押す**
@@ -1323,6 +1336,44 @@ barDel.dispatch('click');
 check(location.hash === '#/pending-deletes?ids=a1,a2',
   `下部バーの入口が削除の確認へ渡す（監査 C-1）: ${location.hash}`);
 location.hash = '';
+
+// 5c. **押す検査（利用者の要望）**: 群ごとの「残す 1 枚以外を削除へ回す」→
+//     **その群の「残す」以外の全部**を `#/pending-deletes?ids=` へ渡す（**`keep` は入れない**）。
+//     まず**ラジオで残す 1 枚を変えて**から押す（おすすめの a2 ではなく a1 を残す）
+await dupUi.showDuplicates('?max=6');                 // 既定に戻す（keep はおすすめの a2）
+check(dupUi.keepOutIds(0).join(',') === 'a1,a3',
+  `既定ではおすすめ以外を組む: ${dupUi.keepOutIds(0)}`);
+check(buttonIn('dup-list', 'dup-keep-out').disabled === false, '2 枚以上ある群では押せる');
+el('dup-list').dispatch('change',
+  { target: hitOf('.dup-keep-box', { id: 'a1', g: '0' }, { checked: true }) });
+check(dupUi.keepOutIds(0).join(',') === 'a2,a3',
+  `ラジオで変えた「残す」以外を組む（人が選び直せる）: ${dupUi.keepOutIds(0)}`);
+writes.length = 0;
+location.hash = '';
+el('dup-list').dispatch('click', { target: hitOf('.dup-keep-out', { g: '0' }) });
+check(writes.length === 0, `群ごとのボタンでも消さない（POST ${writes.length} 回）`);
+check(location.hash === '#/pending-deletes?ids=a2,a3',
+  `群ごとのボタンは「残す」以外を削除の確認へ渡す: ${location.hash}`);
+check(!location.hash.includes('a1'), 'ラジオで選んだ「残す 1 枚」を渡さない');
+
+// 5d. **（利用者の要望）1 枚しかない群では押せない**（「残す」以外が 0 枚）。
+//     理由は `title` に出す（人が次の手を選べるように）。押しても道は変わらない
+DUP_BODY = { ...DUP_NEAR, total_groups: 1, total_images: 1, excluded_pairs: 0,
+             groups: [{ suggested_id: 'b1', reason: '1 枚だけ', max_distance_within: 0, count: 1,
+                        items: [DUP_ITEM('b1', {})] }] };
+await dupUi.showDuplicates('?max=6');
+const oneBtn = buttonIn('dup-list', 'dup-keep-out');
+check(oneBtn.seen && oneBtn.disabled,
+  `1 枚の群では「残す 1 枚以外を削除へ回す」を押せない（見えた=${oneBtn.seen}）`);
+check(String(el('dup-list').innerHTML || '').includes('この群は 1 枚だけです。削除へ回す枚がありません。'),
+  `押せない理由を title に出す: ${(String(el('dup-list').innerHTML || '')
+    .match(/title="この群[^"]*"/) || [])[0]}`);
+check(dupUi.keepOutIds(0).length === 0, '1 枚の群では渡す枚が 0');
+location.hash = '';
+el('dup-list').dispatch('click', { target: hitOf('.dup-keep-out', { g: '0' }) });
+check(location.hash === '', `押せない群では道が変わらない: ${JSON.stringify(location.hash)}`);
+DUP_BODY = DUP_NEAR;
+await dupUi.showDuplicates('?max=6');                 // 以降の検査のために戻す
 
 // 6. **押す検査**: 「計算する」→ 202 の口が 1 回だけ・進行が出る
 writes.length = 0;
@@ -1465,13 +1516,15 @@ const trPosts = writes.filter((w) => w.url === '/api/trash/restore');
 check(trPosts.length === 1 && JSON.parse(String(trPosts[0]?.body || '{}')).deletion_id === 't1',
   `ゴミ箱の「戻す」は 1 回だけ叩く: ${trPosts.length} 回`);
 
-// 13. **押す検査**: 削除の確認（`?ids=`）→ 段の選択 → 凍結 → 用意（**画面の中の段**）
+// 13. **押す検査**: 削除の確認（`?ids=`）→ 段の選択 → 凍結 → 実行（**画面の中の段**）
+// **ボタンと結果の 1 行は、選んだ段の名前をそのまま動詞にする**（`frontend-design.md` §6.1 の規則 4）。
+// 段ごとに語が変わることを見る（前は段に関係なく「消す用意をする」だった）
 await pdUi.showPending('?ids=a1,a2');
 let confirmHtml = String(el('pd-confirm').innerHTML || '');
-check(confirmHtml.includes('選んだ 2 枚') && confirmHtml.includes('消す物を確かめる'),
-  '渡された枚と「消す物を確かめる」を出す');
+check(confirmHtml.includes('選んだ 2 枚') && confirmHtml.includes('消す内容を確かめる'),
+  '渡された枚と「消す内容を確かめる」を出す');
 check(confirmHtml.includes('段 1 カタログから外す') && confirmHtml.includes('段 2 ゴミ箱へ移す')
-  && confirmHtml.includes('段 3 実体を消す用意をする'), '段を 3 つ出す');
+  && confirmHtml.includes('段 3 実体を消す') && !confirmHtml.includes('実体を消す用意'), '段を 3 つ出す');
 check(pdUi.stageTaken() === 1, '既定は段 1（いきなり消さない）');
 check(pdUi.askStage(3) === true && pdUi.stageTaken() === 3, '段を選べる');
 pdUi.askStage(1);
@@ -1480,7 +1533,7 @@ el('pd-confirm').dispatch('click', { target: hitOf('.pd-preview', {}) });
 await tick();
 await tick();
 const pvPosts = writes.filter((w) => w.url === '/api/locations/bulk-delete/preview');
-check(pvPosts.length === 1, `「消す物を確かめる」は 1 回だけ叩く: ${pvPosts.length} 回`);
+check(pvPosts.length === 1, `「消す内容を確かめる」は 1 回だけ叩く: ${pvPosts.length} 回`);
 const pvBody = JSON.parse(String(pvPosts[0]?.body || '{}'));
 check(pvBody.stage === 1 && pvBody.scope.asset_ids.join(',') === 'a1,a2',
   `段と枚を送る: ${JSON.stringify(pvBody)}`);
@@ -1489,41 +1542,65 @@ check(confirmHtml.includes('2 枚、2.8 MB'), `凍結した件数と合計バイ
 check(confirmHtml.includes('D:\\lib\\A1.png'), '対象の一覧そのもの（パスとサイズ）を出す');
 check(confirmHtml.includes('カタログから外すだけです') && confirmHtml.includes('容量は空きません'),
   'いつ空くかを出す（段 1 は空かない。§8.1 の 16）');
+// **段 1 の実行のボタンは「2 枚をカタログから外す」**（前は「2 枚を消す用意をする」）
+check(confirmHtml.includes('>2 枚をカタログから外す</button>'),
+  `段 1 の実行のボタン（${(confirmHtml.match(/pd-exec[^>]*>[^<]*/) || [])[0]}）`);
 writes.length = 0;
 el('pd-confirm').dispatch('click', { target: hitOf('.pd-exec', {}) });
 await tick();
 await tick();
 const blPosts = writes.filter((w) => w.url === '/api/locations/bulk-delete');
-check(blPosts.length === 1, `「消す用意をする」は 1 回だけ叩く: ${blPosts.length} 回`);
+check(blPosts.length === 1, `段 1 の「2 枚をカタログから外す」は 1 回だけ叩く: ${blPosts.length} 回`);
 const blBody = JSON.parse(String(blPosts[0]?.body || '{}'));
 check(blBody.confirm === true && blBody.preview_id === 'pv1', `confirm と preview_id を送る: ${JSON.stringify(blBody)}`);
 check(blBody.client_token && blBody.client_token.length > 8, '二重に消さない鍵を付ける（§0.13）');
-check(String(el('pd-confirm').innerHTML || '').includes('2 枚を消す用意をしました。'),
-  '消す用意ができたことを知らせる');
+check(String(el('pd-confirm').innerHTML || '')
+  .includes('2 枚をカタログから外しました。いつでも戻せます。'),
+  '段 1 の結果は「カタログから外しました」＋「いつでも戻せます」（窓が無い）');
+check(!/あと \d+:\d\d/.test(String(el('pd-confirm').innerHTML || '')),
+  '段 1 は窓の残り時間を出さない（窓が無いので嘘になる）');
+// **利用者に見える文に「用意」を出さない**（規則 4。前はボタン・結果・凡例にあった）
+check(!/用意/.test(String(el('pd-confirm').innerHTML || '') + String(el('pd-legend').innerHTML || '')),
+  `「用意」を利用者に見せない（規則 4）: ${(String(el('pd-legend').innerHTML || '').match(/段 3[^<]*/) || [])[0]}`);
 // **（P9 の監査 G-5）段 1・3 の直後に「いま取る」の道を 1 行で案内する**（自動では取らない）
 check(String(el('pd-confirm').innerHTML || '').includes('いま取る'),
   `段 1 の直後に控えの道を案内する（G-5）: ${(String(el('pd-confirm').innerHTML || '').match(/控えは[^<]*/) || [])[0]}`);
 check(String(el('pd-confirm').innerHTML || '').includes('#/settings'),
   '案内は設定（「いま取る」のある画面）へ行く');
 BULK_STAGE = 2;                                    // 段 2（ゴミ箱）では案内しない
+PREVIEW_NOW = { ...PREVIEW_BODY, stage: 2,
+                frees: { stage: 2, bytes: 0, at: null, note: 'ゴミ箱へ移すだけです（容量は空きません）' } };
 await pdUi.showPending('?ids=a1,a2');
 pdUi.askStage(2);
 await pdUi.preview();
+// **段 2 の実行のボタンは「2 枚をゴミ箱へ移す」**
+let stageHtml = String(el('pd-confirm').innerHTML || '');
+check(stageHtml.includes('>2 枚をゴミ箱へ移す</button>'),
+  `段 2 の実行のボタン（${(stageHtml.match(/pd-exec[^>]*>[^<]*/) || [])[0]}）`);
 el('pd-confirm').dispatch('click', { target: hitOf('.pd-exec', {}) });
 await tick();
 await tick();
 check(!String(el('pd-confirm').innerHTML || '').includes('いま取る'),
   '段 2（ゴミ箱へ移す）では控えの案内を出さない（戻せるので急がない）');
+stageHtml = String(el('pd-confirm').innerHTML || '');
+check(stageHtml.includes('2 枚をゴミ箱へ移しました。いつでも戻せます。'),
+  `段 2 の結果は「ゴミ箱へ移しました」＋「いつでも戻せます」: ${(stageHtml.match(/pd-done[^>]*>[^<]*/) || [])[0]}`);
+check(!/あと \d+:\d\d/.test(stageHtml), '段 2 も窓の残り時間を出さない');
 BULK_STAGE = 1;
+PREVIEW_NOW = PREVIEW_BODY;
 pdUi.askStage(1);
 
 // 14. 最後の 1 つは重い確認（段 3 のときだけ。§8.1 の 43）
+BULK_STAGE = 3;                                    // 段 3 の結果の文（§6.1 の規則 4）
 PREVIEW_NOW = { ...PREVIEW_BODY, stage: 3, last_copies: 1, not_allowed_count: 1,
                 frees: { stage: 3, bytes: 2_900_000, at: null, note: '5 分の窓が過ぎた時点で空きます' } };
 await pdUi.showPending('?ids=a1,a2');
 pdUi.askStage(3);
 await pdUi.preview();
 confirmHtml = String(el('pd-confirm').innerHTML || '');
+// **段 3 の実行のボタンは「2 枚の実体を消す」**
+check(confirmHtml.includes('>2 枚の実体を消す</button>'),
+  `段 3 の実行のボタン（${(confirmHtml.match(/pd-exec[^>]*>[^<]*/) || [])[0]}）`);
 check(confirmHtml.includes('最後の 1 つが 1 枚あります') && confirmHtml.includes('これも消す'),
   '最後の 1 つは重い確認を出す');
 // **（監査 G-4）段 3 の前置きは実際の置き場から組む**（固定のツール名を埋め込まない）。
@@ -1548,6 +1625,11 @@ await tick();
 const bl3 = writes.filter((w) => w.url === '/api/locations/bulk-delete');
 check(bl3.length === 1 && JSON.parse(String(bl3[0]?.body || '{}')).confirm_last_copy === true,
   `印を付けたら confirm_last_copy を送る: ${bl3[0]?.body}`);
+// **段 3 の結果は「実体を消しました」＋「あと M:SS は取り消せます」**（段 3 だけ窓がある。§4.6）
+stageHtml = String(el('pd-confirm').innerHTML || '');
+check(stageHtml.includes('2 枚の実体を消しました。') && /あと \d+:\d\d は取り消せます。/.test(stageHtml),
+  `段 3 の結果は「実体を消しました」＋「あと M:SS は取り消せます」: ${(stageHtml.match(/pd-done[^>]*>[^<]*/) || [])[0]}`);
+BULK_STAGE = 1;
 
 // 15. 凍結が失効したら 1 行出して押せなくする（§5）
 BULK_FAILS = { detail: '確認した一覧の有効期限が切れました', code: 'preview_expired' };

@@ -29,7 +29,37 @@ const BULK = '/api/locations/bulk-delete';
 
 // **（ワーディング監査 W-20）** 段 3 は「実体を消す」で通す（「完全に消す」と呼ばない。
 // `frontend-design.md` §6 の「削除の確認: 段」）
-export const STAGE_LABEL = { 1: 'カタログから外す', 2: 'ゴミ箱へ移す', 3: '実体を消す用意をする' };
+// **（ワーディングの修正 2）段の名前は 1 つ**にし、**実行のボタンと結果の 1 行は選んだ段の名前を
+// そのまま動詞にする**（`frontend-design.md` §6.1 の規則 4）。前は段 1 を選んでいても
+// 「N 枚を消す用意をする」と出て、**押す前に何が起きるか分からなかった**（`docs/wording-fix-2.md`）
+export const STAGE_LABEL = { 1: 'カタログから外す', 2: 'ゴミ箱へ移す', 3: '実体を消す' };
+
+/** **実行のボタン**の語（**選んだ段の名前をそのまま動詞にする**。§6.1 の規則 4）。
+ *
+ * 「用意する」のような曖昧な語を使わない（段 1 を選んでいても「消す用意」と出ていた）。
+ * 段が読めないときは段 1 の文にする（**いきなり消す側に倒さない**）。
+ */
+export function execLabel(count, stage) {
+  const n = Number(count) || 0;
+  const s = Number(stage);
+  if (s === 2) return `${n} 枚をゴミ箱へ移す`;
+  if (s === 3) return `${n} 枚の実体を消す`;
+  return `${n} 枚をカタログから外す`;
+}
+
+/** 押した後の 1 行（**同じ段の動詞の過去形**＋取り消しの案内。§6.1 の規則 4）。
+ *
+ * **段 1・2 は窓が無い**ので「あと M:SS」を出さない（「いつでも戻せます」。§4.6）。
+ * 前に「あと 4:58 は取り消せます」を段 1・2 にも出していた（窓が無いので嘘になる）。
+ */
+export function doneText(count, stage, remainSec) {
+  const n = Number(count) || 0;
+  const s = Number(stage);
+  if (s === 2) return `${n} 枚をゴミ箱へ移しました。いつでも戻せます。`;
+  if (s === 3) return `${n} 枚の実体を消しました。あと ${fmtRemain(remainSec)} は取り消せます。`;
+  return `${n} 枚をカタログから外しました。いつでも戻せます。`;
+}
+
 export const STATE_LABEL = {
   hidden: 'カタログから外しました', trashed: 'ゴミ箱にあります', pending: '取り消せます',
   stuck: '戻せませんでした', purged: '完全に消しました', restored: '戻しました',
@@ -356,8 +386,8 @@ export function confirmHtml() {
   if (state.exec) {
     const skipped = (state.exec.skipped || []).length;
     return `<div class="pd-confirm"><div class="pd-sub">削除の確認</div>
-      <div class="pd-done">${state.exec.count} 枚を消す用意をしました。`
-      + `あと ${esc(fmtRemain(state.exec.window_sec ?? state.windowSec))} は取り消せます。</div>`
+      <div class="pd-done">${esc(doneText(state.exec.count, state.exec.stage ?? state.stage,
+        state.exec.window_sec ?? state.windowSec))}</div>`
       + (skipped ? `<div class="stat">${skipped} 件は中身が変わっていたので消しませんでした。</div>` : '')
       + backupHintHtml(state.exec.stage ?? state.stage)
       + '<div class="pd-confirm-actions">'
@@ -386,14 +416,14 @@ export function confirmHtml() {
           + `<label class="pd-last"><input type="checkbox" class="pd-last-box"`
           + `${state.confirmLast ? ' checked' : ''}> これも消す</label></div>` : ''}
       <div class="pd-confirm-actions">
-        <button class="pd-exec"${preview.expired ? ' disabled' : ''}>${preview.count} 枚を消す用意をする</button>
+        <button class="pd-exec"${preview.expired ? ' disabled' : ''}>${esc(execLabel(preview.count, preview.stage ?? state.stage))}</button>
         <button class="pd-forget">やめる</button>
         ${preview.expired ? '<span class="stat">確認した一覧の有効期限が切れました。もう一度確認してください。</span>' : ''}
       </div>`
     : `<div class="pd-picked">${thumbs}</div>
       <div class="pd-sum">選んだ ${state.ids.length} 枚</div>
       <div class="pd-confirm-actions">
-        <button class="pd-preview">消す物を確かめる</button>
+        <button class="pd-preview">消す内容を確かめる</button>
         <button class="pd-forget">やめる</button>
       </div>`;
   return `<div class="pd-confirm"><div class="pd-sub">削除の確認</div>
@@ -410,8 +440,10 @@ export function legendHtml() {
   // **凡例は段に印を付けない**（`stageStrip(null)`。行と見分けが付かなくなる）
   return `<div class="pd-legend">${stageStrip(null)}<span class="stat">`
     // **（ワーディング監査 W-12）** 中黒で文を繋がない（規則 1）。段 3 の呼び方も 1 つに（W-20）
+    // **（ワーディングの修正 2）** 「実体を消す用意です」→「実体を消します」（§6.1 の規則 4。
+    // **利用者に見える文から「用意」をなくす**）
     + '段 1 はカタログから外すだけで、容量は空きません。段 2 はゴミ箱へ移します。'
-    + '段 3 は実体を消す用意です。段 1・2 はいつでも戻せ、段 3 は 5 分の間だけ取り消せます。</span></div>';
+    + '段 3 は実体を消します。段 1・2 はいつでも戻せ、段 3 は 5 分の間だけ取り消せます。</span></div>';
 }
 
 // ---- 読み込み（`GET` は書かない）----

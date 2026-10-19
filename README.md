@@ -191,6 +191,7 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/p8-3-band-miss.md`](docs/p8-3-band-miss.md) | **帯の取りこぼしの調査**（8bit × 8 本 → **4bit × 16 本**に作り直した根拠。距離 0〜64 の総当たりとの一致） | — |
 | [`docs/p9-implementation.md`](docs/p9-implementation.md)、[`docs/p9-audit-report.md`](docs/p9-audit-report.md)、[`docs/p9-audit-triage.md`](docs/p9-audit-triage.md) | **P9 の記録**（§12.1 の実測・exe 化の判断）と、その**監査報告**（C-1〜C-3・D 10 件・G 6 件）と**仕分け**（指摘ごとに 1 行。C-1 は新しい読み取り専用の接続で `quick_check`） | — |
 | [`docs/wording-audit-report.md`](docs/wording-audit-report.md)、[`docs/wording-fix.md`](docs/wording-fix.md) | **ワーディング監査**（利用者に見える日本語 約 1,200 行を 1 行ずつ見た報告。判定は「自然」で、原因は中国語ではなく**癖 3 つ**）と、その**修正の記録**（規則 3 つ・直した 141 件・食い違い 24 行の裁定・用語の対応表・残した物） | — |
+| [`docs/duplicates-keep-button.md`](docs/duplicates-keep-button.md) | **重複の整理の「残す 1 枚以外を削除へ回す」**（利用者の要望の追い足し。ラジオに「残す」の語・群ごとのボタン・**渡す直前に `keep` を除く**二重の守り・本物の Chrome 25 検査） | — |
 | [`schemas/backup-manifest.schema.json`](schemas/backup-manifest.schema.json) | **日次スナップショットの `manifest.json` の契約**（`restore` が復元の前に読む。`abi: 0.1`） | — |
 
 - P5 の点検・監査の**生ログ（`docs/p5-review-run.jsonl` / `p5-audit-run.jsonl` / `p5-2-audit-run.jsonl` /

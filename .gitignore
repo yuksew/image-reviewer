@@ -32,6 +32,14 @@ src/image_reviwer/_gui/
 .tmp-p6-1a/
 .tmp-p7-0/
 
+# トレイの使い捨て（**自己検査が作る複製とログ**。監査 D-9 で `.tmp-tray/` の中身
+# （実データの署名など）がコミットに入っていたので足した）。`.tray/` は実行時のログの置き場
+# （**中身は `*.log` だが、置き場ごと入れない**）
+.tmp-tray/
+.tmp-tray-audit/
+.tmp-tray-fix/
+.tray/
+
 # pytest が `%TEMP%` に作れないときに残す物（この環境の制限。**中身は使い捨て**）
 tmp*/
 

@@ -123,13 +123,40 @@ def test_the_serve_path_points_the_env_at_the_default(tmp_path: Path, monkeypatc
 
 
 def test_pytest_always_has_a_data_dir_that_is_not_the_real_one():
-    """**テストは収集の前に向けられている**（`conftest.pytest_configure` の `setdefault`）。
+    """**テストは収集の前に向けられている**（`conftest.pytest_configure` が**上書き**する）。
 
-    壊すと落ちる: `conftest` の `setdefault` を外すと、`create_app()` を使うテストが
-    例外になる（か、危なければ実データを開く）。**ここでその 1 行が効いていることを見る。**
+    壊すと落ちる: `conftest` の 1 行を外すと、`create_app()` を使うテストが例外になる
+    （か、危なければ実データを開く）。**ここでその 1 行が効いていることを見る。**
+
+    **（トレイの監査 C-6）`setdefault` に戻すと、親が「安全網」や実データを指しているときに
+    テストがそこへ書く**（実測: 安全網のフォルダに `db.sqlite3` ができた）。
     """
     got = os.environ.get(DATA_ENV)
     assert got, "pytest の最中に IMAGE_REVIEWER_DATA が無い"
     assert Path(got).resolve() != DEFAULT_DATA_DIR.resolve(), "テストが実データを指している"
     assert (Path(__file__).resolve().parent / ".tmp") in Path(got).resolve().parents, got
     assert DEFAULT_DATA_DIR == REPO / ".data"
+
+
+def test_pytest_does_not_use_a_data_dir_it_inherited(tmp_path: Path):
+    """**親の環境（実データや別のフォルダ）を引き継がない**（監査 C-6）。
+
+    壊すと落ちる: `pytest_configure` を `setdefault` に戻す——親が指したフォルダに
+    **テストが `db.sqlite3` を作る**（`create_app()` を使うテストがあるため）。
+
+    親のふりをしたフォルダを 1 つ作り、その環境で pytest を 1 件だけ回して、
+    **そこに何も作られない**ことを見る（**実データでは絶対に試さない**）。
+    """
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    env = {**os.environ}
+    env.pop("PYTHONPATH", None)
+    env[DATA_ENV] = str(decoy)
+    got = subprocess.run(
+        [sys.executable, "-X", "utf8", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", "no:tmpdir",
+         "tests/test_data_dir_guard.py::test_pytest_always_has_a_data_dir_that_is_not_the_real_one"],
+        cwd=str(REPO), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=300,
+    )
+    assert got.returncode == 0, got.stdout[-3000:] + got.stderr[-2000:]
+    assert not (decoy / "db.sqlite3").exists(), "親が指したフォルダへテストが書いた"

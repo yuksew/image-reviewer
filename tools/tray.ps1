@@ -24,15 +24,25 @@
        **アイコンのダブルクリックでも開く。**
     5. **終了では自分が起動したサーバだけを止める**（既に動いていたサーバは PID を知らないので
        触れない。ポート番号から相手を探して止める道は作らない）。
+    6. **（2026-10-19 の監査 A-1）子に渡す `IMAGE_REVIEWER_DATA` は、必ずこの道具が明示する。**
+       親から引き継いだ値に頼らず、**消して既定に任せる道も作らない**（`serve_data_dir()` が
+       既定の `.data` を開く道が残るため）。`-DefineOnly` で読み込んだとき（自己検査・駆動）は、
+       **空の `-DataDir` と実データの `.data` を断る**（1 プロセスも起動しない）。
+    7. **（監査 A-2）受け取るのは、自分の子の木の中に居るサーバだけ。** `/api/health` が
+       `app: "image-reviewer"` と答えただけでは受け取らない（**親子関係**で確かめる）。
+       確かめられないときは**止めない**（迷ったら止めない）。踏み台が落ちていたら**すぐ失敗**する。
 
     記録は `<リポジトリ>\.tray\tray.log` と `server.log` / `server.err.log`
-    （**`.data` には 1 バイトも書かない**）。
+    （既定のポート以外は `server-<ポート>.log`。**前の 1 世代を `.prev.log` に残す**。
+    **`.data` には 1 バイトも書かない**）。
 
 .PARAMETER Port
     サーバのポート（既定 8790）。
 
 .PARAMETER DataDir
-    子プロセスに渡す `IMAGE_REVIEWER_DATA`（試験で複製を指すため。既定は空＝実データ）。
+    子プロセスに渡す `IMAGE_REVIEWER_DATA`（試験で複製を指すため）。
+    **空は「トレイの本番の道」だけ**を意味し、そのときも `<リポジトリ>\.data` を**明示的に**渡す
+    （監査 A-1）。`-DefineOnly` で読み込んだときは**空を断る**。
 
 .PARAMETER NoBrowser
     起動時にブラウザを開かない（試験と、手で開きたいとき用）。
@@ -77,6 +87,12 @@ $script:ServerLog = Join-Path $script:LogDir 'server.log'
 $script:ServerErrLog = Join-Path $script:LogDir 'server.err.log'
 $script:Utf8 = New-Object System.Text.UTF8Encoding($false)
 $script:PollMs = 5000
+#: **（監査 A-1）** `-DefineOnly` で読み込まれたか（自己検査・駆動の写し）。
+#: このときは**サーバを起動しない**のが規律（空や実データの置き場は `Start-OwnServer` が断る）。
+$script:DefineOnly = [bool]$DefineOnly
+#: 既定のデータ置き場。`src/image_reviewer/app.py` の `DEFAULT_DATA_DIR` と同じ場所。
+#: **`cli serve` に「既定を開く」道があるので、こちらからは必ず明示して渡す**（監査 A-1 の④）。
+$script:DefaultDataDir = Join-Path $script:RepoRoot '.data'
 #: サーバが落ちている間の周期。**この環境は「誰も居ないポートへの接続」に約 2 秒かかる**
 #: （生の TcpClient で実測 2015〜2052 ms）。5 秒ごとに 2 秒固めるとメニューが重くなるので、
 #: 落ちている間だけ延ばす（上がっているときは 5 秒のまま。`apps/gui/badge.js` と同じ周期）
@@ -110,11 +126,46 @@ function Write-TrayLog {
     if ($script:EchoLog) { Write-Output $line }
 }
 
+function Get-ServerLogPaths {
+    <#
+        子のログの行き先（監査 D-6・D-8）。
+
+        - **起動のたびに作り直す**ので、前の 1 世代を `*.prev.log` に残す（落ちた理由が
+          次の起動で消えない）
+        - **ポートごとに分ける**（既定の 8790 は今までどおり `server.log` / `server.err.log`）。
+          別のポートの 2 つが同じファイルを取り合うとログが混ざる
+    #>
+    param([Parameter(Mandatory)][int]$Port)
+    $out = [string]$script:ServerLog
+    $err = [string]$script:ServerErrLog
+    if ($Port -ne 8790) {
+        # `server.log` → `server-8795.log` ／ `server.err.log` → `server-8795.err.log`
+        # （**ポートは `.err` の前**に入れる。`server.err-8795.log` にはしない）
+        $out = $out -replace '^(.*)\.log$', ('$1-{0}.log' -f $Port)
+        $err = $err -replace '^(.*)\.err\.log$', ('$1-{0}.err.log' -f $Port)
+    }
+    return @{ out = $out; err = $err }
+}
+
+function Move-TrayLogAside {
+    <# 前の起動のログを 1 世代だけ残す（監査 D-6）。掴まれていて動かせなければ作り直す。 #>
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $prev = $Path -replace '\.log$', '.prev.log'
+    try {
+        if (Test-Path -LiteralPath $prev) { Remove-Item -LiteralPath $prev -Force -ErrorAction SilentlyContinue }
+        Move-Item -LiteralPath $Path -Destination $prev -Force -ErrorAction Stop
+    } catch {
+        try { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue } catch { }
+    }
+}
+
 function Get-ServerLogTail {
     <# サーバが立ち上がらなかったときに、ログの末尾を 1 つの文字列で返す。 #>
-    param([int]$Lines = 10)
+    param([int]$Lines = 10, [int]$Port = 8790)
     $got = New-Object System.Collections.Generic.List[string]
-    foreach ($p in @($script:ServerErrLog, $script:ServerLog)) {
+    $logs = Get-ServerLogPaths -Port $Port
+    foreach ($p in @($logs.err, $logs.out, ($logs.err -replace '\.log$', '.prev.log'), ($logs.out -replace '\.log$', '.prev.log'))) {
         if (Test-Path -LiteralPath $p) {
             try {
                 $all = [System.IO.File]::ReadAllLines($p, [System.Text.Encoding]::UTF8)
@@ -127,6 +178,73 @@ function Get-ServerLogTail {
     }
     if ($got.Count -eq 0) { return '（ログが空です）' }
     return ($got -join [Environment]::NewLine)
+}
+
+# ---- データ置き場の規律（**監査 A-1**）----
+
+function Test-RealDataDir {
+    <# そのパスが**実データの `.data`** を指しているか（表記ゆれを畳んで比べる）。 #>
+    param([string]$Path)
+    if (-not $Path) { return $false }
+    try {
+        $a = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+        $b = [System.IO.Path]::GetFullPath($script:DefaultDataDir).TrimEnd('\')
+        return ($a -eq $b)
+    } catch {
+        return $false
+    }
+}
+
+function Get-EffectiveDataDir {
+    <#
+        **子に渡す `IMAGE_REVIEWER_DATA` を必ず明示して返す**（監査 A-1 の①）。
+
+        - 渡された `-DataDir`（自己検査・駆動の複製）… そのまま
+        - 空（利用者の本番の起動）… 既定の `<リポジトリ>\.data`。**`cli serve` の既定と同じ**
+          だが、**こちらから明示して渡す**（`Remove-Item Env:` で「既定に任せる」道を作らない）
+        - **`-DefineOnly`（検査・駆動の写し）で空** … **断る**（既定＝実データを開く道を残さない）
+    #>
+    param([string]$DataDir = '')
+    if ($DataDir) { return $DataDir }
+    if ($script:DefineOnly) {
+        throw ('データ置き場が指定されていません。`-DefineOnly` で読み込んだときは、' +
+               '既定の .data を開く道を通しません（実データを事故で開かないため）。-DataDir <複製> を渡してください。')
+    }
+    return $script:DefaultDataDir
+}
+
+# ---- プロセスの親子（**監査 A-2・C-3**）----
+
+function Get-ProcessParentId {
+    <# PID の親（`Win32_Process.ParentProcessId`）。取れなければ 0（**迷ったら 0**）。 #>
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) { return 0 }
+    try {
+        $row = Get-CimInstance -ClassName Win32_Process -Filter ('ProcessId = {0}' -f $ProcessId) -ErrorAction Stop
+        if ($null -ne $row) { return [int]$row.ParentProcessId }
+    } catch { }
+    return 0
+}
+
+function Test-DescendantOf {
+    <#
+        **PID が `-AncestorId` の子孫か**（親をたどる）。
+
+        `.venv\Scripts\python.exe` は踏み台で本体はその**子**（実測）、`uv run` はもう 1 段深い。
+        だから「親が一致する」ではなく**祖先をたどって一致する**を見る。
+        **取れないときは偽**（＝止めない側に倒す。監査 A-2「迷ったら止めない」）。
+    #>
+    param([int]$ProcessId, [int]$AncestorId, [int]$Depth = 6)
+    if ($ProcessId -le 0 -or $AncestorId -le 0) { return $false }
+    if ($ProcessId -eq $AncestorId) { return $false }
+    $cur = $ProcessId
+    for ($i = 0; $i -lt $Depth; $i++) {
+        $parent = Get-ProcessParentId -ProcessId $cur
+        if ($parent -le 0 -or $parent -eq $cur) { return $false }
+        if ($parent -eq $AncestorId) { return $true }
+        $cur = $parent
+    }
+    return $false
 }
 
 # ---- HTTP（読むだけ。`GET` は 1 バイトも書かない家風に合わせる）----
@@ -202,27 +320,50 @@ function Get-ServerState {
     param([Parameter(Mandatory)][int]$Port)
     $r = Invoke-Api -Port $Port -Path '/api/health' -TimeoutSec 3
     if ($r.status -gt 0 -and $r.ok -and $null -ne $r.body -and [string]$r.body.app -eq $script:AppName) {
-        return @{ state = 'ours'; pid = [int]$r.body.pid; health = $r.body; note = '' }
+        return @{ state = 'ours'; pid = [int]$r.body.pid; health = $r.body; note = ''; code = '' }
     }
     if ($r.status -eq 0 -and ($r.error -eq 'ConnectFailure' -or $r.error -eq 'NameResolutionFailure')) {
-        return @{ state = 'none'; pid = 0; health = $null; note = 'サーバが動いていません' }
+        return @{ state = 'none'; pid = 0; health = $null; note = 'サーバが動いていません'; code = '' }
     }
     if ($r.status -eq 0) {
-        return @{ state = 'other'; pid = 0; health = $null
-                  note = '応答がありません（時間切れ）。別のアプリが使っている可能性があります' }
+        # **答えが遅いだけ**（時間切れ）と、**別のアプリ**（番号が返る）は、次の一手が違う（監査 D-4）
+        return @{ state = 'other'; pid = 0; health = $null; code = 'timeout'
+                  note = '応答がありません（時間切れ）。別のアプリが使っているか、サーバが混んでいます' }
     }
-    return @{ state = 'other'; pid = 0; health = $null
+    return @{ state = 'other'; pid = 0; health = $null; code = 'http'
               note = ('別のアプリが応答しました（HTTP {0}）' -f $r.status) }
 }
 
 function Wait-ServerUp {
-    <# `ours` になるまで待つ（立ち上がらなければ `$null`）。 #>
-    param([Parameter(Mandatory)][int]$Port, [int]$TimeoutSec = 90)
+    <#
+        `ours` で、**しかも自分の子の木の中に居る**サーバが答えるまで待つ。
+
+        - **踏み台（`-Proc`）が終わっていたら、その場で失敗**（監査 B-1。90 秒黙って待たない）
+        - ポートに居るのが**自分の子でない**なら `state = 'stranger'` で返す
+          （監査 A-2。**他人の pid を自分の物として持たない**）
+
+        `-Proc` を省くと身元を確かめない（**他人のサーバを見張る検査だけ**が使う）。
+        自分のサーバを起動する道（`Start-OwnServer`）は**必ず `-Proc` を渡す**。
+    #>
+    param(
+        [Parameter(Mandatory)][int]$Port,
+        [System.Diagnostics.Process]$Proc = $null,
+        [int]$TimeoutSec = 90
+    )
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
+        if ($null -ne $Proc) {
+            try { $Proc.Refresh() } catch { }
+            if ($Proc.HasExited) { return $null }
+        }
         $st = Get-ServerState -Port $Port
-        if ($st.state -eq 'ours') { return $st }
-        Start-Sleep -Milliseconds 400
+        if ($st.state -eq 'ours') {
+            if ($null -eq $Proc) { return $st }
+            if (Test-DescendantOf -ProcessId ([int]$st.pid) -AncestorId ([int]$Proc.Id)) { return $st }
+            return @{ state = 'stranger'; pid = [int]$st.pid; health = $st.health
+                      note = ('ポート {0} には、このトレイが起動していないサーバが答えた（pid {1}）' -f $Port, $st.pid) }
+        }
+        Start-Sleep -Milliseconds 300
     }
     return $null
 }
@@ -283,12 +424,22 @@ function Resolve-ServerCommand {
 }
 
 function Start-OwnServer {
-    <# サーバを子プロセスとして起動し、`/api/health` が返るまで待つ。 #>
+    <#
+        サーバを子プロセスとして起動し、**自分の子が答える**まで待つ。
+
+        **起動の前に置き場を決めて確かめる**（監査 A-1）: `-DefineOnly` で読み込まれているときは、
+        空の `-DataDir` も実データの `.data` も**断る**（1 プロセスも起動しない）。
+    #>
     param(
         [Parameter(Mandatory)][hashtable]$State,
         [string]$DataDir = '',
         [int]$TimeoutSec = 90
     )
+    # **① 置き場を決める（空なら DefineOnly では throw）→ ② 実データなら DefineOnly では throw**
+    $where = Get-EffectiveDataDir -DataDir $DataDir
+    if ($script:DefineOnly -and (Test-RealDataDir -Path $where)) {
+        throw ('実データ（{0}）を開こうとしています。検査と駆動では -DataDir <複製> を渡してください。' -f $where)
+    }
     $cmd = Resolve-ServerCommand -Port $State.Port
     if ($null -eq $cmd) {
         throw 'サーバを起動する道具が見つかりません（.venv\Scripts\python.exe も uv もありません）。README の「動かす」のとおり uv sync を先に打ってください。'
@@ -299,23 +450,51 @@ function Start-OwnServer {
     # 子に渡す環境変数（PowerShell 5.1 の Start-Process には -Environment が無いので、
     # 自分の環境に置いてから起動する。子はそれを引き継ぐ）
     $env:UV_CACHE_DIR = Join-Path $script:RepoRoot '.uv-cache'
-    if ($DataDir) {
-        $env:IMAGE_REVIEWER_DATA = $DataDir
-    } else {
-        Remove-Item Env:IMAGE_REVIEWER_DATA -ErrorAction SilentlyContinue
-    }
-    Write-TrayLog ('サーバを起動します: {0} {1}（{2}）' -f $cmd.exe, ($cmd.args -join ' '), $cmd.note)
+    # **必ず明示する**（親から引き継いだ値に頼らない・消して既定に任せない。監査 A-1 の①）
+    $env:IMAGE_REVIEWER_DATA = $where
+    # **子の標準出力を溜めない**（監査 D-7。走っている間のログが空になる）
+    $env:PYTHONUNBUFFERED = '1'
+    $env:PYTHONIOENCODING = 'utf-8'
+    # **前の 1 世代を残す**（監査 D-6）
+    $logs = Get-ServerLogPaths -Port $State.Port
+    Move-TrayLogAside -Path $logs.out
+    Move-TrayLogAside -Path $logs.err
+    Write-TrayLog ('サーバを起動します: {0} {1}（{2}。データ置き場 {3}）' -f $cmd.exe, ($cmd.args -join ' '), $cmd.note, $where)
     $proc = Start-Process -FilePath $cmd.exe -ArgumentList $cmd.args `
         -WorkingDirectory $script:RepoRoot -WindowStyle Hidden `
-        -RedirectStandardOutput $script:ServerLog -RedirectStandardError $script:ServerErrLog `
+        -RedirectStandardOutput $logs.out -RedirectStandardError $logs.err `
         -PassThru
+    # **ハンドルを 1 回読む**（読んでいる間は PID が再利用されない。監査 C-3）
+    try { $null = $proc.Handle } catch { }
     $State.Proc = $proc
     $State.Mode = 'own'
     $State.StartedAt = Get-Date
-    $up = Wait-ServerUp -Port $State.Port -TimeoutSec $TimeoutSec
+    $up = Wait-ServerUp -Port $State.Port -Proc $proc -TimeoutSec $TimeoutSec
     if ($null -eq $up) {
-        $tail = Get-ServerLogTail
-        throw ('サーバが {0} 秒で立ち上がりませんでした。ログの末尾:{1}{2}' -f $TimeoutSec, [Environment]::NewLine, $tail)
+        $tail = Get-ServerLogTail -Port $State.Port
+        $why = 'サーバは {0} 秒待っても立ち上がりませんでした。' -f $TimeoutSec
+        try { $proc.Refresh() } catch { }
+        if ($proc.HasExited) {
+            $why = 'サーバのプロセスは起動の直後に終わりました（{0} 秒は待っていません）。' -f $TimeoutSec
+            $State.Proc = $null
+            $State.Mode = 'none'
+        }
+        # **生きている子は残す**（`Stop-OwnServer` が木ごと止められるように。捨てると迷子になる）
+        throw ($why + 'ログの末尾:' + [Environment]::NewLine + $tail)
+    }
+    if ($up.state -eq 'stranger') {
+        # **他人が先に掴んだ**（監査 A-2）。自分の子は諦めて、繋ぎ先として扱う（**PID を持たない**）
+        Write-TrayLog ('サーバが立ち上がる前に、別の image-reviewer がポート {0} を掴みました（pid {1}）。このトレイは持ちません。' -f $State.Port, $up.pid)
+        if ($null -ne $State.Proc) {
+            try { $State.Proc.Refresh() } catch { }
+            if (-not $State.Proc.HasExited) {
+                try { & (Join-Path $env:SystemRoot 'System32\taskkill.exe') /PID $State.Proc.Id /T /F 2>&1 | Out-Null } catch { }
+            }
+        }
+        $State.Proc = $null
+        $State.ServerPid = 0
+        $State.Mode = 'attach'
+        return $up
     }
     # **PID は 2 つ持つ**（実測）: `Start-Process` が返すのは `.venv\Scripts\python.exe`
     # （uv の踏み台。47 KB の小さな exe）で、**本物のサーバはその子**。
@@ -329,19 +508,34 @@ function Get-OwnServerPids {
     <#
         **止めていい PID だけ**を集める（自分が起動した物）。
 
-        - 踏み台（`Start-Process` が返した物）… そのまま
-        - 本体（`/api/health` が名乗った `pid`）… **いまも同じ pid だと確かめてから**
-          （PID は使い回されるので、確かめずに撃つと他人を巻き込む）
+        - 踏み台（`Start-Process` が返した物）… **生きているときだけ**（監査 C-3。死んだ PID に
+          `taskkill /T /F` を打たない。ハンドルを持っているので番号の再利用も起きない）
+        - 本体（`/api/health` が名乗った `pid`）… **いまも同じ pid で、しかも自分の踏み台の
+          子孫**だと確かめてから（監査 A-2・C-3。確かめずに撃つと他人を巻き込む）。
+          違えば**持たない**（`ServerPid` を 0 に戻す）
     #>
     param([Parameter(Mandatory)][hashtable]$State)
     $pids = @()
-    if ($null -ne $State.Proc) { $pids += [int]$State.Proc.Id }
+    if ($null -ne $State.Proc) {
+        try { $State.Proc.Refresh() } catch { }
+        if (-not $State.Proc.HasExited) { $pids += [int]$State.Proc.Id }
+        else { Write-TrayLog '踏み台は既に終わっています（その PID は撃ちません）。' }
+    }
     if ($State.ContainsKey('ServerPid') -and [int]$State.ServerPid -gt 0) {
         $st = Get-ServerState -Port $State.Port
         if ($st.state -eq 'ours' -and [int]$st.pid -eq [int]$State.ServerPid) {
-            $pids += [int]$State.ServerPid
+            if ($null -eq $State.Proc) {
+                Write-TrayLog ('本体 pid {0} は自分の子か確かめられません。止めません。' -f $st.pid)
+                $State.ServerPid = 0
+            } elseif (Test-DescendantOf -ProcessId ([int]$st.pid) -AncestorId ([int]$State.Proc.Id)) {
+                $pids += [int]$State.ServerPid
+            } else {
+                Write-TrayLog ('ポートのサーバは自分の子ではありません（pid {0}。こちらは止めません）。' -f $st.pid)
+                $State.ServerPid = 0
+            }
         } elseif ($st.state -eq 'ours') {
             Write-TrayLog ('ポートのサーバは別のプロセスです（pid {0}。こちらは止めません）。' -f $st.pid)
+            $State.ServerPid = 0
         }
     }
     return $pids
@@ -404,7 +598,7 @@ function Initialize-ServerState {
     $probe = Get-ServerState -Port $State.Port
     if ($probe.state -eq 'other') {
         Write-TrayLog ('ポート {0} は別のアプリが使っています（{1}）。起動しません。' -f $State.Port, $probe.note)
-        return @{ result = 'busy'; note = $probe.note }
+        return @{ result = 'busy'; note = $probe.note; reason = $probe.code }
     }
     if ($probe.state -eq 'ours') {
         $State.Mode = 'attach'
@@ -419,7 +613,19 @@ function Initialize-ServerState {
         $up = Start-OwnServer -State $State -DataDir $DataDir
     } catch {
         Write-TrayLog ('サーバを起動できませんでした: ' + $_.Exception.Message)
+        # **（監査 B-1 の続き）立ち上がらなかった自分の子を片付ける**——生き残っていると、
+        # 遅れて port を掴み、**次にトレイを起こしたときに「自分の物ではないサーバ」**になる。
+        # **自分が起こした物だけ**（`Get-OwnServerPids` が親子と同一性を確かめる）。
+        if ($State.Mode -eq 'own' -and ($null -ne $State.Proc -or $State.ServerPid -gt 0)) {
+            Write-TrayLog '立ち上がらなかった子を片付けます。'
+            try { Stop-OwnServer -State $State | Out-Null } catch { }
+        }
         return @{ result = 'failed'; note = $_.Exception.Message }
+    }
+    if ($up.state -eq 'stranger') {
+        # **起動の競合**（監査 A-2）: 自分の子が掴む前に別の image-reviewer が掴んだ。
+        # **繋ぎ先としてだけ扱う**（PID は持たない。`Start-OwnServer` が片付けてある）
+        return @{ result = 'attach'; pid = $up.pid; note = $up.note }
     }
     return @{ result = 'own'; pid = $up.pid }
 }
@@ -460,8 +666,20 @@ function Get-TraySnapshot {
     <#
         いまの状態を 1 つの hashtable にまとめる（トレイのアイコン・ツールチップ・状態の窓・
         知らせは、すべてこれを見る）。**読むだけ**（`GET` しか打たない）。
+
+        - **（監査 C-2）3 つの口は 2 秒で見切る**。1 つでも落ちたら**残りを打たず**、
+          前の値を残して `unknown = $true` にする（「確かめられませんでした」と出す。
+          **黙って消さない**）
+        - **（監査 C-4）ポートに居るのが自分の子でなければ `foreign = $true`** にして
+          `mode = 'attach'` として扱う（**止めない**）
+        - **（監査 G-1(b)）アイコンと知らせが数える「取り消せる削除」は段 3（時間の窓がある行）
+          だけ**。`deletes` は今までどおり全部（ツールチップと状態の窓）
+
+        `$State.Snapshot` に前回の結果を置く（`unknown` のときの控え）。
     #>
     param([Parameter(Mandatory)][hashtable]$State)
+    $prev = $null
+    if ($State.ContainsKey('Snapshot')) { $prev = $State.Snapshot }
     $snap = @{
         at = Get-Date
         state = 'down'          # up | down
@@ -473,46 +691,85 @@ function Get-TraySnapshot {
         requests = -1
         deletes = -1
         deletes_remain = -1
+        deletes_stage3 = -1
         backup_failed = $false
         read_only = $false
+        unknown = $false        # 口が時間切れで「確かめられなかった」
+        foreign = $false        # ポートに居るのが自分が起動した子ではない（監査 C-4）
         note = ''
     }
     $st = Get-ServerState -Port $State.Port
     if ($st.state -ne 'ours') {
         $snap.note = $st.note
+        $State.Snapshot = $snap
         return $snap
     }
     $snap.state = 'up'
     $snap.health = $st.health
+    if ($State.Mode -eq 'own' -and [int]$State.ServerPid -gt 0 -and [int]$st.pid -ne [int]$State.ServerPid) {
+        # 自分のサーバが落ちて、他人が同じポートに立った（監査 C-4）
+        $snap.foreign = $true
+        $snap.mode = 'attach'
+        $snap.note = ('ポートのサーバは、このトレイが起動した物ではありません（pid {0}）。止めません。' -f $st.pid)
+    }
 
-    $r1 = Invoke-Api -Port $State.Port -Path '/api/review-requests?state=open&count_only=1'
+    $r1 = Invoke-Api -Port $State.Port -Path '/api/review-requests?state=open&count_only=1' -TimeoutSec 2
     if ($r1.ok -and $null -ne $r1.body -and $null -ne $r1.body.counts) {
         $snap.requests = [int]$r1.body.counts.open
+    } else {
+        $snap.unknown = $true
     }
-    $r2 = Invoke-Api -Port $State.Port -Path '/api/pending-deletes'
-    if ($r2.ok -and $null -ne $r2.body) {
-        $snap.deletes = [int]$r2.body.count
-        $wins = @()
-        foreach ($it in @($r2.body.items)) {
-            if ($null -ne $it -and $null -ne $it.remaining_sec) { $wins += [int]$it.remaining_sec }
+    if (-not $snap.unknown) {
+        $r2 = Invoke-Api -Port $State.Port -Path '/api/pending-deletes' -TimeoutSec 2
+        if ($r2.ok -and $null -ne $r2.body) {
+            $snap.deletes = [int]$r2.body.count
+            $stage3 = 0
+            $wins = @()
+            foreach ($it in @($r2.body.items)) {
+                if ($null -eq $it) { continue }
+                if ($null -eq $it.remaining_sec) { continue }
+                $stage3++
+                $wins += [int]$it.remaining_sec
+            }
+            $snap.deletes_stage3 = $stage3
+            if ($wins.Count -gt 0) { $snap.deletes_remain = ($wins | Measure-Object -Minimum).Minimum }
+        } else {
+            $snap.unknown = $true
         }
-        if ($wins.Count -gt 0) { $snap.deletes_remain = ($wins | Measure-Object -Minimum).Minimum }
     }
-    $r3 = Invoke-Api -Port $State.Port -Path '/api/backup'
-    $snap.backup_status = $r3.status
-    if ($null -ne $r3.body) {
-        $snap.backup = $r3.body
-        if ([string]$r3.body.last_error) { $snap.backup_failed = $true }
-        if ($r3.body.read_only -eq $true) { $snap.read_only = $true }
+    if (-not $snap.unknown) {
+        $r3 = Invoke-Api -Port $State.Port -Path '/api/backup' -TimeoutSec 2
+        $snap.backup_status = $r3.status
+        if ($null -ne $r3.body) {
+            $snap.backup = $r3.body
+            if ([string]$r3.body.last_error) { $snap.backup_failed = $true }
+            if ($r3.body.read_only -eq $true) { $snap.read_only = $true }
+        }
+        if ($r3.status -eq 503) {
+            # 読み取り専用として出すのは `code` が無い / `read_only` / `db_error` のときだけ
+            # （`busy` と `io_error` はもう一度で直る。`apps/gui/badge.js` と同じ規則）
+            $code = ''
+            if ($null -ne $r3.body -and $null -ne $r3.body.code) { $code = [string]$r3.body.code }
+            if ($code -eq '' -or $code -eq 'read_only' -or $code -eq 'db_error') { $snap.read_only = $true }
+        }
+        if ([string]$r3.text -match '"last_error"\s*:\s*"([^"]+)"') { $snap.backup_failed = $true }
     }
-    if ($r3.status -eq 503) {
-        # 読み取り専用として出すのは `code` が無い / `read_only` / `db_error` のときだけ
-        # （`busy` と `io_error` はもう一度で直る。`apps/gui/badge.js` と同じ規則）
-        $code = ''
-        if ($null -ne $r3.body -and $null -ne $r3.body.code) { $code = [string]$r3.body.code }
-        if ($code -eq '' -or $code -eq 'read_only' -or $code -eq 'db_error') { $snap.read_only = $true }
+    if ($snap.unknown -and $null -ne $prev) {
+        # **前の値を残す**（`（確かめられませんでした）` を添えて出す。監査 C-2）
+        if ($snap.requests -lt 0 -and $prev.ContainsKey('requests')) { $snap.requests = [int]$prev.requests }
+        if ($snap.deletes -lt 0 -and $prev.ContainsKey('deletes')) {
+            $snap.deletes = [int]$prev.deletes
+            $snap.deletes_remain = [int]$prev.deletes_remain
+            if ($prev.ContainsKey('deletes_stage3')) { $snap.deletes_stage3 = [int]$prev.deletes_stage3 }
+        }
+        if ($null -eq $snap.backup -and $prev.ContainsKey('backup')) {
+            $snap.backup = $prev.backup
+            $snap.backup_status = [int]$prev.backup_status
+            $snap.backup_failed = [bool]$prev.backup_failed
+            $snap.read_only = [bool]$prev.read_only
+        }
     }
-    if ([string]$r3.text -match '"last_error"\s*:\s*"([^"]+)"') { $snap.backup_failed = $true }
+    $State.Snapshot = $snap
     return $snap
 }
 
@@ -535,6 +792,8 @@ function Get-TrayTooltip {
         if ($Snapshot.deletes -gt 0) { $parts.Add(('最近の削除 {0}' -f $Snapshot.deletes)) }
         if ($Snapshot.backup_failed) { $parts.Add('バックアップに失敗しています') }
         if ($Snapshot.read_only) { $parts.Add('読み取り専用です') }
+        # **（監査 C-2）** 時間切れの回は、件数を「確かめられなかった」と言う
+        if ($Snapshot.unknown) { $parts.Add('件数を確かめられません') }
     }
     $text = ($parts -join '、')
     if ($text.Length -gt 63) { $text = $text.Substring(0, 62) + '…' }
@@ -553,7 +812,9 @@ function New-StatusText {
         $out.Add('')
         $out.Add('サーバに繋がりません。')
         if ($Snapshot.mode -eq 'own') {
-            $out.Add('トレイの「再起動する」で起動できます。')
+            # **（監査 D-1）** 落ちているときのメニューは「起動する」に変わっている
+            # （`Update-TrayMenu`）ので、案内もその語で言う
+            $out.Add('トレイの「起動する」で起動できます。')
         } else {
             $out.Add('このトレイは、既に動いていたサーバに繋いでいました。')
         }
@@ -579,7 +840,10 @@ function New-StatusText {
     }
     $req = '—'
     if ($Snapshot.requests -ge 0) { $req = ('{0} 件' -f $Snapshot.requests) }
-    $out.Add(('要求: {0}' -f $req))
+    # **（監査 C-2）** 口が時間切れのときは、前の値に印を付けて出す（**黙って消さない**）
+    $unknown = ''
+    if ($Snapshot.unknown) { $unknown = '（確かめられませんでした）' }
+    $out.Add(('要求: {0}{1}' -f $req, $unknown))
     $del = '—'
     if ($Snapshot.deletes -ge 0) {
         $del = ('{0} 件' -f $Snapshot.deletes)
@@ -587,7 +851,7 @@ function New-StatusText {
             $del = ('{0}（あと {1}）' -f $del, (Format-Remain -Sec $Snapshot.deletes_remain))
         }
     }
-    $out.Add(('最近の削除: {0}' -f $del))
+    $out.Add(('最近の削除: {0}{1}' -f $del, $unknown))
 
     if ($null -ne $Snapshot.backup) {
         $b = $Snapshot.backup
@@ -614,7 +878,10 @@ function New-StatusText {
         if ($null -ne $Snapshot.backup -and $Snapshot.backup.last_error) {
             $out.Add([string]$Snapshot.backup.last_error)
         } else {
-            $out.Add('（理由は取れませんでした。GET /api/backup が 503 を返しています）')
+            # **（監査 D-2）** 口の名前と HTTP の番号を本文に出さない（規約 3）
+            $code = '—'
+            if ($Snapshot.backup_status -gt 0) { $code = [string]$Snapshot.backup_status }
+            $out.Add(('（理由は取れませんでした。詳細: {0}）' -f $code))
         }
     }
     if ($Snapshot.read_only) {
@@ -624,7 +891,12 @@ function New-StatusText {
             $out.Add([string]$Snapshot.backup.reason)
         }
     }
-    if ($Snapshot.mode -ne 'own') {
+    if ($Snapshot.foreign) {
+        # **（監査 C-4）** 自分のサーバが落ちて、他人が同じポートに立った形
+        $out.Add('')
+        $out.Add('いまポートに居るのは、このトレイが起動したサーバではありません。')
+        $out.Add('再起動と終了では、そのサーバを止めません。')
+    } elseif ($Snapshot.mode -ne 'own') {
         $out.Add('')
         $out.Add('このトレイは、既に動いているサーバに繋いでいます。')
         $out.Add('再起動と終了では、そのサーバを止めません。')
@@ -674,6 +946,14 @@ function New-TrayIcon {
     }
     $frameBrush.Dispose()
     $paperBrush.Dispose()
+    if ($Key -eq 'down') {
+        # **（監査 B-2）** 停止中は**形**で分かるように × を描く。16 px では枠の色だけでは
+        # 「ふつう」とほとんど区別できない（実測: (120,126,136) と (71,85,105)）
+        $mark = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 71, 85, 105), 3)
+        $g.DrawLine($mark, 10, 12, 22, 22)
+        $g.DrawLine($mark, 22, 12, 10, 22)
+        $mark.Dispose()
+    }
     $g.Dispose()
 
     $hicon = $bmp.GetHicon()
@@ -686,9 +966,16 @@ function Get-StateIcon {
     <# いまの状態に合うアイコンを返す（同じ形は 1 回だけ描いて使い回す）。 #>
     param([Parameter(Mandatory)][hashtable]$Snapshot)
     $key = 'none'
-    if ($Snapshot.requests -gt 0 -and $Snapshot.deletes -gt 0) { $key = 'both' }
+    # **（監査 G-1(b)）** 印が数える「取り消せる削除」は**段 3（時間の窓がある行）だけ**。
+    # 段 1 の行は利用者が片付けても消えないので、常に点いていると「いま見て」の印にならない
+    # （実データの複製では 194 行すべてが段 1 だった）。**ツールチップと状態の窓は今までどおり
+    # 全部の数**を出す（数える対象が違うことを画面の本文には書かない。印は「いま見て」だけ）。
+    $mark = 0
+    if ($Snapshot.ContainsKey('deletes_stage3')) { $mark = [int]$Snapshot.deletes_stage3 }
+    if ($mark -lt 0) { $mark = [int]$Snapshot.deletes }
+    if ($Snapshot.requests -gt 0 -and $mark -gt 0) { $key = 'both' }
     elseif ($Snapshot.requests -gt 0) { $key = 'request' }
-    elseif ($Snapshot.deletes -gt 0) { $key = 'delete' }
+    elseif ($mark -gt 0) { $key = 'delete' }
     if ($Snapshot.backup_failed -or $Snapshot.read_only) { $key = $key + '-bad' }
     if ($Snapshot.state -ne 'up') { $key = 'down' }
     if (-not $script:IconCache.ContainsKey($key)) {
@@ -843,11 +1130,19 @@ function New-TrayMenu {
 }
 
 function Update-TrayMenu {
-    <# メニューの語と押せる・押せないを、いまの状態に合わせる（**押す前に何が起きるか分かる**ように）。 #>
+    <#
+        メニューの語と押せる・押せないを、いまの状態に合わせる（**押す前に何が起きるか分かる**）。
+
+        **（監査 C-4）** ポートに居るのが自分の子でない（`$Snapshot.mode -eq 'attach'`）ときは、
+        `State.Mode` が `own` のままでも**添付と同じ語**にする（自分のサーバが落ちて他人が
+        立った形。押しても止められないので、止めると言ってはいけない）。
+    #>
     param([Parameter(Mandatory)][hashtable]$Ctx, [Parameter(Mandatory)][hashtable]$Snapshot)
+    $own = ($Ctx.State.Mode -eq 'own')
+    if ($Snapshot.ContainsKey('mode') -and [string]$Snapshot.mode -eq 'attach') { $own = $false }
     $exit = $Ctx.Menu.Items.Find('mi-exit', $false)
     if ($null -ne $exit -and $exit.Count -gt 0) {
-        if ($Ctx.State.Mode -eq 'own') {
+        if ($own) {
             $exit[0].Text = '終了する（サーバも止める）'
         } else {
             $exit[0].Text = 'トレイを閉じる（サーバは止めない）'
@@ -855,7 +1150,7 @@ function Update-TrayMenu {
     }
     $restart = $Ctx.Menu.Items.Find('mi-restart', $false)
     if ($null -ne $restart -and $restart.Count -gt 0) {
-        if ($Ctx.State.Mode -ne 'own') {
+        if (-not $own) {
             $restart[0].Text = '再起動する'
             $restart[0].Enabled = $false
             $restart[0].ToolTipText = '既に動いていたサーバなので、このトレイからは止められません。'
@@ -875,8 +1170,10 @@ function Refresh-Tray {
     $prev = $Ctx.Last
     $Ctx.Last = @{
         state = $snap.state
+        mode = $snap.mode
         requests = $snap.requests
         deletes = $snap.deletes
+        deletes_stage3 = $snap.deletes_stage3
         backup_failed = $snap.backup_failed
     }
     if ($null -ne $Ctx.Icon) {
@@ -884,28 +1181,57 @@ function Refresh-Tray {
         $Ctx.Icon.Text = Get-TrayTooltip -Snapshot $snap
     }
     if ($null -ne $Ctx.Menu) { Update-TrayMenu -Ctx $Ctx -Snapshot $snap }
-    if (-not $Quiet -and $null -ne $prev) { Send-TrayNotifications -Ctx $Ctx -Snapshot $snap -Prev $prev }
+    if ($Quiet) {
+        # **（監査 C-1）起動の直後の 1 回でも、バックアップの失敗だけは知らせる**——
+        # サーバは起動の直後に日次を 1 回見るので、**一番よくある失敗の時刻**がここに当たる。
+        if ($snap.state -eq 'up' -and $snap.backup_failed -and ($null -eq $prev -or -not $prev.backup_failed)) {
+            Show-TrayBalloon -Kind 'Warning' -Text 'バックアップに失敗しています。詳しくは「状態を見る」に出ます。'
+        }
+    } else {
+        Send-TrayNotifications -Ctx $Ctx -Snapshot $snap -Prev $prev
+    }
     return $snap
 }
 
 function Send-TrayNotifications {
-    <# **変わったときに 1 つだけ**知らせる（バックアップの失敗を最優先。家風「黙って失敗しない」）。 #>
+    <#
+        **変わったときに 1 つだけ**知らせる（バックアップの失敗を最優先。家風「黙って失敗しない」）。
+
+        - **（監査 B-2）自分が起動したサーバが落ちたら知らせる**（`up → down`。今までは
+          アイコンの色だけだった）
+        - **（監査 G-1(b)）「取り消せる削除」は段 3 の数**で数える（段 1 は片付けても消えないので、
+          常に鳴ることになる）
+    #>
     param(
         [Parameter(Mandatory)][hashtable]$Ctx,
         [Parameter(Mandatory)][hashtable]$Snapshot,
-        [Parameter(Mandatory)][hashtable]$Prev
+        [hashtable]$Prev = $null
     )
-    if ($Snapshot.state -ne 'up') { return }
-    if ($Snapshot.backup_failed -and -not $Prev.backup_failed) {
+    if ($Snapshot.state -ne 'up') {
+        if ($null -ne $Prev -and $Prev.state -eq 'up' -and $Snapshot.mode -eq 'own') {
+            Show-TrayBalloon -Kind 'Warning' -Text 'サーバが止まりました。トレイの「起動する」で起動し直せます。'
+        }
+        return
+    }
+    # **確かめられなかった回は知らせない**（誤報を出さない。次の確認で取り直す）
+    if ($Snapshot.unknown) { return }
+    if ($Snapshot.backup_failed -and ($null -eq $Prev -or -not $Prev.backup_failed)) {
         Show-TrayBalloon -Kind 'Warning' -Text 'バックアップに失敗しています。詳しくは「状態を見る」に出ます。'
         return
     }
+    if ($null -eq $Prev) { return }
     if ($Snapshot.requests -gt $Prev.requests -and $Snapshot.requests -gt 0) {
         Show-TrayBalloon -Text ('エージェントから要求が来ました（{0} 件）。' -f $Snapshot.requests)
         return
     }
-    if ($Snapshot.deletes -gt $Prev.deletes -and $Snapshot.deletes -gt 0) {
-        Show-TrayBalloon -Text ('取り消せる削除があります（{0} 件）。「最近の削除を開く」から戻せます。' -f $Snapshot.deletes)
+    $d3 = [int]$Snapshot.deletes_stage3
+    $p3 = 0
+    if ($Prev.ContainsKey('deletes_stage3')) { $p3 = [int]$Prev.deletes_stage3 }
+    if ($d3 -lt 0) { $d3 = [int]$Snapshot.deletes }
+    if ($p3 -lt 0) { $p3 = [int]$Prev.deletes }
+    if ($d3 -gt $p3 -and $d3 -gt 0) {
+        # **（監査 D-5）** 段 3 の行は「取り消す」だけなので、1 文の中で「戻す」と混ぜない
+        Show-TrayBalloon -Text ('取り消せる削除があります（{0} 件）。「最近の削除を開く」から取り消せます。' -f $d3)
         return
     }
 }
@@ -913,19 +1239,22 @@ function Send-TrayNotifications {
 function Restart-Server {
     <# 「再起動する」／「起動する」。**自分が起動したサーバだけ**を止めてから起動し直す。 #>
     param([Parameter(Mandatory)][hashtable]$Ctx)
-    if ($Ctx.State.Mode -ne 'own') {
+    $foreign = ($null -ne $Ctx.Snapshot -and $Ctx.Snapshot.ContainsKey('mode') -and [string]$Ctx.Snapshot.mode -eq 'attach')
+    if ($Ctx.State.Mode -ne 'own' -or $foreign) {
         Show-TrayBalloon -Kind 'Warning' -Text 'このトレイは既に動いていたサーバに繋いでいます。再起動はできません。'
         return $false
     }
     Write-TrayLog '再起動します。'
     if (-not (Stop-OwnServer -State $Ctx.State)) {
-        Show-TrayDialog -Text ('サーバを止められませんでした。タスクマネージャーで python を終わらせてから、もう一度試してください。')
+        # **（監査 C-4）「タスクマネージャーで python を終わらせて」とは言わない**——
+        # 止められなかった相手が他人のサーバだと、その案内は他人を止めさせる
+        Show-TrayDialog -Text ('サーバを止められませんでした。少し待ってから、もう一度試してください。')
         return $false
     }
     try {
         Start-OwnServer -State $Ctx.State -DataDir $script:DataDir | Out-Null
     } catch {
-        Show-TrayDialog -Text ('サーバを起動できませんでした。' + [Environment]::NewLine + $_.Exception.Message)
+        Show-TrayDialog -Text (Get-StartFailureText -Note $_.Exception.Message)
         return $false
     }
     Refresh-Tray -Ctx $Ctx -Quiet | Out-Null
@@ -933,17 +1262,45 @@ function Restart-Server {
     return $true
 }
 
+function Get-StartFailureText {
+    <#
+        起動に失敗したときの 1 枚（**規約 3**。監査 D-3）。
+
+        本文は 2 文だけにし、**英語のトレースバックは「（詳細: …）」に入れる**
+        （人に見せる文に英語の山を出さない）。
+    #>
+    param([string]$Note = '')
+    # **どのファイルを見ればよいかを実際のパスで言う**（人がそのまま開ける）
+    $errPath = Join-Path $script:LogDir 'server.err.log'
+    try { $errPath = [string](Get-ServerLogPaths -Port $script:Port).err } catch { }
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('サーバを起動できませんでした。')
+    $lines.Add(('{0} を見てください。' -f $errPath))
+    if ($Note) {
+        $clean = ($Note -replace "`r?`n", ' / ')
+        if ($clean.Length -gt 500) { $clean = $clean.Substring(0, 500) + '…' }
+        $lines.Add(('（詳細: {0}）' -f $clean))
+    }
+    return ($lines -join [Environment]::NewLine)
+}
+
 function Exit-Tray {
     <# 「終了する」／「トレイを閉じる」。**自分が起動したサーバだけ**を止める。 #>
     param([Parameter(Mandatory)][hashtable]$Ctx)
     $stopped = $true
-    if ($Ctx.State.Mode -eq 'own') {
+    # **（監査 C-4）** ポートに居るのが自分の子でない（`Snapshot.mode = 'attach'`）ときは、
+    # `State.Mode` が `own` のままでも**止めに行かない**（止められない物を止めると言わない・
+    # 20 秒待たない）。メニューの語（`Update-TrayMenu`）と同じ判定を使う。
+    $own = ($Ctx.State.Mode -eq 'own')
+    if ($null -ne $Ctx.Snapshot -and $Ctx.Snapshot.ContainsKey('mode') -and [string]$Ctx.Snapshot.mode -eq 'attach') { $own = $false }
+    if ($own) {
         $stopped = Stop-OwnServer -State $Ctx.State
     } else {
         Write-TrayLog 'このトレイはサーバを起動していません（既に動いていたサーバに繋いでいました）。止めません。'
     }
     if (-not $stopped) {
-        Show-TrayDialog -Text 'サーバを止められませんでした。タスクマネージャーで python を終わらせてください。'
+        # **（監査 C-4）** 止められなかった相手が他人かもしれないので、タスクマネージャーを勧めない
+        Show-TrayDialog -Text 'サーバを止められませんでした。少し待ってから、もう一度終了してください。'
     }
     if ($null -ne $Ctx.Timer) { $Ctx.Timer.Stop() }
     if ($null -ne $Ctx.Icon) {
@@ -951,7 +1308,10 @@ function Exit-Tray {
         $Ctx.Icon.Dispose()
     }
     Write-TrayLog 'トレイを終了します。'
-    [System.Windows.Forms.Application]::ExitThread()
+    # **（自己検査のため）** `-DefineOnly` で読み込んだときはメッセージループを回していないので、
+    # `ExitThread()` を呼ぶと**呼んだ側のスレッド**に効いてしまう。関数だけの検査では呼ばない。
+    # **本番（トレイとして起動したとき）は今までどおり呼ぶ。**
+    if (-not $script:DefineOnly) { [System.Windows.Forms.Application]::ExitThread() }
 }
 
 function Invoke-TrayMenuAction {
@@ -1085,11 +1445,17 @@ if (-not $owned) {
 $state = @{ Port = $Port; Mode = 'none'; Proc = $null; ServerPid = 0; StartedAt = $null; Snapshot = $null; Last = $null }
 $init = Initialize-ServerState -State $state -DataDir $DataDir
 if ($init.result -eq 'busy') {
-    Show-TrayDialog -Text ('ポート {0} は別のアプリが使っています。このトレイは起動できません。image-reviewer-tray.cmd の -Port を変えてください。' -f $Port)
+    # **（監査 D-4）** 「答えが遅いだけ」と「別のアプリ」は次の一手が違う。開発の記法
+    # （`image-reviewer-tray.cmd` の `-Port`）は人に見せない（規約 4）
+    if ([string]$init.reason -eq 'timeout') {
+        Show-TrayDialog -Text ('ポート {0} のサーバから応答がありません。別のアプリが使っているか、サーバが混んでいます。少し待ってから、もう一度起動してください。' -f $Port)
+    } else {
+        Show-TrayDialog -Text ('ポート {0} は別のアプリが使っています。このトレイは起動できません。そのアプリを止めてから、もう一度起動してください。' -f $Port)
+    }
     return
 }
 if ($init.result -eq 'failed') {
-    Show-TrayDialog -Text ('サーバを起動できませんでした。' + [Environment]::NewLine + $init.note)
+    Show-TrayDialog -Text (Get-StartFailureText -Note $init.note)
     return
 }
 

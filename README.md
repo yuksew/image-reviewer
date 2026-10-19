@@ -16,22 +16,22 @@
 - **`docs/design.md` §12.1 の性能の目標は全部実測で埋めた**（未計測 0）。届かなかったのは一覧 API の
   1 行だけで、理由と必要な条件は [`docs/design.md`](docs/design.md) §12.1 と
   [`docs/p9-implementation.md`](docs/p9-implementation.md) にある。
-- **テスト 565 件**（`uv run --no-sync pytest -q` を自分で回して実測。**565 passed・0 failed**、39.6 秒。
-  **トレイの契約 11 件**が入った数）。
+- **テスト 570 件**（`uv run --no-sync pytest -q` を自分で回して実測。**570 passed・0 failed**。
+  **トレイの契約 15 件**が入った数）。
   **並行して誰かが実データを `mode=ro` で読んでいると `test_data_dir_guard.py` の 1 件が落ちうる**
   （署名に使う `db.sqlite3-shm` の `mtime_ns` が動くため。**中身は変わっていない**。`docs/handoff.md` §6）。
 - **`gui_smoke` 406 検査**（ok / NG 0。**自分で回して実測**）。
 - **`gui_layout` 10 画面 × 4 幅**（`VIEWPORTS` は 1400・1024・1200・1920。＋`pending --ids` の 11 本目）を
   **複製で回して実測**（2026-10-19）。**`--screen tags` は語が 0 件だと必ず NG** なので
   `gui_layout_seed.py --tags` を当てた複製で回す。
-  **2026-10-19 の実測（トレイの段）**: **9 本は 4 幅とも ok**（36 検査）。**`--screen pending` と
-  `--screen pending --ids` の 2 本だけが 4 幅とも NG**（**理由はどちらも同じ 1 つ**）。
-  `tools/gui_layout.mjs:1389` の「**まとめてのチェック**」は「全部選ぶ」で**一覧の全部の行**が
-  選ばれることを期待するが、`apps/gui/pending.js:387` の `canPick()` は**段 1 と `closeable` の行だけ**を
-  選べる形にしてある（P10。**段 3 の窓の行は「取り消す」だけ**＝選べないのが正しい）。
-  複製に段 3 の行が 1 つでも混ざると 4 幅とも落ちる（実測: `チェック=194` / `rows=195`）。
-  **この 2 ファイルはトレイの段で触っていない**（`git status` で無変更）ので、**複製の形が同じなら
-  前から同じ**。直すなら検査の側（`got.picks < got.rows` を `canPick` に合わせる）。
+  **2026-10-19 の実測（トレイの監査の直しの後）**: **52 ok / NG 0**（11 本 × 4 幅。比較は 3 窓 × 4 幅＝12 検査）。
+  `--screen pending` と `--screen pending --ids` が 4 幅とも NG だったのは、`tools/gui_layout.mjs` の
+  「**まとめてのチェック**」が「全部選ぶ」で**一覧の全部の行**が選ばれることを期待していたため
+  （`apps/gui/pending.js:387` の `canPick()` は**段 1 と `closeable` の行だけ**を選べる形＝P10 の仕様。
+  **段 3 の窓の行は「取り消す」だけ**で選べないのが正しい）。**GUI が正しく、検査が古かった**（監査 E-0 の 9）。
+  直しは**等号**にした（監査 F-8）: `チェックの数 ＝ 段 1 の行 ＋ 段 1 以外で「片付ける」がある行 ＋
+  ゴミ箱の「片付ける」`。**前の形（`picks < rows` と「0 でない」）は、194 行のうち 1 行にしかチェックが
+  出なくても通った。**
 - **P8 の小段（P8-0〜P8-5）は全部通り、監査はどれも「合格（条件つき）」**（P8-3 の再確認は「合格（条件なし）」）。
   **P8-5 の条件 3 件も 2026-10-18 に直した**（[`docs/p8-5-audit-triage.md`](docs/p8-5-audit-triage.md)——
   印のボタンの二度押し・`gui_layout --screen asset` の段の期待値を API から組む形・読み取り専用の DB で
@@ -74,10 +74,11 @@ uv sync
 uv sync --extra tagger                      # 内蔵タガー（onnxruntime。任意。入れると `auto` が内蔵を選ぶ）
 uv run image-reviewer scan --root 'C:\work\illust-authoring\.store\anima-dev'
 uv run image-reviewer serve --port 8790     # → http://127.0.0.1:8790
-uv run --no-sync pytest -q                  # 565 件（2026-10-19 に実測）
+uv run --no-sync pytest -q                  # 570 件（2026-10-19 に実測）
 node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。406 検査）
-# **トレイの検査**（別のポートと、合成した複製だけで回す。**8790 は使わない**）
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\tray_selftest.ps1 -Port 8795   # 55 検査
+# **トレイの検査**（別のポートと、合成した複製だけで回す。**8790 は使わない**。
+# 使う 4 ポートが空いていなければ、1 つも起動せずに exit 2 で止まる）
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\tray_selftest.ps1 -Port 8795   # 115 検査
 # 画面の計測（本物の Chrome）は**複製で立てたサーバ**へ。実データの 8790 では回さない（§「gui_layout は…」）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --count 8          # 比較（3 窓）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen requests  # 要求の一覧
@@ -179,10 +180,12 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
     2000 枚で切れるので「先頭 2000 枚を表示」と出している）。
   - **段 1 の行から段 3 へ直行する道**（**P10 では作らないと決めた**。段 3 は置き場ごとの許可
     （`root.allow_stage3`。Q8 の利用者の意思表示）と凍結が要る既存の道のまま。`docs/design.md` §16.7）。
-  - **実データの `deletion_log.closed_at` / `close_reason`**（**P10 の列は実データにまだ無い**。
-    `TOP_UP_COLUMNS` なので、**利用者がアプリを立ち上げ直した時点**で `pre-topup-<日時>/` の控えが付いてから
-    足される。**それまでは「ファイルが無いので片付ける」も「アプリのゴミ箱へ移す」も押せない**——
-    新しい口は**再起動後**に使える）。
+  - **実データの `deletion_log.closed_at` / `close_reason`**（**この 2 列は 2026-10-19 16:48:56 に
+    トレイの自己検査の穴で実データに足された**（事故 4 件目。**控えは残っていない**・行の中身の変化は 0）。
+    事後の控えは `.backup/pre-tray-fix-20261019-204253/`。原因と直しは
+    [`docs/tray-audit-triage.md`](docs/tray-audit-triage.md) A-1 と [`docs/tray.md`](docs/tray.md) §6）。
+    **列はもう在るので、「ファイルが無いので片付ける」も「アプリのゴミ箱へ移す」も使える**
+    （新しい口は利用者がアプリを立ち上げ直せば押せる）。
 - **exe 化（PyInstaller）は「今は作らない」**（P9 の推奨）。**作れることは実測した**
   （PyInstaller 6.22.3 が Python 3.14 で動き、`--onedir` が 23.7 秒で 131.9 MB。
   起動は 0.53 秒で、いまの `uv` 経由（1.05 秒）より速い）が、**`apps/gui` の解決が 1 か所足りず
@@ -199,7 +202,9 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/comparison.md`](docs/comparison.md) | 比較の設計（見た目・来歴・機械の指標、位置合わせ） | — |
 | [`docs/workflow-reproduction.md`](docs/workflow-reproduction.md) | 生成の条件の記録と再利用（**実行はしない**）、印による結果の紐付け | — |
 | [`docs/duplicates-deletion-backup.md`](docs/duplicates-deletion-backup.md) | 重複・削除（**5 分の取り消し**）・バックアップ | — |
-| [`docs/tray.md`](docs/tray.md) | **タスクトレイ常駐**（作った物・使い方・自動で確かめた結果・手で確かめた結果・設計の穴） | — |
+| [`docs/tray.md`](docs/tray.md) | **タスクトレイ常駐**（作った物・使い方・自動で確かめた結果・手で確かめた結果・設計の穴・**実データに起きた事故**） | — |
+| [`docs/tray-audit-report.md`](docs/tray-audit-report.md) | **トレイの監査**（判定「直してから次へ」。A-1＝実データに 2 列・A-2＝他人のサーバを止め得た・B〜G） | — |
+| [`docs/tray-audit-triage.md`](docs/tray-audit-triage.md) | トレイの監査の指摘の仕分け（**1 件 1 行**。採用／理由つきで残す） | — |
 | [`docs/metadata-findings.md`](docs/metadata-findings.md) | 実機で確認した前提（PNG / JPEG・タガー）＋ 実測した性能 | — |
 | [`docs/comfyui-reproduction-findings.md`](docs/comfyui-reproduction-findings.md) | ComfyUI の再現経路の詳細調査（ソース引用つき・836 行） | — |
 | [`schemas/review-export.schema.json`](schemas/review-export.schema.json) | 他ツールが読む外部契約（draft 2020-12、`abi: 0.1`） | — |
@@ -348,8 +353,13 @@ uv run image-reviewer serve --port 8790
 二度とカタログに戻せない）も直した（**走査が印を引き直す**・実体が在れば `undo` が**開き直す**）。
 **実データは 461 行（生きた 267 枚）・段 1 の生きた行 194・うち実体が在るのは 7 行**（187 行が実体なし、
 **7 行のうち 6 行は「別の画像が在る」形**）で、**利用者がアプリを立ち上げ直して「まとめて片付ける」を
-押す番**（`pre-topup-<日時>/` の控えが付いてから列が足される。**押すと 193 件が閉じ、1 件だけ断られる**
-——その 1 件は「アプリのゴミ箱へ移す」で進める。**別の画像 6 枚は 1 枚も動かない**）。
+押す番**（**押すと 193 件が閉じ、1 件だけ断られる**——その 1 件は「アプリのゴミ箱へ移す」で進める。
+**別の画像 6 枚は 1 枚も動かない**）。
+**（2026-10-19 の注記）`deletion_log.closed_at` / `close_reason` の列は、トレイの自己検査の穴で
+16:48:56 に既に足されている**（事故 4 件目。**控えは残っていない**・行の中身の変化は 0）。
+**したがって「押すと `pre-topup-<日時>/` の控えが付く」という案内は当てはまらない**——
+控えは `.backup/pre-tray-fix-20261019-204253/` に事後で取った。原因と直しは
+[`docs/tray-audit-triage.md`](docs/tray-audit-triage.md) A-1。
 **P9 の監査（[`docs/p9-audit-report.md`](docs/p9-audit-report.md)。判定「合格（条件つき）」）の
 指摘も全部直した**（2026-10-19。[`docs/p9-audit-triage.md`](docs/p9-audit-triage.md)）——
 **C-1**（走ったまま壊れた DB の入口が、**書き込んだ接続のページキャッシュ**越しに見ていて

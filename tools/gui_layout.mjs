@@ -613,6 +613,14 @@ const MEASURE_PENDING = `(() => {
     closes: document.querySelectorAll('#pd-running .pd-close').length,
     trashCloses: document.querySelectorAll('#pd-trash .pd-close').length,
     picks: document.querySelectorAll('#pd-running .pd-pick, #pd-trash .pd-pick').length,
+    // **（F-8）段 1 以外で「片付ける」がある行**（＝選べる行。段 3 の窓の行は「取り消す」だけで選べない）。
+    // 「チェックの数＝選べる行の数」を**等号**で見るために数える（行数との大小だけでは、
+    // 194 行のうち 1 行にしかチェックが出なくても通ってしまう）。
+    closeRowsNotStage1: rows.filter((r) => {
+      if (!r.querySelector('.pd-close')) return false;
+      const strip = r.querySelector('.pd-strip');
+      return !(r.querySelector('.pd-advance') || /^段 1 /.test(String((strip || {}).textContent || '')));
+    }).length,
     strips: [...document.querySelectorAll('#pd-running .pd-strip')]
       .map((n) => String(n.textContent || '').trim()),
     bodyOverflow: body ? Math.max(0, body.scrollWidth - body.clientWidth) : 0,
@@ -1386,13 +1394,14 @@ try {
         if (/選んだ 0 件/.test(got.bulkText)) {
           bad.push(`選んだ 0 件と書かない（${got.bulkText}）`);
         }
-        // **（P10 の仕様）選べるのは段 1 と片付けられる行だけ**。段 3 の窓がある行（取り消すだけ）は
-        // 選べないのが正しいので、**行数と一致しなくてよい**（2026-10-19 の監査で判明）。
-        // **選べる行があるのに 1 つも選べない**ときと、**行数より多く選ばれる**ときだけ NG。
-        if (got.picks > got.rows) bad.push(`チェックが行数より多い（${got.picks}/${got.rows}）`);
-        const pickable = got.advances + got.trash;
-        if (pickable > 0 && got.picks === 0) {
-          bad.push(`選べる行があるのにチェックが 0（選べる ${pickable} 行）`);
+        // **（P10 の仕様。F-8）選べるのは段 1 の行と「片付けられる行」だけ**。段 3 の窓がある行
+        // （取り消すだけ）は選べないのが正しい。**「チェックの数」と「選べる行の数」を等号で見る**
+        // ——「行数より多くない」「0 でない」だけでは、1 行にしかチェックが出なくても通ってしまう。
+        // 期待値 = 段 1 の行 + 段 1 以外で「片付ける」がある行 + ゴミ箱の行の「片付ける」
+        const expectedPicks = got.advances + got.closeRowsNotStage1 + got.trashCloses;
+        if (got.picks !== expectedPicks) {
+          bad.push(`チェックの数が選べる行と合わない（${got.picks}／期待 ${expectedPicks}`
+            + `＝段 1 ${got.advances}＋段 1 以外の片付け ${got.closeRowsNotStage1}＋ゴミ箱 ${got.trashCloses}）`);
         }
         if (stage1 && got.advances !== stage1) {
           bad.push(`段 1 の行に「アプリのゴミ箱へ移す」（${got.advances}/${stage1}）`);
@@ -1525,7 +1534,8 @@ try {
         + `POST 取り消し=${undoPosts.length} 確かめる=${pvPosts.length} 実行=${bulkPosts.length} `
         // **（P10）後から段 2 へ進める・片付ける口**の計測（押す検査は `gui_smoke` と `pytest`）
         + `移す=${got.advances} 片付け=${got.closes}(${got.trashCloses}) `
-        + `チェック=${got.picks} 帯=${JSON.stringify(String(got.bulkText).replace(/\s+/g, ' ').trim().slice(0, 52))} `
+        + `チェック=${got.picks}(期待 ${got.advances + got.closeRowsNotStage1 + got.trashCloses}) `
+        + `帯=${JSON.stringify(String(got.bulkText).replace(/\s+/g, ' ').trim().slice(0, 52))} `
         + `段ごとのボタン=${stageRuns.filter((r) => r.stage > 0)
           .map((r) => `${r.stage}:${r.offered ? r.execText : '—'}`).join(' / ') || '—'} `
         + `段ごとの結果=${stageRuns.filter((r) => r.stage > 0)

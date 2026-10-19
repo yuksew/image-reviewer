@@ -14,7 +14,7 @@
     2. **要求を 1 件投げて、5 秒の見張りが拾うか**（`POST /api/review-requests`）
     3. 「状態を見る」（窓。`-StatusAutoCloseMs` で自動で閉じる）
     4. 「最近の削除を開く」
-    5. 「ブラウザで開く」と、ダブルクリックと同じ道
+    5. 「ブラウザで開く」と、**アイコンのダブルクリック（実物のイベントを上げる）**
     6. 「再起動する」
     7. 「終了する（サーバも止める）」
 
@@ -24,6 +24,8 @@
     - 手順の途中で落ちたときは、**トレイが自分で終わる**（`Exit-Tray` を通る。試験で
       止まらないトレイとサーバを残さないため）。理由は `.tray\tray.log` に出る。
     - **要求の `conditions` / `wants` は配列**（契約が `type: array`。文字列で送ると 422。実測）。
+    - **（監査 D-10）ダブルクリックは `NotifyIcon` の `DoubleClick` を実際に上げる**——
+      `Invoke-TrayMenuAction` を直に呼ぶだけでは**イベントの配線**（`Add_DoubleClick`）が守れない。
 #>
 
 function Write-TrayLook {
@@ -85,6 +87,23 @@ function Send-TrayDriveRequest {
     return $status
 }
 
+function Invoke-IconDoubleClick {
+    <#
+        **アイコンのダブルクリックを実際に上げる**（監査 D-10）。
+
+        `NotifyIcon.DoubleClick` は protected なので、`PerformClick()` のような公開の道が無い。
+        `OnDoubleClick` をリフレクションで呼び、**トレイが配線した handler**（`Add_DoubleClick`）を
+        通す——`Invoke-TrayMenuAction` を直に呼ぶと、**配線が外れていても気づけない**。
+    #>
+    param([Parameter(Mandatory)]$Icon, [Parameter(Mandatory)][hashtable]$Ctx)
+    $flags = [System.Reflection.BindingFlags]'NonPublic,Instance'
+    $method = $Icon.GetType().GetMethod('OnDoubleClick', $flags)
+    if ($null -eq $method) { Write-TrayLog '[駆動] OnDoubleClick が見つかりません（配線を通せません）'; return $false }
+    $method.Invoke($Icon, @([System.EventArgs]::Empty)) | Out-Null
+    Write-TrayLog '[駆動] アイコンの DoubleClick を上げました'
+    return $true
+}
+
 function Invoke-TrayDrive {
     <# 押す手順の本体。**1 つずつ、実物のメニューを押す。** #>
     param([Parameter(Mandatory)][hashtable]$Ctx)
@@ -124,11 +143,14 @@ function Invoke-TrayDrive {
     Write-TrayLog '[駆動] 「最近の削除を開く」を押します'
     $menu.Items.Find('mi-deletes', $false)[0].PerformClick()
 
-    # 5. ブラウザで開く（+ アイコンのダブルクリックと同じ道）
+    # 5. ブラウザで開く（+ アイコンのダブルクリックを実際に上げる）
     Write-TrayLog '[駆動] 「ブラウザで開く」を押します'
     $menu.Items.Find('mi-open', $false)[0].PerformClick()
-    Write-TrayLog '[駆動] ダブルクリックと同じ道を呼びます'
-    Invoke-TrayMenuAction -Name 'open'
+    Write-TrayLog '[駆動] アイコンのダブルクリックを上げます（実物のイベント）'
+    if (-not (Invoke-IconDoubleClick -Icon $Ctx.Icon -Ctx $Ctx)) {
+        Write-TrayLog '[駆動] ダブルクリックを上げられないので、メニューの道で代えます'
+        Invoke-TrayMenuAction -Name 'open'
+    }
 
     # 6. 再起動する
     $before = $Ctx.State.ServerPid

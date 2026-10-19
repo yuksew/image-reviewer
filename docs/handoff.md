@@ -28,9 +28,13 @@
 >   画面は「2 枚をアプリのゴミ箱へ移しました。」で `frontend-design.md` §6 が正。**検査の 1 行の残件**）。
 > - **実データ `.data/`（`mode=ro` で読んだだけ。1 バイトも書いていない）**: **461 行・生きた 267 枚・
 >   段 1 の生きた行 194・うち実体が在るのは 7 行**（**187 行が実体なし**。実体が在る 7 行のうち **6 行**は
->   台帳の `asset_id` が古い形＝§6 の罠）。`deletion_log.closed_at` / `close_reason` の**列はまだ無い**。
->   **利用者がアプリを立ち上げ直して「まとめて片付ける」を押す番**——そのとき `pre-topup-<日時>/` の控えが
->   付いてから列が足される。**押すと 187 件が閉じ、7 件は 409 `file_found` で断られる**（意図どおり。
+>   台帳の `asset_id` が古い形＝§6 の罠）。`deletion_log.closed_at` / `close_reason` の**列は
+>   2026-10-19 16:48:56 に、トレイの自己検査の穴（監査 A-1）で足されていた**（**控え無し**。
+>   行の中身の変化は 0＝194 行・`closed_at` は全部 NULL・461 枚・判断 3 件）。
+>   **この列を足したのは利用者の起動ではない**ので、「利用者が立ち上げ直して『まとめて片付ける』を押す番」
+>   という案内は**もう当てはまらない**（`pre-topup-<日時>/` の控えは付かない。詳細は
+>   [`tray.md`](tray.md) §6 と [`tray-audit-triage.md`](tray-audit-triage.md) A-1）。
+>   **押すと 187 件が閉じ、7 件は 409 `file_found` で断られる**（意図どおり。
 >   残る 7 行は「アプリのゴミ箱へ移す」で進められる）。
 >   **この作業の時点では 8790 は動いていなかった**（`Get-NetTCPConnection` に 8790 が無い。**止めてはいない**）。
 > - **P8-5 の監査の条件 3 件（C-1〜C-3）は 2026-10-18 の仕分けで直っていた**
@@ -115,6 +119,9 @@
 >   **`--no-hash` の走査**（実装に無い）。
 > - **実データは無傷**: **455 枚・段 1 の 193 行・判断 3 件・`missing_at` 0 件**のまま
 >   （画像の署名 `d9604560e494c510` と `.data` の署名 `ae60041b0b0b5365` が**前後で同じ**）。
+>   **（2026-10-19 の注記）この「無傷」はこの時点（2026-10-18）の話。** そのあと **2026-10-19 16:48:56 に、
+>   トレイの自己検査の穴で実データの `deletion_log` に 2 列が足された**（行の中身の変化は 0・控え無し。
+>   [`tray.md`](tray.md) §6）。**画像と行は今も動いていない。**
 >   **§14 の段はこれで全部済み**——次にやるのは**利用者の判断待ち**（再リンクの画面・
 >   一覧 API の改ページ・`--include-library` を日次に載せるか・exe 化）。**トレイは 2026-10-19 に作った**。
 >
@@ -200,8 +207,9 @@
 | --- | --- | --- |
 | **利用者のアプリを止める/干渉する** | `image-reviewer serve --port 8790` が動いていて（`Get-Process image-reviewer` で確かめる。**2026-10-18 08:38 起動の個体**は**画面が P8-5・裏側が P8-4 まで**）、**`.venv` の exe を握っています** | **`uv run …` は `os error 32` で落ちます。必ず `uv run --no-sync …`** か `.venv\Scripts\python.exe` を使ってください。**止めない**（止めてよいかは利用者に確認） |
 | **実データ `.data/` を書き換える** | 実データは **v6**（2026-10-18 時点: **263 枚・判断 3 件・削除 0 件**・`duplicate_exclusion` 1・`review_group` 1）。**移行待ちはもう無い**（v6 に上がり、**画面は P8-5・裏側のプロセスは P8-4 まで**で稼働中） | **`mode=ro` でしか開かない**。**壊す試験・検証は必ず複製で**（複製は `sqlite3` の `backup()`。**`cp` だけだと WAL が抜けて判断 3 件が消える**）。使い捨ては `.tmp-audit-redo/` |
-| **版を上げずに表を変える**（`ALTER TABLE` のトップアップ） | P8-4 で実データに `deletion_log.stuck_reason` が**控え無しで**足された（事故 2 件目） | **変える前に `pre-topup-<日時>/` の控えを取る**（`pre-migrate-*` と同じ）。**足す物の一覧は `db.TOP_UP_COLUMNS` が正** |
+| **版を上げずに表を変える**（`ALTER TABLE` のトップアップ） | P8-4 で実データに `deletion_log.stuck_reason` が**控え無しで**足された（事故 2 件目）。**P10 の `closed_at` / `close_reason` も、2026-10-19 16:48:56 にトレイの自己検査の穴で控え無しで足された（事故 4 件目・行の変化 0）** | **変える前に `pre-topup-<日時>/` の控えを取る**（`pre-migrate-*` と同じ）。**足す物の一覧は `db.TOP_UP_COLUMNS` が正**。**控えの置き場が scratch（`.tmp-*`）だと一緒に消える**——実データを開き得る道具の控えは、**消さない場所**へ向ける |
 | **`IMAGE_REVIEWER_DATA` を付けずに `create_app()` を呼ぶ** | **P8-6 の事故 3 件目**（検証スクリプトが env を付け忘れ、**実データを書き込み可で開いた**。`location_history` の 3 列と `settings.backup.last_error` が書き換わり、**行の変化は 0**） | **`create_app()` は env が無ければ開く前に `RuntimeError`**（**1 バイトも書かない**）。**既定の `.data` を明示的に指すのは `cli serve`（`serve_data_dir()`）だけ**。**実データを触り得るコマンドには必ず `IMAGE_REVIEWER_DATA=<複製>`**（`mode=ro` も同じ）。控えは `.backup/pre-p8-6-20261018-100443/` |
+| **`cli serve` を env 無しで起こす**（事故 4 件目の型） | **`create_app()` の検査は `cli serve` を通す**（`serve_data_dir()` が既定の `.data` を明示するので、`RuntimeError` にならない）。道具（トレイ・自己検査・駆動）が**引き継いだ環境に任せて** `cli serve` を起こすと、**環境が空なら実データを開く** | **道具は子に `IMAGE_REVIEWER_DATA` を必ず明示して渡す**（消して既定に任せない）。**検査・駆動の写し（`-DefineOnly`）は空の置き場と実データを断る**。自己検査は**使うポートが空いていなければ 1 つも起動せず exit 2**（`tray.md` §4.0・§5） |
 | **バックアップをエージェントの sandbox の中で取ろうとする** | 既定の置き場 `%USERPROFILE%\image-reviewer-backups` は **sandbox の子プロセスからは書けない**（`WinError 5`。P8-4 の再確認 B-1'）。いまの 8790 もこれで**日次が 0 個** | 検証では `IMAGE_REVIEWER_BACKUP_DIR` か `--out` で**リポジトリの中の `<data>` の外**へ向ける。**実機の日次は利用者が sandbox の外で 8790 を立て直してから**（`GET /api/backup` の `count` が 1 以上になったことを確かめる） |
 | `.backup/` を消す | 移行前の控え | `C:\work\image-reviwer\.backup\`（**9 フォルダ**。`pre-p4-*` / `pre-p7-removal*` / `pre-p8-0-*` / `pre-p8-4-20261017-232148` / **`pre-p8-6-20261018-100443`（再リンクの実装の開始）**）。**消さない** |
 | 8790 を検証に使う | 利用者のアプリが使用中 | 検証のサーバは **8791〜8799** を使う |
@@ -241,7 +249,8 @@
 | **P8-6（参照切れの再リンク。合格の線 9）** | **完了。2026-10-18**（**監査と仕分けも済み**＝[`p8-6-audit-report.md`](p8-6-audit-report.md) ＋ [`p8-6-audit-triage.md`](p8-6-audit-triage.md)）。`POST /api/locations/relink`（**人だけ**。`exact` = 新しいファイル / `nearby` = 探すフォルダ）と `GET /api/locations/missing`（**読むだけ**）・`location_history` に `to_path` / `reason` / `actor`（**版は上げない**＝`pre-topup-*` の控え）・**`create_app()` の硬化**（**`IMAGE_REVIEWER_DATA` が無ければ開かない**）・**事故 3 件目**（実データに 3 列が控え無しで入った。**行の変化は 0**。控え `.backup/pre-p8-6-20261018-100443/`）。**画面は作っていない**（口だけ）。`tools/probe_p8.py --relink` が **16 行すべて OK** | [`p8-6-relink.md`](p8-6-relink.md)、[`p8-6-audit-report.md`](p8-6-audit-report.md) |
 | **P8 の合格の線（P8-1〜P8-4）** | **済み。2026-10-18**（**残っていた再リンク＝線 9 も P8-6 で実装済み**）。決定は [`docs/design.md`](design.md) §16.6 に反映済み。**画面の仕上げ（P8-5）の監査の条件 3 件も 2026-10-18 に反映済み** | `docs/design.md` §14・§16.6、[`p8-5-audit-triage.md`](p8-5-audit-triage.md)、[`p8-6-audit-triage.md`](p8-6-audit-triage.md) |
 | **P9（仕上げ）** | **完了（2026-10-18）**。**§12.1 の「目標」の行を全部実測で埋めた**（**未計測 0**）。届かなかったのは**一覧 API の 1 行だけ**（p95 **244.7 ms** / 目標 20 ms。**目標は下げていない**。理由と必要な条件は §12.1）。計測の途中で **`PRAGMA temp_store = MEMORY` の欠落**（1 万枚の `GET /api/assets` が 500 になっていた）と **D-8**（壊れていない DB に復元を勧めていた）を直し、**一覧で切った枚数を画面に出した**。道具は `tools/make_synthetic_db.py`（1 万枚の合成 DB）と `tools/probe_p9.py`（**サーバ内**の計測）。**監査の指摘（C-1〜C-3）も 2026-10-19 に全部反映**（[`p9-audit-triage.md`](p9-audit-triage.md)） | [`p9-implementation.md`](p9-implementation.md)、[`design.md`](design.md) §12.1・§12.2・§12.3・§16.7 | [`docs/design.md`](design.md) §14 |
-| **P10（段 1 の行を後から進める・実体が無い行を片付ける）** | **完了（2026-10-19）**。利用者の要望（**一度カタログから外した物をゴミ箱へ／実体が無い物を片付ける**）で、**段 1 が行き止まりだった**のを塞いだ。口は 4 つ（`POST /api/deletions/{id}/advance`・`POST /api/deletions/advance`・`POST /api/deletions/{id}/close`・`POST /api/deletions/close`。**人だけ**・**1 回 200 件**・**段 3 への直行は作らない**・**ファイルは 1 つも消さない/動かさない**）。`deletion_log.closed_at` / `close_reason` は**版を上げずに** `TOP_UP_COLUMNS` で足した（**実データにはまだ列が無い**＝利用者の再起動で付く）。**監査はこれから**（Fable が `docs/p10-audit-report.md`） | [`deletions-advance.md`](deletions-advance.md)、[`design.md`](design.md) §5.8・§6.1・§14・§16.7、`frontend-design.md` §4.6・§6 |
+| **P10（段 1 の行を後から進める・実体が無い行を片付ける）** | **完了（2026-10-19）**。利用者の要望（**一度カタログから外した物をゴミ箱へ／実体が無い物を片付ける**）で、**段 1 が行き止まりだった**のを塞いだ。口は 4 つ（`POST /api/deletions/{id}/advance`・`POST /api/deletions/advance`・`POST /api/deletions/{id}/close`・`POST /api/deletions/close`。**人だけ**・**1 回 200 件**・**段 3 への直行は作らない**・**ファイルは 1 つも消さない/動かさない**）。`deletion_log.closed_at` / `close_reason` は**版を上げずに** `TOP_UP_COLUMNS` で足した（**実データの列は 2026-10-19 16:48:56 にトレイの自己検査の穴で足された**＝事故 4 件目。控え無し・行の変化 0。§0 の最新の追記と [`tray.md`](tray.md) §6）。**監査はこれから**（Fable が `docs/p10-audit-report.md`） | [`deletions-advance.md`](deletions-advance.md)、[`design.md`](design.md) §5.8・§6.1・§14・§16.7、`frontend-design.md` §4.6・§6 |
+| **トレイ（タスクトレイ常駐。P11 相当）** | **作った（2026-10-19）→ 監査「直してから次へ」→ 全部直した（2026-10-19）**。**A-1（実データに 2 列）・A-2（他人のサーバを止め得た）**、B・C・D・F・G の指摘を反映。**自己検査は 55 → 115 検査**、壊し試験 11 通りは全部落ちる | [`tray.md`](tray.md)、[`tray-audit-report.md`](tray-audit-report.md)、[`tray-audit-triage.md`](tray-audit-triage.md) |
 
 **いまの数（実測。2026-10-19 に私が回した）**: `pytest` **547 件**（**547 passed・0 failed**・40.3 秒。
 **並行して実データを読む者がいると `test_data_dir_guard.py` の 1 件が落ちうる**＝§6 の罠。
@@ -252,15 +261,20 @@
 下の §6）。**`--screen asset` は段 3 の許可が無い置き場の枚でも 4 幅 ok**（P8-5 の C-2 が直っている証拠）。
 `SCHEMA_VERSION = 6`。**実データは v6・461 行（生きた 267 枚）・段 1 の生きた行 194・判断 3 件**。
 **うち実体が在るのは 7 行**（187 行が実体なし。実体が在る 7 行のうち 6 行は台帳の `asset_id` が古い形）。
-**`deletion_log.closed_at` / `close_reason` の列は実データにまだ無い**（`TOP_UP_COLUMNS`＝利用者の再起動で付く）。
+**`deletion_log.closed_at` / `close_reason` の列は、2026-10-19 16:48:56 にトレイの自己検査の穴で
+実データに足された**（**事故 4 件目**。控えは無し＝`.tmp-tray\backups` と一緒に消えた。**行の変化は 0**）。
+**この列を足したのは利用者の起動ではない**ので、「利用者が立ち上げ直したときに `pre-topup-<日時>/` の
+控えが付く」という案内は**もう当てはまらない**（`missing_top_ups()` は空。事後の控えは
+`.backup/pre-tray-fix-20261019-204253/`）。原因と直しは [`tray-audit-triage.md`](tray-audit-triage.md) A-1。
 **この作業では実データを `mode=ro` でしか開いていない**（画像は 1 枚も動かしていない）。
 
 ### いま走っているもの
 
 **利用者のアプリは 2026-10-19 の時点で 8790 に居ません**（`Get-NetTCPConnection` に 8790 が無い。
 **こちらから止めたのではなく、もともと動いていなかった**。最後に確認したのは 2026-10-18 08:38 起動の個体 PID 7324）。
-**次に利用者が立ち上げ直した時点**で、P10 の `closed_at` / `close_reason` が `pre-topup-<日時>/` の控え付きで足され、
-**4 つの口が使えるようになる**（**こちらでは 1 バイトも書いていない**）。
+**次に利用者が立ち上げ直した時点**で、P10 の 4 つの口が使えるようになる（`closed_at` / `close_reason` の
+**列は 2026-10-19 16:48:56 に既に足されている**ので、`pre-topup-<日時>/` の控えは**もう付かない**。
+足したのは利用者の起動ではなく**トレイの自己検査の穴**＝事故 4 件目・**行の変化は 0**）。
 **日次のバックアップは `.backup/daily` に 3 世代ある**（2026-10-19 の P9 の監査 D-4 で確認。
 `%USERPROFILE%\image-reviewer-backups` は作られていないまま＝既定の置き場の謎は未解決）。
 **P10 の監査はこれから**（Fable が `docs/p10-audit-report.md` を書く。**私は触らない**）。
@@ -425,7 +439,9 @@ orca orchestration check --run run_5bdd431bf57b --ack <deliveryId> --json
 ### 5. 利用者に頼む 1 操作（P10。**これが次の 1 手**）
 
 **利用者がアプリを立ち上げ直して `#/pending-deletes` を開き、「全部選ぶ」→「まとめて片付ける」を押す。**
-そのとき **`pre-topup-<日時>/` の控えが付いてから `closed_at` / `close_reason` が足される**（版は上げない）。
+**（2026-10-19 の注記）`closed_at` / `close_reason` の列は既に足されている**ので、この操作で
+`pre-topup-<日時>/` の控えは**付かない**（足したのは利用者の起動ではなく、トレイの自己検査の穴＝
+事故 4 件目。`missing_top_ups()` は空。`tray-audit-triage.md` A-1）。
 **予想される結果**: **「187 件を片付けました。」＋「7 件はファイルがまだあるので片付けませんでした。」**。
 **残る 7 行は「アプリのゴミ箱へ移す」**で進められる（移した後も**アプリのゴミ箱に実体が在る間は片付けを断る**＝
 ゴミ箱を空にするのは利用者）。**バックアップは `.backup/daily` に 3 世代取れている**（P9 の監査 D-4 で確認済み）。
@@ -497,7 +513,8 @@ uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データ�
   （`gui_layout.mjs` の `WANT_STAGE[2]` の残件。§6）。
   **実データ（`mode=ro` で読んだだけ。1 バイトも書いていない）**: `asset` **461 行**・生きた **267 枚**・
   段 1 の生きた行 **194**・**実体が在る 7 行**（うち **6 行**は台帳の `asset_id` が古い形）・実体が無い **187 行**・
-  `deletion_log` **194 行**・`closed_at` / `close_reason` の**列はまだ無い**。
+  `deletion_log` **194 行**・**`closed_at` / `close_reason` の列は、この読みのあとの 16:48:56 に
+  トレイの自己検査の穴で足された**（事故 4 件目。控え無し・行の変化 0。`tray.md` §6）。
   **P10 の実装者が複製で通した線**（`tools/probe_deletions_advance.py` の **14 件**）: 段 1 → アプリのゴミ箱へ移る／
   「戻す」で元に戻る／実体が無ければ 409 `missing_file`／**194 件を 1 回で片付けて 187 件が閉じ 7 件が `file_found`**／
   `asset.deleted_at` はそのまま（187/187 が隠れたまま）／**ファイルの署名が同じ**（536 件が動いていない）／
@@ -576,7 +593,13 @@ uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データ�
 - **`pytest -k` の綴り違いは「1 件も選ばずに終了コード 5」で返る**（**落ちていないのに「落ちた」と数えていた**——
   壊し試験 13 件のうち 2 件がこれだった）。**`-k` で絞ったら「何件選ばれたか」を見る**
   （`1 deselected` / `no tests ran` を見落とさない）。**「落ちた」と数える前に、その試験が本当に走ったかを確かめる。**
-- **`deletion_log` に `closed_at` を書く SQL を、列の無い実データに打つと `no such column` で落ちる**
+- **道具が `cli serve` を起こすときは、置き場を必ず明示する**（**事故 4 件目**。2026-10-19、
+  トレイの自己検査の §10 が `IMAGE_REVIEWER_DATA` を付けずに `cli serve` を起こし、§2 が `attach` に
+  なっていたので環境変数が無いまま**既定の `.data` を開き、`deletion_log` に 2 列が控え無しで入った**）。
+  **`create_app()` の env 検査は `cli serve` を通す**（`serve_data_dir()` が既定を明示する）ので、
+  **ここは道具側の規律で塞ぐしかない**。直しは `tools/tray.ps1` `Start-OwnServer`（`$env:IMAGE_REVIEWER_DATA`
+  を必ず立てる）・`tools/tray_selftest.ps1`（4 ポートの空きを先に見て、`own` でなければ exit 2）。
+- **`deletion_log` に `closed_at` を書く SQL を、列の無い DB に打つと `no such column` で落ちる**
   （読み取り専用の点検スクリプトでも同じ。**列の有無を `PRAGMA table_info` で見てから**書く。
   §0 の「版を上げずに表を変える」と同じ規律）。
 - **実データの署名（`rglob` の size と `mtime_ns`）は、他のプロセスが `mode=ro` で開くだけで揺れる**——
@@ -606,6 +629,8 @@ uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データ�
   **`app` を PEP 562 の `__getattr__` で遅延**し、`serve` は `--factory`、**pytest は収集の前に `IMAGE_REVIEWER_DATA` をテストへ向ける**。
 - **版を上げずに表を変えるときも、変える前に控えを取る**（`pre-topup-<日時>/`）。**足す物の一覧は `db.TOP_UP_COLUMNS` に 1 か所**で書き、
   `_top_up_v6` と `missing_top_ups()` が同じ物を見る（P8-4 の D-2・G-5）。
+  **控えの置き場が scratch（`.tmp-*`）だと、掃除で控えごと消える**（事故 4 件目。`IMAGE_REVIEWER_BACKUP_DIR` を
+  `.tmp-tray\backups` に向けていたので、控えは `.data` に残らなかった）。**実データを開き得る道具の控えは消さない場所へ。**
 - **`sandbox` の子プロセスは `%USERPROFILE%` の下に書けない**（直下・`Documents`・`AppData\Local`・`Downloads`・`C:\work` 直下の
   7 か所で `WinError 5`）。**既定の `%USERPROFILE%\image-reviewer-backups` は作れない**——**実機の日次が 0 個なのはこれ**
   （P8-4 の再確認 B-1'）。検証では `IMAGE_REVIEWER_BACKUP_DIR` / `--out` で**リポジトリの中の `<data>` の外**へ向ける。
@@ -651,7 +676,8 @@ uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データ�
 2. **★ P9 の監査の再確認待ち**（[`p9-audit-triage.md`](p9-audit-triage.md) の直しが**実行で直っているか**）。
    とくに **C-1**（新しい読み取り専用の接続で `quick_check`）は**走ったまま壊れた DB**を作るので**複製で**回す。
 3. **★ 利用者の 1 操作: アプリを立ち上げ直して「まとめて片付ける」を押す**（P10 の仕上げ）。
-   押すと **`pre-topup-<日時>/` の控えが付いて `closed_at` / `close_reason` が足される**。
+   **（2026-10-19 の注記）`closed_at` / `close_reason` の列は既に足されている**（トレイの自己検査の穴＝
+   事故 4 件目。**控えは付かない**）。押す意味は「187 行を終わりにする」ことで、列を足すことではない。
    **予想: 「187 件を片付けました。」＋「7 件はファイルがまだあるので片付けませんでした。」**。
    **残る 7 行は「アプリのゴミ箱へ移す」**で進められる（**ゴミ箱を空にするのは利用者**）。
 4. **`tools/gui_layout.mjs` の `WANT_STAGE[2]` の 1 行**（**文言の担当の残件**。段 2 の結果の 1 行だけが
@@ -760,5 +786,7 @@ uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データ�
 - **2026-10-19 の実データ（P10 の文書反映のときに `mode=ro` で読んだだけ。1 バイトも書いていない）**:
   **`asset` 461 行・生きた 267 枚・`deletion_log` 194 行（全部が段 1 で生きたまま）**。
   **段 1 の 194 行のうち、実体が在るのは 7 行・実体が無いのは 187 行**（実体が在る 7 行のうち **6 行**は
-  台帳の `asset_id` が古い形＝§6 の罠）。**`closed_at` / `close_reason` の列はまだ無い**。
+  台帳の `asset_id` が古い形＝§6 の罠）。**`closed_at` / `close_reason` の列は、この読みのあとの
+  16:48:56 にトレイの自己検査の穴で足された**（事故 4 件目。控え無し・行の変化 0・
+  [`tray.md`](tray.md) §6）。
   **次の 1 操作は利用者の再起動 → 「まとめて片付ける」**（→ §3 の 5・§7 の新 3）。

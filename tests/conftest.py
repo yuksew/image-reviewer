@@ -42,11 +42,26 @@ def pytest_configure(config) -> None:
     （plugin・`python -c` の import・`conftest` 自身の import）、`migrate()` や
     `_top_up_v6` が実データに当たる。実際に、並行の作業の plugin が `image_reviewer.app` を
     import しただけで**実データに `deletion_log.stuck_reason` の列が足された**。
-    ここで `setdefault` しておけば、どのテスト・どの plugin から見てもテストの中になる
-    （テスト自身の `monkeypatch.setenv` は後から上書きするので影響しない）。
+
+    **（トレイの監査 C-6。2026-10-19）`setdefault` をやめて上書きにする。**
+    `setdefault` は**呼んだシェルの環境をそのまま使う**ので、親が実データ（か、監査の「安全網」の
+    フォルダ）を指していると、**テストがそこへ `db.sqlite3` を作った**（実測: 安全網のフォルダが
+    作られ、`test_pytest_always_has_a_data_dir_that_is_not_the_real_one` だけが落ちた。
+    **落ちた時点では前のテストがもうそのフォルダを開いている**）。
+    親が実データを指していたら**大きく知らせてから上書きする**（止めない——止めても
+    テストの置き場はテストの中なので、上書きの方が安全）。
     """
     config.addinivalue_line("markers", "comfyui: 実際に ComfyUI を呼ぶ（既定では走らせない）")
-    os.environ.setdefault("IMAGE_REVIEWER_DATA", str(BASE / "_proto_app"))
+    target = str(BASE / "_proto_app")
+    incoming = (os.environ.get("IMAGE_REVIEWER_DATA") or "").strip()
+    if incoming and Path(incoming).resolve() == (Path(__file__).resolve().parents[1] / ".data").resolve():
+        print(
+            "\n[重要] 呼んだシェルの IMAGE_REVIEWER_DATA が**実データ**（.data）を指しています。"
+            "テストは実データを開きません（テストの中へ上書きしました）。",
+            flush=True,
+        )
+    # **上書き**（引き継いだ値に任せない＝監査 C-6）
+    os.environ["IMAGE_REVIEWER_DATA"] = target
     os.environ.setdefault("IMAGE_REVIEWER_BACKUP_DIR", str(BASE / "_backups"))
 
 

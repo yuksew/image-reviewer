@@ -136,11 +136,85 @@ def test_the_tray_writes_only_under_the_repository():
     assert "sqlite" not in tray
     assert "Set-Content" not in tray and "Add-Content" not in tray
     assert "AppendAllText" in tray
-    # `IMAGE_REVIEWER_DATA` は**子に渡す env** としてだけ出てくる（トレイ自身は読まない）
-    assert "IMAGE_REVIEWER_DATA" in tray
-    assert "Remove-Item Env:IMAGE_REVIEWER_DATA" in tray, "親から引き継いだ env を消していない"
     # データ置き場は**表示にだけ**使う（書き込みの経路を作らない）
     assert "health.data_dir" in tray
+
+
+def test_the_tray_always_names_the_data_dir_it_opens():
+    """**子に渡す `IMAGE_REVIEWER_DATA` は必ずこの道具が明示する**（監査 A-1 の①）。
+
+    壊すと落ちる: `Remove-Item Env:IMAGE_REVIEWER_DATA` で「既定に任せる」道を戻す
+    （`cli serve` が既定の `.data` を開くので、**検査の事故がそのまま実データに届く**）。
+    併せて、検査・駆動の写し（`-DefineOnly`）では**空の置き場と実データを断る**ことを見る。
+    """
+    tray = read(TOOLS / "tray.ps1")
+    assert "Remove-Item Env:IMAGE_REVIEWER_DATA" not in tray, "既定に任せる道が残っている"
+    assert "$env:IMAGE_REVIEWER_DATA = $where" in tray, "子に置き場を明示していない"
+    assert "function Get-EffectiveDataDir" in tray
+    assert "function Test-RealDataDir" in tray
+    # `-DefineOnly` で読み込まれたら、空も実データも断る（1 プロセスも起動しない）
+    assert "$script:DefineOnly = [bool]$DefineOnly" in tray
+    assert "実データ（{0}）を開こうとしています" in tray
+    assert "既定の .data を開く道を通しません" in tray
+    # 前の 1 世代のログを残し、ポートごとに分ける（監査 D-6・D-8）
+    assert "Move-TrayLogAside" in tray
+    assert "Get-ServerLogPaths" in tray
+
+
+def test_the_tray_stops_only_its_own_child():
+    """**止めるのは自分の子の木の中だけ**（監査 A-2）。親子関係で確かめる。
+
+    壊すと落ちる: `Wait-ServerUp` が「`app` が image-reviewer」だけで受け取る／
+    `Get-OwnServerPids` が同一性と親子を見ない（**起動の競合で他人のサーバを `/F` で止める**）。
+    """
+    tray = read(TOOLS / "tray.ps1")
+    assert "function Get-ProcessParentId" in tray
+    assert "function Test-DescendantOf" in tray
+    assert "Test-DescendantOf -ProcessId ([int]$st.pid) -AncestorId ([int]$Proc.Id)" in tray
+    assert "Test-DescendantOf -ProcessId ([int]$st.pid) -AncestorId ([int]$State.Proc.Id)" in tray
+    assert "-Proc $proc" in tray, "起動の待ちに自分の子を渡していない"
+    assert "if ($Proc.HasExited) { return $null }" in tray, "子が落ちても待ち続ける（監査 B-1）"
+    assert "state = 'stranger'" in tray, "自分の子でない相手を attach に落としていない"
+    # 死んだ PID は撃たない（監査 C-3）
+    assert "if (-not $State.Proc.HasExited) { $pids += [int]$State.Proc.Id }" in tray
+
+
+def test_the_selftest_never_opens_the_real_data():
+    """**自己検査は、置き場を明示せずにサーバを 1 つも起動しない**（監査 A-1）。
+
+    壊すと落ちる: §10 の「他人のサーバ」を環境変数なしで起こす（ポートが埋まっていると
+    §2 が `attach` になり、**既定の `.data` を開く**＝実際に起きた事故）。
+    """
+    selftest = read(TOOLS / "tray_selftest.ps1")
+    # ① 置き場をこの検査が自分で立てる（親からの引き継ぎに頼らない）
+    assert "$env:IMAGE_REVIEWER_DATA = $Replica" in selftest
+    # ② 使うポートが空いていなければ、1 つも起動せずに止まる
+    assert "使う 4 つのポートは空いている" in selftest
+    assert "exit 2" in selftest
+    # ③ §2 が自分で起動しなかったら、そこで止める（以降の検査を進めない）
+    assert "'自分で起動した（own）' ($init.result -eq 'own')" in selftest
+    # ④ 実データを指したら起動しない（本物の .data では試さず、見本を向けて確かめる）
+    assert "実データ（既定の置き場）を指したら起動しない" in selftest
+    assert "pretend-real-data" in selftest, "本物の .data で断りを試そうとしている"
+    # ⑤ 子が落ちたら待たない・競合では他人を持たない・メニューの終了の道も見る
+    assert "90 秒も待たない" in selftest
+    assert "競合では他人の pid を持たない" in selftest
+    assert "メニューの終了の道でも本体が消えた" in selftest
+
+
+def test_the_tray_docs_record_the_real_data_accident():
+    """**実データに起きたことを、事実のまま書いてある**（監査 A-1・G-4）。
+
+    壊すと落ちる: 「実データは無傷」を戻す（**列が 2 つ足りて控えが無い**という事実を隠す）。
+    利用者に「何も起きていない」と読ませない（P8-4・P8-6 と同じ型の事故）。
+    """
+    tray_doc = read(REPO / "docs" / "tray.md")
+    assert "実データは無傷" not in tray_doc, "tray.md に古い「無傷」が残っている"
+    assert "closed_at" in tray_doc and "close_reason" in tray_doc
+    assert "控え" in tray_doc
+    handoff = read(REPO / "docs" / "handoff.md")
+    assert "closed_at` / `close_reason` の列はまだ無い" not in handoff
+    assert "2026-10-19 16:48" in handoff, "事故の時刻が記録に無い"
 
 
 # ---- 3. 家風（止める・文言） ----
@@ -160,7 +234,6 @@ def test_the_tray_stops_only_what_it_started():
     for bad in ["Get-NetTCPConnection", "netstat", "Stop-Process -Name"]:
         assert bad not in tray, f"{bad} で相手を探している（ポートから止める道）"
     assert "ServerPid" in tray, "本体の pid を持っていない（shim の子を見落とす）"
-
 
 def test_the_menu_labels_follow_the_wording_rules():
     """**メニューの文言が `frontend-design.md` §6.1 に従っている。**

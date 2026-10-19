@@ -145,7 +145,9 @@ def test_the_tray_always_names_the_data_dir_it_opens():
 
     壊すと落ちる: `Remove-Item Env:IMAGE_REVIEWER_DATA` で「既定に任せる」道を戻す
     （`cli serve` が既定の `.data` を開くので、**検査の事故がそのまま実データに届く**）。
-    併せて、検査・駆動の写し（`-DefineOnly`）では**空の置き場と実データを断る**ことを見る。
+    併せて、**試験用の引数（`-DefineOnly`・`-DriveScript`・`-StatusAutoCloseMs`）**では
+    **空の置き場と実データを断る**ことを見る（**再確認 B-1**: 駆動も同じ断りを通す）。
+    **相対パスは子と同じ基準（リポジトリ）で解く**ことも見る（**再確認 C-1**）。
     """
     tray = read(TOOLS / "tray.ps1")
     assert "Remove-Item Env:IMAGE_REVIEWER_DATA" not in tray, "既定に任せる道が残っている"
@@ -156,6 +158,15 @@ def test_the_tray_always_names_the_data_dir_it_opens():
     assert "$script:DefineOnly = [bool]$DefineOnly" in tray
     assert "実データ（{0}）を開こうとしています" in tray
     assert "既定の .data を開く道を通しません" in tray
+    # **（再確認 B-1）駆動も断る**: 試験用の引数をまとめた 1 つの印で見る
+    assert "$script:TestArgs = [bool](" in tray, "試験用の引数の印が無い"
+    assert "$script:TestArgs -or" in tray or "($script:DefineOnly -or $script:TestArgs)" in tray, \
+        "`-DriveScript` が断りの条件に入っていない（駆動はトレイを丸ごと起こす）"
+    assert "試験用の起動を断ります" in tray, "入口で断る行が無い"
+    # **（再確認 C-1）相対パスを子と同じ基準で解く**
+    assert "function Resolve-DataDirPath" in tray
+    assert "Resolve-DataDirPath -Path $DataDir" in tray, "渡された置き場を絶対パスにしていない"
+    assert "[System.IO.Path]::IsPathRooted($Path)" in tray
     # 前の 1 世代のログを残し、ポートごとに分ける（監査 D-6・D-8）
     assert "Move-TrayLogAside" in tray
     assert "Get-ServerLogPaths" in tray
@@ -184,6 +195,10 @@ def test_the_selftest_never_opens_the_real_data():
 
     壊すと落ちる: §10 の「他人のサーバ」を環境変数なしで起こす（ポートが埋まっていると
     §2 が `attach` になり、**既定の `.data` を開く**＝実際に起きた事故）。
+
+    **（再確認 A-1・C-2）**「使う 4 つのポートを 4 つとも見る」形と、**後始末がこの検査の子だけを
+    止める**形が残っているかも見る。静的な検査だけでは**振る舞い**を守れないので、
+    `tests/test_tray_ports.py` が本物の検査を子で回して確かめる（監査 F の指摘）。
     """
     selftest = read(TOOLS / "tray_selftest.ps1")
     # ① 置き場をこの検査が自分で立てる（親からの引き継ぎに頼らない）
@@ -191,6 +206,20 @@ def test_the_selftest_never_opens_the_real_data():
     # ② 使うポートが空いていなければ、1 つも起動せずに止まる
     assert "使う 4 つのポートは空いている" in selftest
     assert "exit 2" in selftest
+    # **（再確認 A-1）カンマは `+` より強い**ので、括弧の無い `@($Port, $Port + 1, …)` は
+    # 7 要素になり **8795 しか見ない**（実測 count=7）。括弧付きの形だけを許す。
+    # **コメントは見ない**（何が起きるかを説明するために、悪い形を引用している）。
+    # ブロックコメント `<# … #>` と行コメント `#` を落としてから見る。
+    stripped = re.sub(r"<#.*?#>", "", selftest, flags=re.S)
+    code = "\n".join(ln for ln in stripped.splitlines() if not ln.lstrip().startswith("#"))
+    assert "@($Port, ($Port + 1), ($Port + 2), ($Port + 3))" in code
+    assert "@($Port, $Port + 1" not in code, "括弧の無い形（7 要素になる）が戻っている"
+    # **（再確認 C-2）後始末は、この検査が起こした物（Register-OwnProcess）の木だけ**。
+    # ポートを数えて `--port <Port>` の python を止める形は、同じポートの他人を巻き込む。
+    assert "function Register-OwnProcess" in selftest
+    assert "function Stop-OurProcesses" in selftest
+    assert selftest.count("Stop-OurProcesses") >= 3, "trap・§2・まとめで後始末を通していない"
+    assert "foreach ($p in @($Port" not in code, "ポートを数えて止める後始末が戻っている"
     # ③ §2 が自分で起動しなかったら、そこで止める（以降の検査を進めない）
     assert "'自分で起動した（own）' ($init.result -eq 'own')" in selftest
     # ④ 実データを指したら起動しない（本物の .data では試さず、見本を向けて確かめる）
@@ -200,6 +229,11 @@ def test_the_selftest_never_opens_the_real_data():
     assert "90 秒も待たない" in selftest
     assert "競合では他人の pid を持たない" in selftest
     assert "メニューの終了の道でも本体が消えた" in selftest
+    # **（再確認 R1・R2・R3・R8・R11）** 直した所の周りの道も見る（監査 F の「13 通りが落ちない」）
+    for name in ["他人が立った形を見つける", "バックアップの失敗を知らせる",
+                 "見切りは 2 秒", "残りの口を打たない", "持っていた子は片付ける",
+                 "他人が立った形では再起動しない"]:
+        assert name in selftest, f"「{name}」の検査が無い（監査 F の穴）"
 
 
 def test_the_tray_docs_record_the_real_data_accident():

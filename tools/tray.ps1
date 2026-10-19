@@ -26,8 +26,10 @@
        触れない。ポート番号から相手を探して止める道は作らない）。
     6. **（2026-10-19 の監査 A-1）子に渡す `IMAGE_REVIEWER_DATA` は、必ずこの道具が明示する。**
        親から引き継いだ値に頼らず、**消して既定に任せる道も作らない**（`serve_data_dir()` が
-       既定の `.data` を開く道が残るため）。`-DefineOnly` で読み込んだとき（自己検査・駆動）は、
-       **空の `-DataDir` と実データの `.data` を断る**（1 プロセスも起動しない）。
+       既定の `.data` を開く道が残るため）。**試験用の引数（`-DefineOnly`・`-DriveScript`・
+       `-StatusAutoCloseMs`）で読み込んだときは、空の `-DataDir` と実データの `.data` を断る**
+       （1 プロセスも起動しない。**駆動も同じ**——`-DriveScript` はトレイを丸ごと起こす道なので、
+       `-DataDir` を忘れると本番と同じ道で既定の `.data` を開いてしまう。**2026-10-19 の再確認 B-1**）。
     7. **（監査 A-2）受け取るのは、自分の子の木の中に居るサーバだけ。** `/api/health` が
        `app: "image-reviewer"` と答えただけでは受け取らない（**親子関係**で確かめる）。
        確かめられないときは**止めない**（迷ったら止めない）。踏み台が落ちていたら**すぐ失敗**する。
@@ -42,7 +44,8 @@
 .PARAMETER DataDir
     子プロセスに渡す `IMAGE_REVIEWER_DATA`（試験で複製を指すため）。
     **空は「トレイの本番の道」だけ**を意味し、そのときも `<リポジトリ>\.data` を**明示的に**渡す
-    （監査 A-1）。`-DefineOnly` で読み込んだときは**空を断る**。
+    （監査 A-1）。**試験用の引数（`-DefineOnly`・`-DriveScript`・`-StatusAutoCloseMs`）と一緒なら空は断る。**
+    **相対パスはリポジトリ基準で絶対パスに直してから渡す**（子の現在地で解かれるため。**再確認 C-1**）。
 
 .PARAMETER NoBrowser
     起動時にブラウザを開かない（試験と、手で開きたいとき用）。
@@ -50,6 +53,7 @@
 .PARAMETER DriveScript
     **試験用。** 人がメニューを押す代わりに、指定した .ps1 を読み込んで実メニューを操作する
     （`tools\tray_drive.ps1`）。ダイアログは出さずログに書く。
+    **`-DataDir <複製>` が必須**（無い・実データなら 1 プロセスも起こさずに断る。**再確認 B-1**）。
 
 .PARAMETER StatusAutoCloseMs
     **試験用。** 「状態を見る」の窓を自動で閉じるまでのミリ秒（0 なら人が閉じるまで開く）。
@@ -90,6 +94,13 @@ $script:PollMs = 5000
 #: **（監査 A-1）** `-DefineOnly` で読み込まれたか（自己検査・駆動の写し）。
 #: このときは**サーバを起動しない**のが規律（空や実データの置き場は `Start-OwnServer` が断る）。
 $script:DefineOnly = [bool]$DefineOnly
+#: **試験用の引数が付いているか**（`-DefineOnly`・`-DriveScript`・`-StatusAutoCloseMs`。**再確認 B-1**）。
+#: このときは**明示の複製が無ければ 1 プロセスも起こさない**——駆動（`-DriveScript`）は
+#: トレイを丸ごと起こす道で、`-DataDir` を忘れると**本番と同じ道で既定の `.data` を開く**
+#: （`tools\tray_drive.ps1` は要求を 1 件 `POST` するので、実データに書かれる）。
+$script:DriveScript = [string]$DriveScript
+$script:StatusAutoCloseMs = [int]$StatusAutoCloseMs
+$script:TestArgs = [bool]($DefineOnly -or $script:DriveScript -or ($script:StatusAutoCloseMs -gt 0))
 #: 既定のデータ置き場。`src/image_reviewer/app.py` の `DEFAULT_DATA_DIR` と同じ場所。
 #: **`cli serve` に「既定を開く」道があるので、こちらからは必ず明示して渡す**（監査 A-1 の④）。
 $script:DefaultDataDir = Join-Path $script:RepoRoot '.data'
@@ -182,13 +193,35 @@ function Get-ServerLogTail {
 
 # ---- データ置き場の規律（**監査 A-1**）----
 
+function Resolve-DataDirPath {
+    <#
+        **子と同じ基準で絶対パスにする**（**再確認 C-1**）。
+
+        子は `-WorkingDirectory $script:RepoRoot` で起動し、`app.data_dir()` は
+        `Path(os.environ[...])` を**子の現在地**（＝リポジトリ）で解く。ところが
+        `[System.IO.Path]::GetFullPath()` は **トレイのプロセスの現在地**で解くので、
+        同じ文字列が別の場所を指し得る（現在地 `C:\` から `-DataDir .data` を渡すと、
+        比べる所は `C:\.data`、子が開くのは `<リポジトリ>\.data`）。
+        **相対パスはリポジトリ基準**に直してから比べ、**その絶対パスを子にも渡す**。
+    #>
+    param([string]$Path)
+    if (-not $Path) { return '' }
+    try {
+        if ([System.IO.Path]::IsPathRooted($Path)) { return [System.IO.Path]::GetFullPath($Path) }
+        return [System.IO.Path]::GetFullPath((Join-Path $script:RepoRoot $Path))
+    } catch {
+        # **解けない形はそのまま返す**（比べる所で偽になる。止めない側に倒す）
+        return $Path
+    }
+}
+
 function Test-RealDataDir {
-    <# そのパスが**実データの `.data`** を指しているか（表記ゆれを畳んで比べる）。 #>
+    <# そのパスが**実データの `.data`** を指しているか（表記ゆれを畳んで比べる。**子と同じ基準で解く**）。 #>
     param([string]$Path)
     if (-not $Path) { return $false }
     try {
-        $a = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
-        $b = [System.IO.Path]::GetFullPath($script:DefaultDataDir).TrimEnd('\')
+        $a = (Resolve-DataDirPath -Path $Path).TrimEnd('\')
+        $b = (Resolve-DataDirPath -Path $script:DefaultDataDir).TrimEnd('\')
         return ($a -eq $b)
     } catch {
         return $false
@@ -197,20 +230,30 @@ function Test-RealDataDir {
 
 function Get-EffectiveDataDir {
     <#
-        **子に渡す `IMAGE_REVIEWER_DATA` を必ず明示して返す**（監査 A-1 の①）。
+        **子に渡す `IMAGE_REVIEWER_DATA` を必ず明示して返す**（監査 A-1 の①。**絶対パスで返す**）。
 
-        - 渡された `-DataDir`（自己検査・駆動の複製）… そのまま
+        - 渡された `-DataDir`（自己検査・駆動の複製）… **リポジトリ基準の絶対パス**にして返す（再確認 C-1）
         - 空（利用者の本番の起動）… 既定の `<リポジトリ>\.data`。**`cli serve` の既定と同じ**
           だが、**こちらから明示して渡す**（`Remove-Item Env:` で「既定に任せる」道を作らない）
-        - **`-DefineOnly`（検査・駆動の写し）で空** … **断る**（既定＝実データを開く道を残さない）
+        - **試験用の引数（`-DefineOnly`・`-DriveScript`・`-StatusAutoCloseMs`）で空** … **断る**
+          （既定＝実データを開く道を残さない）
+        - **同じとき、実データの `.data` を指していても断る**（**再確認 B-1**。駆動も断る）
     #>
     param([string]$DataDir = '')
-    if ($DataDir) { return $DataDir }
-    if ($script:DefineOnly) {
-        throw ('データ置き場が指定されていません。`-DefineOnly` で読み込んだときは、' +
-               '既定の .data を開く道を通しません（実データを事故で開かないため）。-DataDir <複製> を渡してください。')
+    $test = ($script:DefineOnly -or $script:TestArgs)
+    if (-not $DataDir) {
+        if ($test) {
+            throw ('データ置き場が指定されていません。試験用の引数（`-DefineOnly`・`-DriveScript`・' +
+                   '`-StatusAutoCloseMs`）で読み込んだときは、既定の .data を開く道を通しません' +
+                   '（実データを事故で開かないため）。-DataDir <複製> を渡してください。')
+        }
+        return $script:DefaultDataDir
     }
-    return $script:DefaultDataDir
+    $where = Resolve-DataDirPath -Path $DataDir
+    if ($test -and (Test-RealDataDir -Path $where)) {
+        throw ('実データ（{0}）を開こうとしています。検査と駆動では -DataDir <複製> を渡してください。' -f $where)
+    }
+    return $where
 }
 
 # ---- プロセスの親子（**監査 A-2・C-3**）----
@@ -435,9 +478,11 @@ function Start-OwnServer {
         [string]$DataDir = '',
         [int]$TimeoutSec = 90
     )
-    # **① 置き場を決める（空なら DefineOnly では throw）→ ② 実データなら DefineOnly では throw**
+    # **① 置き場を決める（空・実データなら試験用の引数では throw）→ ② もう一度、実データでないことを確かめる**
+    # （**再確認 B-1**: 駆動（`-DriveScript`）も `-DefineOnly` と同じ断りを通す。
+    #  ここは二重の網——`Get-EffectiveDataDir` が断った時点で 1 プロセスも起動していない）
     $where = Get-EffectiveDataDir -DataDir $DataDir
-    if ($script:DefineOnly -and (Test-RealDataDir -Path $where)) {
+    if (($script:DefineOnly -or $script:TestArgs) -and (Test-RealDataDir -Path $where)) {
         throw ('実データ（{0}）を開こうとしています。検査と駆動では -DataDir <複製> を渡してください。' -f $where)
     }
     $cmd = Resolve-ServerCommand -Port $State.Port
@@ -1423,8 +1468,28 @@ $script:StatusAutoCloseMs = $StatusAutoCloseMs
 if (-not (Test-Path -LiteralPath $script:LogDir)) {
     New-Item -ItemType Directory -Force -Path $script:LogDir | Out-Null
 }
+
+# **（再確認 B-1）試験用の引数があるときは、明示の複製が無ければ 1 プロセスも起こさない。**
+# 駆動（`-DriveScript`）はトレイを丸ごと起こす道なので、`-DataDir` を忘れると
+# **本番と同じ道で既定の `.data` を開く**（`tools\tray_drive.ps1` は要求を 1 件 `POST` する）。
+# ここで断れば、ミューテックスも取らず、ポートも見ず、**1 バイトも書かずに**終わる。
+if ($script:TestArgs) {
+    $guard = ''
+    try {
+        $null = Get-EffectiveDataDir -DataDir $DataDir
+    } catch {
+        $guard = $_.Exception.Message
+    }
+    if ($guard) {
+        Write-TrayLog ('試験用の起動を断ります: {0}' -f $guard)
+        Write-Output $guard
+        exit 2
+    }
+}
+
 $where = ''
-if ($DataDir) { $where = '、データ置き場 ' + $DataDir }
+# **記録にも子に渡すのと同じ絶対パスを出す**（相対パスを渡されたときに、どの置き場を開くのかが読める。再確認 C-1）
+if ($DataDir) { $where = '、データ置き場 ' + (Resolve-DataDirPath -Path $DataDir) }
 Write-TrayLog ('トレイを起動します（ポート {0}{1}）' -f $Port, $where)
 
 # 1. トレイは 1 つだけ（2 回目はブラウザを開くだけ。設計 §4.1 の二重起動の考え方と同じ）

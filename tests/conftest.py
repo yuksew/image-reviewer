@@ -50,6 +50,11 @@ def pytest_configure(config) -> None:
     **落ちた時点では前のテストがもうそのフォルダを開いている**）。
     親が実データを指していたら**大きく知らせてから上書きする**（止めない——止めても
     テストの置き場はテストの中なので、上書きの方が安全）。
+
+    **（トレイの再確認 D-3。2026-10-19）バックアップの置き場も同じ型だったので上書きにする。**
+    `IMAGE_REVIEWER_BACKUP_DIR` を `setdefault` で引き継ぐと、親（監査の「安全網」）が指した
+    フォルダに控えを作り得る。**実害は確かめられていない**（親を `.tmp-tray-recheck\bk-net` に
+    向けて 570 件を回しても、そこには何も作られなかった）が、**引き継ぐ型は C-6 と同じ**なので揃える。
     """
     config.addinivalue_line("markers", "comfyui: 実際に ComfyUI を呼ぶ（既定では走らせない）")
     target = str(BASE / "_proto_app")
@@ -62,7 +67,7 @@ def pytest_configure(config) -> None:
         )
     # **上書き**（引き継いだ値に任せない＝監査 C-6）
     os.environ["IMAGE_REVIEWER_DATA"] = target
-    os.environ.setdefault("IMAGE_REVIEWER_BACKUP_DIR", str(BASE / "_backups"))
+    os.environ["IMAGE_REVIEWER_BACKUP_DIR"] = str(BASE / "_backups")
 
 
 def _close_prototype_app() -> None:

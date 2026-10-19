@@ -16,15 +16,15 @@
 - **`docs/design.md` §12.1 の性能の目標は全部実測で埋めた**（未計測 0）。届かなかったのは一覧 API の
   1 行だけで、理由と必要な条件は [`docs/design.md`](docs/design.md) §12.1 と
   [`docs/p9-implementation.md`](docs/p9-implementation.md) にある。
-- **テスト 570 件**（`uv run --no-sync pytest -q` を自分で回して実測。**570 passed・0 failed**。
-  **トレイの契約 15 件**が入った数）。
+- **テスト 577 件**（`uv run --no-sync pytest -q` を自分で回して実測。**577 passed・0 failed**。
+  **トレイの契約 15 件＋振る舞い 1 件**が入った数）。
   **並行して誰かが実データを `mode=ro` で読んでいると `test_data_dir_guard.py` の 1 件が落ちうる**
   （署名に使う `db.sqlite3-shm` の `mtime_ns` が動くため。**中身は変わっていない**。`docs/handoff.md` §6）。
 - **`gui_smoke` 406 検査**（ok / NG 0。**自分で回して実測**）。
 - **`gui_layout` 10 画面 × 4 幅**（`VIEWPORTS` は 1400・1024・1200・1920。＋`pending --ids` の 11 本目）を
   **複製で回して実測**（2026-10-19）。**`--screen tags` は語が 0 件だと必ず NG** なので
   `gui_layout_seed.py --tags` を当てた複製で回す。
-  **2026-10-19 の実測（トレイの監査の直しの後）**: **52 ok / NG 0**（11 本 × 4 幅。比較は 3 窓 × 4 幅＝12 検査）。
+  **2026-10-20 の実測（トレイの再確認の直しの後）**: **52 ok / NG 0**（11 本 × 4 幅。比較は 3 窓 × 4 幅＝12 検査）。
   `--screen pending` と `--screen pending --ids` が 4 幅とも NG だったのは、`tools/gui_layout.mjs` の
   「**まとめてのチェック**」が「全部選ぶ」で**一覧の全部の行**が選ばれることを期待していたため
   （`apps/gui/pending.js:387` の `canPick()` は**段 1 と `closeable` の行だけ**を選べる形＝P10 の仕様。
@@ -74,11 +74,12 @@ uv sync
 uv sync --extra tagger                      # 内蔵タガー（onnxruntime。任意。入れると `auto` が内蔵を選ぶ）
 uv run image-reviewer scan --root 'C:\work\illust-authoring\.store\anima-dev'
 uv run image-reviewer serve --port 8790     # → http://127.0.0.1:8790
-uv run --no-sync pytest -q                  # 570 件（2026-10-19 に実測）
+uv run --no-sync pytest -q                  # 577 件（2026-10-20 に実測）
 node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。406 検査）
 # **トレイの検査**（別のポートと、合成した複製だけで回す。**8790 は使わない**。
-# 使う 4 ポートが空いていなければ、1 つも起動せずに exit 2 で止まる）
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\tray_selftest.ps1 -Port 8795   # 115 検査
+# 使う 4 ポート（-Port〜+3）の 1 つでも埋まっていれば、1 つも起動せずに exit 2 で止まる）
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\tray_selftest.ps1 -Port 8795   # 133 検査
+# 4 ポートの確認そのものは、偽サーバを立てて子で回す 1 件が振る舞いで見る（約 7 秒・pytest に入っている）
 # 画面の計測（本物の Chrome）は**複製で立てたサーバ**へ。実データの 8790 では回さない（§「gui_layout は…」）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --count 8          # 比較（3 窓）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen requests  # 要求の一覧
@@ -205,6 +206,7 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/tray.md`](docs/tray.md) | **タスクトレイ常駐**（作った物・使い方・自動で確かめた結果・手で確かめた結果・設計の穴・**実データに起きた事故**） | — |
 | [`docs/tray-audit-report.md`](docs/tray-audit-report.md) | **トレイの監査**（判定「直してから次へ」。A-1＝実データに 2 列・A-2＝他人のサーバを止め得た・B〜G） | — |
 | [`docs/tray-audit-triage.md`](docs/tray-audit-triage.md) | トレイの監査の指摘の仕分け（**1 件 1 行**。採用／理由つきで残す） | — |
+| [docs/tray-recheck-triage.md](docs/tray-recheck-triage.md) | トレイの**再確認**の指摘の仕分けと直し（**A-1 の 4 ポート**・**B-1 の駆動の断り**・C-1/C-2・D〜F。**1 件 1 行**＋壊し試験 8 通り） | — |
 | [`docs/metadata-findings.md`](docs/metadata-findings.md) | 実機で確認した前提（PNG / JPEG・タガー）＋ 実測した性能 | — |
 | [`docs/comfyui-reproduction-findings.md`](docs/comfyui-reproduction-findings.md) | ComfyUI の再現経路の詳細調査（ソース引用つき・836 行） | — |
 | [`schemas/review-export.schema.json`](schemas/review-export.schema.json) | 他ツールが読む外部契約（draft 2020-12、`abi: 0.1`） | — |

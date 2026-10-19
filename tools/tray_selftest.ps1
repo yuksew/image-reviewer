@@ -8,11 +8,12 @@
 
     | # | 線 | 何を壊すと落ちるか |
     | --- | --- | --- |
-    | 1 | 前提（8790 を触らない・**使うポートが空いている**・複製を作る） | 空きを見ないと、他人のサーバを巻き込む（監査 A-1） |
+    | 1 | 前提（8790 を触らない・**使う 4 つのポートを 4 つとも見る**・複製を作る） | 空きを見ないと、他人のサーバを巻き込む（監査 A-1・**再確認 A-1**） |
     | 1b | **錠**（`-DefineOnly` では空の置き場も実データも断る） | 断りを外すと、検査が**実データを開く**（監査 A-1） |
     | 2 | 起動（自分で起動する。**本体が自分の子の子孫**） | 親子を見ないと、他人の pid を自分の物にする（監査 A-2） |
-    | 2b | **起動に失敗したら待たない** | 生死を見ないと 90 秒黙って待つ（監査 B-1） |
-    | 2c | **本物の応答から読む**（バックアップの失敗・件数） | 手で作った snapshot だけ見ると、読む道が壊れても通る（監査 F-3・F-5） |
+    | 2b | **起動に失敗したら待たない**・**起動の前に断られても持っている子は片付ける** | 生死を見ないと 90 秒黙って待つ（監査 B-1）／後始末を外すと迷子が残る（**再確認 R8**） |
+    | 2c | **本物の応答から読む**（バックアップの失敗・件数・**起動直後の知らせ**） | 手で作った snapshot だけ見ると、読む道が壊れても通る（監査 F-3・F-5。**再確認 R2**） |
+    | 2d | **遅い口**（1 つ落ちたら残りを打たず、2 秒で見切る） | 見切りを外すと UI が固まる（監査 C-2。**再確認 R3・R3b**） |
     | 3 | **二重起動しない**（既に動いていれば繋ぐ。**このポートの** python を数える） | `attach` を外すと 2 つ目が上がる（監査 F-6） |
     | 4 | **別のアプリのポートでは起動しない** | `other` の判定を外すと他人のポートを掴もうとする |
     | 5 | 状態の本文（**失敗を必ず出す**・確かめられなかった・止めない相手） | `backup_failed` の行を消すと落ちる |
@@ -20,12 +21,15 @@
     | 7 | メニューの文言（§6.1。中黒・終止形・開発の記法を出さない） | 文言を変えると落ちる（監査 D-3・D-4） |
     | 8 | 添付のときのメニュー（終了の語と再起動の可否。**他人が立った形も**） | `Update-TrayMenu` を外すと落ちる（監査 C-4） |
     | 9 | **終了は自分が起動した物だけ止める**（関数の道と、**メニューの終了の道**） | PID ではなくポートで止める実装にすると落ちる（監査 F-4） |
-    | 10 | **他人が起動した物を止めない**（競合・自分のサーバが落ちた後） | 親子と同一性を確かめないと落ちる（監査 A-2・F-7） |
+    | 9b | **止める前に「他人が立った形」を見る**（再起動の道） | 見ないと、止めないはずのサーバを止めて起動し直す（**再確認 R11**） |
+    | 10 | **他人が起動した物を止めない**（競合・自分のサーバが落ちた後・**本物の応答から読む**） | 親子と同一性を確かめないと落ちる（監査 A-2・F-7。**再確認 R1**） |
     | 11 | 記録（`.tray` のログ） | 記録を外すと落ちる |
 
     **利用者の 8790 は使わない**（別のポートと、合成した複製だけで回す）。
     **実データ `.data` には 1 バイトも触らない**（`tools\make_synthetic_db.py` の複製を使う）。
     **`IMAGE_REVIEWER_DATA` はこの検査が自分で立てる**（親から引き継いだ値に頼らない。監査 A-1）。
+    **後始末（`trap`・§2・まとめ）は、この検査が起こした物（`Register-OwnProcess`）の木だけを止める**——
+    ポートを数えて止める道は作らない（同じポートの他人を巻き込む。**再確認 C-2**）。
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File tools\tray_selftest.ps1 -Port 8795
@@ -34,6 +38,8 @@
     **`-ExecutionPolicy Bypass` が要る**（この環境では .ps1 が素では実行できない。`docs/tray.md`）。
     **使う 4 つのポート（`-Port`〜`+3`）が空いていなければ、1 つも起動せずに exit 2** で止まる
     （監査 A-1: 途中で `attach` になって、環境変数の無いサーバを起こす道を塞ぐ）。
+    **4 つとも見ていることを、この検査自身が数で確かめる**（再確認 A-1。`@($Port, $Port + 1, …)` は
+    PowerShell ではカンマが `+` より強く、**7 要素**になって **8795 しか見ない**）。
 #>
 [CmdletBinding()]
 param(
@@ -48,6 +54,9 @@ $root = Split-Path -Parent $PSScriptRoot
 $tmp = Join-Path $root '.tmp-tray'
 $script:Ng = 0
 $script:Ok = 0
+#: **この検査が起こした物**（後始末はこの一覧の木だけ。監査 A-1・**再確認 C-2**）。
+#: ポートを数えて止める道は作らない——同じポートに他人が立っていたときに巻き込む。
+$script:OwnProcs = New-Object System.Collections.Generic.List[System.Diagnostics.Process]
 if (-not $TrayScript) { $TrayScript = Join-Path $root 'tools\tray.ps1' }
 
 function Check {
@@ -103,24 +112,51 @@ function Stop-TestProcess {
     try { & (Join-Path $env:SystemRoot 'System32\taskkill.exe') /PID $ProcessId /T /F 2>&1 | Out-Null } catch { }
 }
 
+function Register-OwnProcess {
+    <#
+        **この検査が起こした物を覚える**（後始末はここに載った物の木だけ。**再確認 C-2**）。
+
+        `Start-Process -PassThru` が返した物（ハンドル）をそのまま持つ——**PID の再利用**を防ぐ
+        （死んだ PID に `/F` を打たない。監査 C-3 と同じ規律）。
+    #>
+    param([System.Diagnostics.Process]$Proc)
+    if ($null -eq $Proc) { return }
+    foreach ($known in @($script:OwnProcs)) {
+        if ($null -ne $known -and $known.Id -eq $Proc.Id) { return }
+    }
+    $script:OwnProcs.Add($Proc)
+}
+
+function Stop-OurProcesses {
+    <#
+        **この検査が起こした物だけ**を木ごと止める（監査 A-1・**再確認 C-2**）。
+
+        ポートを数えて `--port <Port>` の python を止める形は**使わない**——§1 で空きを確かめた後に
+        他人がそのポートで立てた物（並行の監査・別の自己検査）を巻き込む。**迷ったら止めない**。
+    #>
+    foreach ($proc in @($script:OwnProcs)) {
+        if ($null -eq $proc) { continue }
+        $alive = $false
+        try {
+            $proc.Refresh()
+            $alive = -not $proc.HasExited
+        } catch { $alive = $false }
+        if ($alive) { Stop-TestProcess -ProcessId $proc.Id }
+    }
+    $script:OwnProcs.Clear()
+}
+
 trap {
     <#
-        **検査そのものが落ちたときの後始末。** 途中で例外が出ても、この検査が立てたサーバ
-        （`--port <Port>`〜`+3`）を残さない——残すと**出力のパイプを掴んだまま**になり、
-        呼んだ側が戻らなくなる（この検査を書いたときに実際に踏んだ）。**他人のポートは触らない**。
+        **検査そのものが落ちたときの後始末。** 途中で例外が出ても、**この検査が起こした物**
+        （`Register-OwnProcess` に載った PID）を残さない——残すと**出力のパイプを掴んだまま**になり、
+        呼んだ側が戻らなくなる（この検査を書いたときに実際に踏んだ）。
+
+        **ポートを数えて止める道は作らない**（同じポートに立った他人を巻き込む。**再確認 C-2**）。
     #>
     Write-Output ''
     Write-Output ('NG   検査そのものが落ちました: {0}' -f $_.Exception.Message)
-    foreach ($p in @($Port, $Port + 1, $Port + 2, $Port + 3)) {
-        try {
-            $rows = Get-CimInstance -ClassName Win32_Process -Filter "Name = 'python.exe'" -ErrorAction Stop
-            foreach ($r in @($rows)) {
-                if ([string]$r.CommandLine -match ('--port\s+{0}(\s|$)' -f $p)) {
-                    try { & (Join-Path $env:SystemRoot 'System32\taskkill.exe') /PID $r.ProcessId /T /F 2>&1 | Out-Null } catch { }
-                }
-            }
-        } catch { }
-    }
+    Stop-OurProcesses
     exit 3
 }
 
@@ -149,8 +185,17 @@ Check '関数だけ読んだ（DefineOnly。サーバは起動していない）
 $script:Port = $Port
 
 # **使う 4 つのポートが空いているか**を先に確かめる（監査 A-1 の②: 埋まっていたら始めない）
+#
+# **（再確認 A-1）括弧を必ず付ける。** PowerShell では**カンマが `+` より強く**結び付くので、
+# `@($Port, $Port + 1, $Port + 2, $Port + 3)` は
+# `($Port, $Port) + (1, $Port) + (2, $Port) + 3` と読まれ、**7 要素
+# `8795, 8795, 1, 8795, 2, 8795, 3`** になる（実測 count=7）。その形では **8795 しか見ず**、
+# 8796〜8798 に立っている他人のサーバを §10 の後始末が止めた。
+$ports = @($Port, ($Port + 1), ($Port + 2), ($Port + 3))
+Check '使う 4 つのポートは 4 つとも別（8795〜8798 を見ている）' `
+    (($ports.Count -eq 4) -and (@($ports | Select-Object -Unique).Count -eq 4)) ($ports -join ', ')
 $busy = @()
-foreach ($p in @($Port, $Port + 1, $Port + 2, $Port + 3)) {
+foreach ($p in $ports) {
     $probe = Get-ServerState -Port $p
     if ($probe.state -ne 'none') { $busy += ('{0}={1}' -f $p, $probe.state) }
 }
@@ -212,6 +257,9 @@ try {
     $guardText = '（起動してしまった）'
 } catch {
     $guardText = $_.Exception.Message
+} finally {
+    # **断りが壊れているとき（壊し試験）でも後始末できるように**、起こした物は覚えておく
+    Register-OwnProcess -Proc $guard.Proc
 }
 $script:DefaultDataDir = $savedDefaultDataDir
 Check '実データ（既定の置き場）を指したら起動しない' ($guardText -ne '' -and $guardText -ne '（起動してしまった）') $guardText
@@ -242,24 +290,17 @@ try {
     $init = Initialize-ServerState -State $state -DataDir $Replica
 } finally {
     $env:IMAGE_REVIEWER_DATA = $savedEnvData
+    Register-OwnProcess -Proc $state.Proc
 }
 Check '自分で起動した（own）' ($init.result -eq 'own') ('result=' + $init.result)
 if ($init.result -ne 'own') {
     # **（監査 A-1 の③。fail-closed）自分で起動していないなら、ここで止める。**
     # `attach` のまま先へ進むと、**置き場を渡していないサーバを起こす**道が生まれる
-    # （この事故がまさにそれだった）。**理由を出して、この検査が立てた物だけ片付けて終わる。**
+    # （この事故がまさにそれだった）。**理由を出して、この検査が起こした物だけ片付けて終わる。**
+    # **（再確認 C-2）ポートを数えて止めない**——このときポートに居るのは**他人**かもしれない。
     Write-Output ('NG   自分で起動できませんでした（result={0}）。ここで止めます——' -f $init.result)
     Write-Output '     このまま進むと、置き場を明示していないサーバを起こす道ができます（監査 A-1）。'
-    foreach ($p in @($Port, $Port + 1, $Port + 2, $Port + 3)) {
-        try {
-            $rows = Get-CimInstance -ClassName Win32_Process -Filter "Name = 'python.exe'" -ErrorAction Stop
-            foreach ($row in @($rows)) {
-                if ([string]$row.CommandLine -match ('--port\s+{0}(\s|$)' -f $p)) {
-                    try { & (Join-Path $env:SystemRoot 'System32\taskkill.exe') /PID $row.ProcessId /T /F 2>&1 | Out-Null } catch { }
-                }
-            }
-        } catch { }
-    }
+    Stop-OurProcesses
     exit 2
 }
 $health = $null
@@ -297,6 +338,8 @@ try {
     $failText = '（落ちなかった）'
 } catch {
     $failText = $_.Exception.Message
+} finally {
+    Register-OwnProcess -Proc $failState.Proc
 }
 $sw.Stop()
 Check '起動できない置き場では落ちる' ($failText -ne '' -and $failText -ne '（落ちなかった）')
@@ -305,6 +348,26 @@ Check '落ちた子は持っていない（PID 0）' ($failState.ServerPid -eq 0
 if ($null -ne $failState.Proc) { Stop-TestProcess -ProcessId $failState.Proc.Id }
 Start-Sleep -Milliseconds 500
 Check '失敗したポートは空いたまま' ((Get-ServerState -Port ($Port + 3)).state -eq 'none')
+
+# **（再確認 R8）起動の前に断られても、持っていた子は片付ける。**
+# §2b は `Start-OwnServer` を直に呼ぶので、`Initialize-ServerState` の後始末（`catch` の中の
+# `Stop-OwnServer`）を通らない。ここだけは**入口の関数**を通して、その後始末を見る。
+# 子が生きているまま 90 秒待ちで失敗する道は回さない（90 秒かかるため。理由は仕分けに書いた）。
+$holdPy = Join-Path $tmp 'hold.py'
+Set-Content -LiteralPath $holdPy -Value 'import time' -Encoding utf8
+Add-Content -LiteralPath $holdPy -Value 'time.sleep(180)' -Encoding utf8
+$hold = Start-Process -FilePath $py -ArgumentList @($holdPy) `
+    -WorkingDirectory $tmp -WindowStyle Hidden -PassThru `
+    -RedirectStandardOutput (Join-Path $tmp 'hold.out.log') -RedirectStandardError (Join-Path $tmp 'hold.err.log')
+Register-OwnProcess -Proc $hold
+Start-Sleep -Milliseconds 1200
+Check '（R8 の下ごしらえ）自分の子の見本が生きている' (Test-PidAlive -ProcessId $hold.Id)
+$r8State = @{ Port = $Port + 3; Mode = 'own'; Proc = $hold; ServerPid = 0; StartedAt = Get-Date; Snapshot = $null; Last = $null }
+$r8 = $null
+try { $r8 = Initialize-ServerState -State $r8State -DataDir '' } catch { $r8 = @{ result = 'throw' } }
+Check '起動の前に断られたら failed を返す' ([string]$r8.result -eq 'failed') ('result=' + $r8.result)
+Check 'そのとき、持っていた子は片付ける（迷子を残さない）' (-not (Test-PidAlive -ProcessId $hold.Id))
+Check 'そのとき、サーバの pid は持たない（断りのあとに起こしていない）' ($r8State.ServerPid -eq 0) ('ServerPid=' + $r8State.ServerPid)
 
 # ---- 2c. 本物の応答から読む（監査 F-3・F-5）----
 
@@ -317,6 +380,50 @@ Check '本物の応答から要求の数を読む' ($live.requests -ge 0) ('requ
 Check '本物の応答から最近の削除の数を読む' ($live.deletes -ge 0) ('deletes=' + $live.deletes)
 Check '本物の応答から段 3 の数も読む' ($live.deletes_stage3 -ge 0) ('deletes_stage3=' + $live.deletes_stage3)
 Check '実物のツールチップに「バックアップに失敗しています」が出る' ((Get-TrayTooltip -Snapshot $live) -match 'バックアップに失敗しています')
+
+# **（再確認 R2）起動の直後の 1 回（`-Quiet`）でも、バックアップの失敗は知らせる。**
+# サーバは起動の直後に日次を 1 回見るので、**一番よくある失敗の時刻**がここに当たる（監査 C-1）。
+# `Refresh-Tray -Quiet` を通る検査が無かったので、壊しても落ちなかった。
+$quietCtx = @{ State = $state; Menu = $null; Icon = $null; Timer = $null; Snapshot = $null; Last = $null }
+$null = Refresh-Tray -Ctx $quietCtx -Quiet
+$quietLog = [System.IO.File]::ReadAllText($script:TrayLog, [System.Text.Encoding]::UTF8)
+Check '起動の直後の 1 回でも、バックアップの失敗を知らせる' `
+    ($quietLog -match '知らせ: バックアップに失敗しています')
+Check 'その 1 回でも、状態は本物の応答から読む（up）' ([string]$quietCtx.Snapshot.state -eq 'up') ('state=' + $quietCtx.Snapshot.state)
+
+# ---- 2d. 遅い口（1 つ落ちたら残りを打たない。再確認 R3・R3b）----
+
+Section '2d. 遅い口（2 秒で見切り、残りを打たない）'
+# **本物の image-reviewer ではなく、`/api/health` だけ即答して他の口を 30 秒眠らせる偽サーバ**を
+# 使う（この環境の「生きていて遅い」形。`tools\tray_fake_api.py`。DB も画像も触らない）。
+$slowPort = $Port + 2
+$slowLog = Join-Path $tmp 'slow-requests.txt'
+if (Test-Path -LiteralPath $slowLog) { Remove-Item -LiteralPath $slowLog -Force }
+$slow = Start-Process -FilePath $py `
+    -ArgumentList @((Join-Path $root 'tools\tray_fake_api.py'), '--mode', 'slow', '--port', [string]$slowPort, '--log', $slowLog) `
+    -WorkingDirectory $tmp -WindowStyle Hidden -PassThru `
+    -RedirectStandardOutput (Join-Path $tmp 'slow.out.log') -RedirectStandardError (Join-Path $tmp 'slow.err.log')
+Register-OwnProcess -Proc $slow
+$slowUp = Wait-ServerUp -Port $slowPort -Proc $slow -TimeoutSec 20
+Check '（2d の下ごしらえ）遅い偽サーバが上がった（health は即答）' `
+    ($null -ne $slowUp -and [string]$slowUp.state -eq 'ours') ('state=' + $(if ($slowUp) { $slowUp.state } else { 'null' }))
+$slowState = @{ Port = $slowPort; Mode = 'attach'; Proc = $null; ServerPid = 0; StartedAt = $null; Snapshot = $null; Last = $null }
+$sw2 = [System.Diagnostics.Stopwatch]::StartNew()
+$slowSnap = Get-TraySnapshot -State $slowState
+$sw2.Stop()
+$slowElapsed = $sw2.Elapsed.TotalSeconds
+Check '1 つの口が遅いと「確かめられなかった」になる' ([bool]$slowSnap.unknown)
+Check '見切りは 2 秒（15 秒も待たない。5 秒未満）' ($slowElapsed -lt 5) ('{0:N1} 秒' -f $slowElapsed)
+$slowAsked = ''
+if (Test-Path -LiteralPath $slowLog) { $slowAsked = [System.IO.File]::ReadAllText($slowLog, [System.Text.Encoding]::UTF8) }
+Check '1 つ落ちたら残りの口を打たない（打ったのは review-requests だけ）' `
+    (($slowAsked -match '/api/review-requests') -and -not ($slowAsked -match '/api/pending-deletes') -and -not ($slowAsked -match '/api/backup')) `
+    (($slowAsked -replace "`r?`n", ' ') -replace '\s+', ' ')
+Check '読めなかった件数を 0 と偽らない（-1 のまま）' ($slowSnap.requests -lt 0 -and $slowSnap.deletes -lt 0) `
+    ('requests={0} deletes={1}' -f $slowSnap.requests, $slowSnap.deletes)
+Stop-TestProcess -ProcessId $slow.Id
+Start-Sleep -Milliseconds 800
+Check '（2d の後始末）遅い偽サーバを止めた' (-not (Test-PidAlive -ProcessId $slow.Id))
 
 # ---- 3. 二重起動しない ----
 
@@ -337,6 +444,7 @@ Section '4. 別のアプリが使っているポートでは起動しない'
 $other = Start-Process -FilePath $py -ArgumentList @('-m', 'http.server', [string]($Port + 2)) `
     -WorkingDirectory $tmp -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput (Join-Path $tmp 'other.out.log') -RedirectStandardError (Join-Path $tmp 'other.err.log')
+Register-OwnProcess -Proc $other
 Start-Sleep -Milliseconds 1500
 $probeOther = Get-ServerState -Port ($Port + 2)
 Check 'HTTP 404 を返すサーバは other と見る' ($probeOther.state -eq 'other') ('state=' + $probeOther.state)
@@ -555,7 +663,20 @@ Section '9b. メニューの「終了する」でもサーバを止める'
 $state9 = @{ Port = $Port; Mode = 'none'; Proc = $null; ServerPid = 0; StartedAt = $null; Snapshot = $null; Last = $null }
 $up9 = $null
 try { $up9 = Start-OwnServer -State $state9 -DataDir $Replica } catch { $up9 = $null }
+Register-OwnProcess -Proc $state9.Proc
 Check '（9b の下ごしらえ）もう一度自分で起動できた' ($null -ne $up9 -and $state9.Mode -eq 'own')
+# **（再確認 R11）「他人が立った形」では再起動しない。**
+# `Restart-Server` が `Snapshot.mode = 'attach'` を見落とすと、**動いているサーバを止めて
+# 起動し直し**、人には「再起動しました」と言う（`State.Mode` は `own` のままなので、ここが唯一の門）。
+$restartCtx = @{ State = $state9; Menu = $ctx.Menu; Icon = $null; Timer = $null; Snapshot = $snapForeign; Last = $null }
+$restartPid9 = [int]$state9.ServerPid
+$restartOk = Restart-Server -Ctx $restartCtx
+Check '他人が立った形では再起動しない（false を返す）' (-not $restartOk) ('return=' + $restartOk)
+Check 'そのとき、動いているサーバを止めない（pid が同じ）' `
+    ((Test-PidAlive -ProcessId $restartPid9) -and ([int](Get-ServerState -Port $Port).pid -eq $restartPid9)) `
+    ('前={0} 今={1}' -f $restartPid9, (Get-ServerState -Port $Port).pid)
+$restartLog = [System.IO.File]::ReadAllText($script:TrayLog, [System.Text.Encoding]::UTF8)
+Check 'その理由を人に言う（「再起動はできません」が残る）' ($restartLog -match '再起動はできません')
 $ctx9 = @{ State = $state9; Menu = $ctx.Menu; Icon = $null; Timer = $null; Snapshot = $null; Last = $null }
 Exit-Tray -Ctx $ctx9
 Start-Sleep -Milliseconds 500
@@ -574,7 +695,10 @@ $env:IMAGE_REVIEWER_DATA = $Replica
 $stranger = Start-Process -FilePath $py -ArgumentList @('-m', 'image_reviewer.cli', 'serve', '--port', [string]($Port + 1)) `
     -WorkingDirectory $root -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput (Join-Path $tmp 'stranger.out.log') -RedirectStandardError (Join-Path $tmp 'stranger.err.log')
-$up = Wait-ServerUp -Port ($Port + 1) -TimeoutSec 60
+Register-OwnProcess -Proc $stranger
+# **（再確認 A-1 の直し）ここも `-Proc` で受ける。** 身元を確かめない道（`-Proc` 無し）は
+# 「ポートに居る他人の pid を、自分の物として受け取る」形そのものだった（監査 A-1 が指した芯）。
+$up = Wait-ServerUp -Port ($Port + 1) -Proc $stranger -TimeoutSec 60
 Check '他人（この検査）が立てたサーバが上がった' ($null -ne $up)
 $strangerPid = 0
 if ($up) { $strangerPid = [int]$up.pid }
@@ -582,6 +706,14 @@ $shStranger = Invoke-Api -Port ($Port + 1) -Path '/api/health' -TimeoutSec 5
 Check '他人のサーバも複製を開いている（実データではない）' `
     ($shStranger.ok -and ([string]$shStranger.body.data_dir).TrimEnd('\') -eq $Replica.TrimEnd('\')) `
     ('data_dir=' + $(if ($shStranger.ok) { $shStranger.body.data_dir } else { '-' }))
+# **（再確認 R1）本物の応答から「他人が立った形」を読む**（手で作った snapshot だけを見ない）。
+# 自分のサーバが落ちて、同じポートに他人の image-reviewer が立った形を作る
+# （`State.Mode` は `own` のまま・`ServerPid` は自分が覚えていた物と違う）。
+$foreignState = @{ Port = $Port + 1; Mode = 'own'; Proc = $null; ServerPid = $strangerPid + 1; StartedAt = Get-Date; Snapshot = $null; Last = $null }
+$foreignSnap = Get-TraySnapshot -State $foreignState
+Check '本物の応答で、他人が立った形を見つける' ([bool]$foreignSnap.foreign -and [string]$foreignSnap.mode -eq 'attach') `
+    ('foreign={0} mode={1}' -f $foreignSnap.foreign, $foreignSnap.mode)
+Check 'その形では「止めません」と言う（本物の応答から作った snapshot）' ([string]$foreignSnap.note -match '止めません') $foreignSnap.note
 $attachState = @{ Port = $Port + 1; Mode = 'attach'; Proc = $null; ServerPid = 0; StartedAt = $null; Snapshot = $null; Last = $null }
 $kept = Stop-OwnServer -State $attachState
 Check '止める関数は true を返す（何もしない）' $kept
@@ -607,6 +739,8 @@ try {
     $raceOutcome = 'result=' + $raced.state
 } catch {
     $raceOutcome = 'throw'
+} finally {
+    Register-OwnProcess -Proc $raceState.Proc
 }
 Check '競合では他人の pid を持たない（ServerPid は 0）' ($raceState.ServerPid -eq 0) ('ServerPid={0} / {1}' -f $raceState.ServerPid, $raceOutcome)
 Check '競合を「自分のサーバ」と報告しない' (($raceOutcome -eq 'throw') -or ($raceOutcome -eq 'result=stranger')) $raceOutcome
@@ -626,6 +760,7 @@ Add-Content -LiteralPath $sleepPy -Value 'time.sleep(180)' -Encoding utf8
 $bystander = Start-Process -FilePath $py -ArgumentList @($sleepPy) `
     -WorkingDirectory $tmp -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput (Join-Path $tmp 'bystander.out.log') -RedirectStandardError (Join-Path $tmp 'bystander.err.log')
+Register-OwnProcess -Proc $bystander
 Start-Sleep -Milliseconds 1200
 Check '見本のプロセスは生きている' (Test-PidAlive -ProcessId $bystander.Id)
 Check '見本は他人のサーバの祖先ではない' (-not (Test-DescendantOf -ProcessId $strangerPid -AncestorId ([int]$bystander.Id)))
@@ -662,6 +797,9 @@ Check 'ログに残っている（起動・停止・判断）' (($logText -match
 # ---- まとめ ----
 
 Section 'まとめ'
+# **（再確認 C-2）取りこぼしの網**: この検査が起こした物だけをもう一度止める
+# （ポートを数えて止める道は無い。残っていれば `trap` と同じ後始末になる）。
+Stop-OurProcesses
 Write-Output ('ok {0} 件 / NG {1} 件' -f $script:Ok, $script:Ng)
 if (-not $Keep) {
     if (Test-Path -LiteralPath $Replica) { Remove-Item -LiteralPath $Replica -Recurse -Force -ErrorAction SilentlyContinue }

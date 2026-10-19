@@ -34,6 +34,14 @@ from image_reviewer.store import Store, normalize_path
 HUMAN = {"X-Image-Reviewer-Actor": "human"}
 AGENT = {"X-Image-Reviewer-Actor": "agent"}
 
+#: **移動を断られたときの案内**（利用者の依頼 2026-10-19。`docs/move-failed-message.md`）。
+#: **`deletions.py` の定数を読まずに文をそのまま書く**——文言を戻したらここで落ちるようにする
+#: （「壊すと落ちる」の証拠。家風）。
+MOVE_FAILED_TEXT = (
+    "このファイルは移動できませんでした。ほかのフォルダにあるファイルは、"
+    "エクスプローラで消してから「ファイルが無いので片付ける」を押してください。"
+    "（詳細: [WinError 5] アクセスが拒否されました。）")
+
 
 # ---- 道具 ----
 
@@ -86,6 +94,19 @@ def where(store: Store, asset_id: str) -> dict:
     row = store.con.execute("SELECT * FROM asset_location WHERE asset_id = ?",
                             (asset_id,)).fetchone()
     return dict(row)
+
+
+def deny_moves(monkeypatch) -> None:
+    """**権限で断られる移動**を作る（`os.rename` を差し替える。**実データは触らない**）。
+
+    この環境の断りは `PermissionError`（WinError 5）で来る（アプリのプロセスが
+    `C:\\work\\image-reviwer` の外に書けない。`docs/design.md` §16.7 の末尾）。
+    **ワークスペースの外を指す行を作らずに**同じ形にする（§8.4 F5 の別ボリュームと同じ流儀）。
+    """
+    def deny(src, dst):
+        raise PermissionError(13, "アクセスが拒否されました。", str(src), 5)
+
+    monkeypatch.setattr(deletions.os, "rename", deny)
 
 
 def root_with_stage3(store: Store, directory: Path) -> None:
@@ -1327,7 +1348,9 @@ def test_a_failed_move_leaves_no_ledger_row_and_no_moved_file(svc, store, librar
     asset_id = add_asset(store, path)
 
     def boom(src, dst):
-        raise ReviewError(409, "ファイルを移動できません: 試験", code="move_failed")
+        # **この試験の関心は「断られた後の後始末」**なので、本文は偽物でよい
+        # （本物の文は `move_no_clobber` の 1 か所。利用者の依頼で 2026-10-19 に変えた）
+        raise ReviewError(409, "移動できませんでした（試験）", code="move_failed")
 
     monkeypatch.setattr(deletions, "move_no_clobber", boom)
     for stage in (2, 3):
@@ -1344,6 +1367,72 @@ def test_a_failed_move_leaves_no_ledger_row_and_no_moved_file(svc, store, librar
     for folder in (HOLD_DIR, TRASH_DIR):
         got = store.data_dir / folder
         assert not got.exists() or not any(got.rglob("*")), f"{folder} に空の入れ物が残った"
+
+
+# ---- 移動を断られたときの案内（利用者の依頼 2026-10-19。`docs/move-failed-message.md`）----
+
+
+def test_a_permission_error_names_the_way_that_works(svc, store, library, monkeypatch):
+    """壊すと落ちる: 権限で断られた移動に**技術的な 1 行**を返す（利用者の依頼）。
+
+    直す前は `ファイルを移動できません: [WinError 5] アクセスが拒否されました。: '元' -> '先'`
+    だった。**この環境ではアプリのプロセスが `C:\\work\\image-reviwer` の外に書けない**
+    （`docs/design.md` §16.7 の末尾）ので、外のファイルは**必ず断られる**——通る道
+    （エクスプローラで消してから「ファイルが無いので片付ける」）を**2 文**で案内する。
+    **パスは本文に出さない**（読めない 1 行になる）。**`code` は `move_failed` のまま**
+    （呼び出し側と検査を壊さない）。**動かさない・台帳を残さない**（B-1）。
+    """
+    path = make_png(library / "denied.png", seed=210)
+    asset_id = add_asset(store, path)
+    deny_moves(monkeypatch)
+    with pytest.raises(ReviewError) as err:
+        svc.delete(asset_id=asset_id, path=str(path), stage=2, actor="human")
+    assert err.value.status == 409 and err.value.code == "move_failed", err.value.code
+    assert err.value.detail == MOVE_FAILED_TEXT, err.value.detail
+    assert str(path) not in err.value.detail, "元のパスを本文に出している（読めない 1 行）"
+    assert str(store.data_dir) not in err.value.detail, "移動先のパスを本文に出している"
+    assert err.value.details["from"] == str(path), "詳細（`details`）からパスを消した"
+    assert path.exists(), "断られたのにファイルが動いた"
+    assert store.con.execute("SELECT count(*) AS n FROM deletion_log").fetchone()["n"] == 0, \
+        "断られたのに台帳の行が残っている（迷子の元。B-1）"
+    assert where(store, asset_id)["missing_at"] is None, "動いていないのに参照切れにした"
+
+
+def test_a_permission_error_in_the_bulk_keeps_the_message(svc, store, library, monkeypatch):
+    """壊すと落ちる: まとめての**断った 1 件を黙って捨てる**（`skipped` に文が無い）。
+
+    件数だけ返して文を捨てると、画面は「0 件を片付けました」しか出せず、
+    **利用者は何をすればよいか分からない**。1 件ずつの本文をそのまま `skipped` に残す。
+    """
+    path = make_png(library / "bulk-denied.png", seed=211)
+    asset_id = add_asset(store, path)
+    got = svc.bulk_preview(scope={"kind": "assets", "asset_ids": [asset_id]}, stage=2,
+                           actor="human")
+    deny_moves(monkeypatch)
+    done = svc.bulk_delete(preview_id=got["preview_id"], confirm=True, actor="human")
+    assert done["count"] == 0 and len(done["skipped"]) == 1, done
+    assert done["skipped"][0]["reason"] == "move_failed", done["skipped"]
+    assert done["skipped"][0]["message"] == MOVE_FAILED_TEXT, done["skipped"]
+    assert path.exists(), "断られたのにファイルが動いた"
+
+
+def test_a_permission_error_over_http_names_the_way_that_works(client, tmp_path, monkeypatch):
+    """壊すと落ちる: 口（`POST /api/locations/delete` の段 2）で**画面が読む本文**が古い。
+
+    画面は `body.detail` をそのまま出す（`apps/gui/pending.js`）ので、**口の本文**が
+    利用者の見る文になる。`code` は `move_failed` のまま（呼び出し側を壊さない）。
+    """
+    store, path, asset_id = register(client, tmp_path, "denied-api.png")
+    deny_moves(monkeypatch)
+    got = client.post("/api/locations/delete", headers=HUMAN,
+                      json={"asset_id": asset_id, "path": str(path), "stage": 2})
+    assert got.status_code == 409, got.text
+    body = got.json()
+    assert body["code"] == "move_failed", body
+    assert body["detail"] == MOVE_FAILED_TEXT, body["detail"]
+    assert body["details"]["from"] == str(path) and body["details"]["to"], body["details"]
+    assert path.exists(), "断られたのにファイルが動いた"
+    assert store.con.execute("SELECT count(*) AS n FROM deletion_log").fetchone()["n"] == 0
 
 
 def test_a_row_whose_move_never_happened_is_recovered_not_purged(svc, store, library, clock):

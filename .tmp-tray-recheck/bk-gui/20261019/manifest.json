@@ -1,0 +1,22 @@
+{
+ "schema": "urn:image-reviewer:backup-manifest",
+ "abi": "0.1",
+ "app_version": "0.0.1-proto",
+ "created_at": "2026-10-19T13:20:35Z",
+ "data_dir": "C:\\work\\image-reviwer\\.tmp-tray-recheck\\rA\\data",
+ "includes": {
+  "db": true,
+  "sidecar": false,
+  "export": false,
+  "library": false
+ },
+ "counts": {
+  "assets": 461,
+  "decisions": 3,
+  "groups": 2,
+  "annotations": 0,
+  "tags": 3
+ },
+ "db_sha256": "sha256:1d78139ed11783ee8fbfa062ff29af014ee3ab2ac10054d9008516616f399fef",
+ "db_bytes": 3981312
+}

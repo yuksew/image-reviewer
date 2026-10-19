@@ -1,0 +1,7 @@
+﻿トレイの再確認（途中）: 判定を左右する指摘が 1 件出たので先に知らせます。報告は docs/tray-audit-recheck.md に後で書きます（まだ実行中）。
+
+A-1(b) 直っていない: tools/tray_selftest.ps1 の 3 か所（114・153・253 行）の foreach ($p in @($Port, $Port + 1, $Port + 2, $Port + 3)) は、PowerShell ではカンマが + より先に結び付くので 7 要素 8795,8795,1,8795,2,8795,3 になる（実測。count=7）。つまり 4 ポートの空き確認・trap の後始末・own でないときの後始末は 8795 しか見ていない。
+実測: 8796 に偽の image-reviewer を立てて自己検査を回すと exit 2 にならず最後まで走り（ok 114 / NG 1）、§10 の後始末がその他人のサーバを止めた（fake_alive=False）。8798 を埋めると NG 3 で走り切る。8795 を埋めたときだけ exit 2。
+データは無事: 子にはすべて IMAGE_REVIEWER_DATA が明示されていた（env 無しの起動は 0 を確認）。
+直し: 3 か所を @($Port, ($Port + 1), ($Port + 2), ($Port + 3)) にする。加えて §10 の後始末は Wait-ServerUp に -Proc $stranger を渡して自分が起こした子孫だけ止める形に。
+もう 1 件（B 相当）: tools/tray.ps1 -DriveScript を -DataDir 無しで起動すると .data を開く（-DefineOnly ではないので断りが効かない。複製のリポジトリで実測）。tray_drive.ps1 は要求を POST するので実データに書く道になる。

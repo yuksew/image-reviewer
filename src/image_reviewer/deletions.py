@@ -40,6 +40,11 @@
 15. **（P10）まとめての上限は 1 回 200 件**（`MAX_BATCH_PER_CALL`＝エージェントの一括と同じ規則）。
     超えたら **422 `too_many` で 1 件も進めない**（部分適用しない）。**1 件ずつの失敗は `skipped` に
     残して残りを進める**（数を黙って捨てない）。
+16. **（利用者の依頼 2026-10-19）移動を OS が断ったら、通る道を案内する**（`move_failed`）。
+    **この環境ではアプリのプロセスがワークスペースの外に書けない**（`os.rename` が
+    `PermissionError` / WinError 5。`design.md` §16.7 の末尾）。通る道は**利用者が
+    エクスプローラで消してから「ファイルが無いので片付ける」**なので、**パスで判定せず**、
+    断られたら同じ案内を出す（**`move_no_clobber` の 1 か所**で作る。`code` は `move_failed` のまま）。
 """
 
 from __future__ import annotations
@@ -106,6 +111,15 @@ STUCK_REASONS = ("target_exists", "move_failed", "different", "missing")
 #: **（P10）片付けた理由の語彙**（`deletion_log.close_reason` の `CHECK` と同じ）。
 #: いまは「ファイルが無い」の 1 つだけ（利用者の要望。`docs/deletions-advance.md`）
 CLOSE_REASONS = ("missing",)
+#: **移動できなかったときの案内**（利用者の依頼 2026-10-19。**文言の正は `frontend-design.md` §6**）。
+#: **2 文**（何が起きたか。＋どうすればよいか。規約 3）で、**中黒で文を繋がない**（規約 1）。
+#: ボタンの語は**画面の実物**（「ファイルが無いので片付ける」）。**「用意する」を使わない**。
+#: **パスで判定しない**——この環境ではアプリのプロセスが `C:\work\image-reviwer` の外に書けず
+#: （`design.md` §16.7 の末尾）、**ワークスペースの中でも権限で断られる**ことがある。
+#: **どちらも同じ案内が正しい**ので、OS が断ったら（`move_no_clobber` の 1 か所で）これを出す。
+MOVE_FAILED_MESSAGE = ("このファイルは移動できませんでした。"
+                       "ほかのフォルダにあるファイルは、エクスプローラで消してから"
+                       "「ファイルが無いので片付ける」を押してください。")
 #: **（P10）後から段を進める・片付ける 1 回の上限**。**エージェントの一括と同じ 200** に揃える
 #: （`AGENT_MAX_BATCH` と同じ規則＝超えたら **422 `too_many` で 1 件も進めない**）。
 #: 画面は 200 件ずつに分けて送る（実データの 194 行は 1 回で収まる）。
@@ -164,6 +178,26 @@ def free_name(directory: Path, name: str) -> Path:
                       details={"name": name, "dir": str(directory)})
 
 
+def move_failed_detail(exc: OSError) -> str:
+    """移動を断られたときの 1 行（**何が起きたか。＋どうすればよいか。**の 2 文＋詳細）。
+
+    **パスを本文に出さない**（利用者の依頼。`docs/move-failed-message.md`）: `str(OSError)` は
+    `[WinError 5] アクセスが拒否されました。: '元' -> '先'` のように**両方のパスを本文に出す**ので、
+    画面では読めない 1 行になる。**OS の言い方（`winerror` と `strerror`）だけ**を括弧の中に入れ、
+    パスは `details` に残す（開発者はそこを見る。**規約 3「エラーは 2 文＋詳細」**）。
+
+    `PermissionError`（WinError 5）だけでなく**どの `OSError` でも同じ案内**にする
+    （**1 か所 1 文言**。断られた理由ごとに文を散らかさない）。
+    """
+    text = getattr(exc, "strerror", None)
+    winerror = getattr(exc, "winerror", None)
+    if winerror is not None and text:
+        reason = f"[WinError {winerror}] {text}"
+    else:
+        reason = text or str(exc)
+    return f"{MOVE_FAILED_MESSAGE}（詳細: {reason}）"
+
+
 def move_no_clobber(src, dst) -> str:
     """**`os.rename` で移す**（`os.replace` は**在ると黙って上書きする**＝P7 の実測）。
 
@@ -172,6 +206,10 @@ def move_no_clobber(src, dst) -> str:
     （検査と置き換えの間の競合が無い。設計 §0.6-4）。
 
     失敗は**動かさないまま**返す（元のファイルは 1 バイトも変わらない）。
+    **（利用者の依頼 2026-10-19）移動を断られたとき（`PermissionError` / WinError 5 など）は、
+    通る道（エクスプローラで消してから「ファイルが無いので片付ける」）を案内する**——
+    **この環境ではアプリのプロセスがワークスペースの外に書けない**ため、外のファイルは
+    **必ずここで断られる**（`design.md` §16.7 の末尾）。
     """
     try:
         os.rename(str(src), str(dst))
@@ -180,7 +218,7 @@ def move_no_clobber(src, dst) -> str:
                           code="target_exists",
                           details={"from": str(src), "to": str(dst)}) from exc
     except OSError as exc:
-        raise ReviewError(409, f"ファイルを移動できません: {exc}", code="move_failed",
+        raise ReviewError(409, move_failed_detail(exc), code="move_failed",
                           details={"from": str(src), "to": str(dst)}) from exc
     return str(dst)
 

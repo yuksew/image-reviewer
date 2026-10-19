@@ -1,0 +1,15 @@
+{
+ "schema": "urn:image-reviewer:settings",
+ "abi": "0.1",
+ "settings": {
+  "backup.last_ok_at": "2026-10-18T15:00:15Z",
+  "backup_dir": "C:\\work\\image-reviwer\\.backup\\daily",
+  "export_delay_sec": "2",
+  "next_after_decision": "1",
+  "preview_ttl_sec": "600",
+  "tagger.comfyui_temp": "C:\\ai\\ComfyUI_windows_portable\\ComfyUI\\temp",
+  "tagger.engine": "comfyui",
+  "tagger.node": "illust",
+  "undo_window_sec": "300"
+ }
+}

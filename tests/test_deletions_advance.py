@@ -30,6 +30,13 @@ from image_reviewer.store import Store, normalize_path
 HUMAN = {"X-Image-Reviewer-Actor": "human"}
 AGENT = {"X-Image-Reviewer-Actor": "agent"}
 
+#: **移動を断られたときの案内**（利用者の依頼 2026-10-19。`docs/move-failed-message.md`）。
+#: **`deletions.py` の定数を読まずに文をそのまま書く**——文言を戻したらここで落ちるようにする。
+MOVE_FAILED_TEXT = (
+    "このファイルは移動できませんでした。ほかのフォルダにあるファイルは、"
+    "エクスプローラで消してから「ファイルが無いので片付ける」を押してください。"
+    "（詳細: [WinError 5] アクセスが拒否されました。）")
+
 
 # ---- 道具（`tests/test_deletions.py` と同じ形。ファイルをまたいで import しない）----
 
@@ -111,6 +118,19 @@ def files_under(root: Path) -> tuple:
             continue
         out.append((str(p.relative_to(root)), p.stat().st_size, p.stat().st_mtime_ns))
     return tuple(sorted(out))
+
+
+def deny_moves(monkeypatch) -> None:
+    """**権限で断られる移動**を作る（`os.rename` を差し替える。**実データは触らない**）。
+
+    この環境の断りは `PermissionError`（WinError 5）で来る（アプリのプロセスが
+    `C:\\work\\image-reviwer` の外に書けない。`docs/design.md` §16.7 の末尾）。
+    **ワークスペースの外を指す行を作らずに**同じ形にする（`test_deletions.py` と同じ流儀）。
+    """
+    def deny(src, dst):
+        raise PermissionError(13, "アクセスが拒否されました。", str(src), 5)
+
+    monkeypatch.setattr(deletions.os, "rename", deny)
 
 
 @ pytest.fixture
@@ -402,6 +422,49 @@ def test_advance_never_overwrites_an_existing_file(svc, store, library, monkeypa
     row = row_of(store, got["deletion_id"])
     assert int(row["stage"]) == 1 and row["to_path"] is None and row["from_path"] is None, \
         "断ったのに段が上がったまま（帰り道が壊れる）"
+
+
+# ---- 移動を断られたときの案内（利用者の依頼 2026-10-19。`docs/move-failed-message.md`）----
+
+
+def test_a_permission_error_when_advancing_names_the_way_that_works(svc, store, library,
+                                                                   monkeypatch):
+    """壊すと落ちる: 段 2 へ進める移動が権限で断られたときに**技術的な 1 行**を返す。
+
+    この環境ではアプリのプロセスが `C:\\work\\image-reviwer` の外に書けない（WinError 5。
+    `docs/design.md` §16.7 の末尾）ので、外のファイルは**必ず断られる**。通る道
+    （エクスプローラで消してから「ファイルが無いので片付ける」）を 2 文で案内し、
+    **段 1 に戻す**（`_unadvance`）・**動かさない**。`code` は `move_failed` のまま。
+    """
+    path = make_png(library / "adv-denied.png", seed=212)
+    got = stage1(svc, store, path)
+    deny_moves(monkeypatch)
+    with pytest.raises(ReviewError) as err:
+        svc.advance(got["deletion_id"], stage=2, actor="human")
+    assert err.value.status == 409 and err.value.code == "move_failed", err.value.code
+    assert err.value.detail == MOVE_FAILED_TEXT, err.value.detail
+    assert str(path) not in err.value.detail, "元のパスを本文に出している（読めない 1 行）"
+    assert path.exists(), "断られたのにファイルが動いた"
+    row = row_of(store, got["deletion_id"])
+    assert int(row["stage"]) == 1 and row["to_path"] is None, "動かせないのに段 2 のまま"
+    assert row["restored_at"] is None and row["closed_at"] is None
+
+
+def test_a_permission_error_in_advance_many_keeps_the_message(svc, store, library, monkeypatch):
+    """壊すと落ちる: まとめて進める**断った 1 件を黙って捨てる**（`skipped` に文が無い）。
+
+    まとめては 1 件の失敗で全体を止めない（数を黙って捨てない）。その 1 件の本文が
+    画面の「移せませんでした」の理由になるので、**同じ案内**を `message` に残す。
+    """
+    paths = [make_png(library / f"adv-many{i}.png", seed=213 + i) for i in range(2)]
+    rows = [stage1(svc, store, p) for p in paths]
+    deny_moves(monkeypatch)
+    out = svc.advance_many([r["deletion_id"] for r in rows], stage=2, actor="human")
+    assert out["count"] == 0 and out["skipped_count"] == 2, out
+    assert {s["reason"] for s in out["skipped"]} == {"move_failed"}, out["skipped"]
+    assert [s["message"] for s in out["skipped"]] == [MOVE_FAILED_TEXT] * 2, out["skipped"]
+    assert all(p.exists() for p in paths), "断られたのにファイルが動いた"
+    assert all(int(row_of(store, r["deletion_id"])["stage"]) == 1 for r in rows)
 
 
 def test_advance_is_human_only(svc, store, library):
@@ -945,6 +1008,36 @@ def test_advance_and_close_over_http(client, tmp_path):
     # **片付けた行は「最近の削除」から外れる**
     left = client.get("/api/pending-deletes", headers=HUMAN).json()
     assert [i["id"] for i in left["items"]] == [], left["items"]
+
+
+def test_the_advance_endpoints_name_the_way_that_works_when_the_move_is_denied(
+        client, tmp_path, monkeypatch):
+    """壊すと落ちる: 口（`POST /api/deletions/{id}/advance` と `/api/deletions/advance`）の
+    **画面が読む本文**が古い。
+
+    画面は `body.detail`（1 件）と `skipped[].message`（まとめて）をそのまま出す
+    （`apps/gui/pending.js`）。どちらも**同じ案内**（2 文＋詳細）にする。**パスは本文に出さない**。
+    """
+    store, path, asset_id = register(client, tmp_path, "http-denied.png", seed=62)
+    made = client.post("/api/locations/delete", headers=HUMAN,
+                       json={"asset_id": asset_id, "path": str(path), "stage": 1}).json()
+    deny_moves(monkeypatch)
+    one = client.post(f"/api/deletions/{made['deletion_id']}/advance", headers=HUMAN,
+                      json={"stage": 2})
+    assert one.status_code == 409, one.text
+    body = one.json()
+    assert body["code"] == "move_failed", body
+    assert body["detail"] == MOVE_FAILED_TEXT, body["detail"]
+    assert str(path) not in body["detail"], "元のパスを本文に出している（読めない 1 行）"
+    # **まとめて**（口は 200 で `skipped` に残す。断った数を黙って捨てない）
+    many = client.post("/api/deletions/advance", headers=HUMAN,
+                       json={"ids": [made["deletion_id"]], "stage": 2})
+    assert many.status_code == 200, many.text
+    out = many.json()
+    assert out["count"] == 0 and out["skipped_count"] == 1, out
+    assert out["skipped"][0]["reason"] == "move_failed", out["skipped"]
+    assert out["skipped"][0]["message"] == MOVE_FAILED_TEXT, out["skipped"]
+    assert path.exists(), "断られたのにファイルが動いた"
 
 
 def test_advance_over_http_without_a_file_names_the_close_button(client, tmp_path):

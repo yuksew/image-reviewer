@@ -1,0 +1,22 @@
+{
+ "schema": "urn:image-reviewer:backup-manifest",
+ "abi": "0.1",
+ "app_version": "0.0.1-proto",
+ "created_at": "2026-10-19T12:51:20Z",
+ "data_dir": "C:\\work\\image-reviwer\\.tmp-tray-recheck\\fakerepo\\.data",
+ "includes": {
+  "db": true,
+  "sidecar": false,
+  "export": false,
+  "library": false
+ },
+ "counts": {
+  "assets": 2,
+  "decisions": 1,
+  "groups": 0,
+  "annotations": 0,
+  "tags": 16
+ },
+ "db_sha256": "sha256:24697c7b968d0688dff38305a10d8d7ac429878028555d6f4f0fe08b844d121d",
+ "db_bytes": 319488
+}

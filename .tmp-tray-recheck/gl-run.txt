@@ -1,0 +1,28 @@
+﻿== 複製を作る（backup() + copy2 + パスの貼り替え） ==
+{'data': 'C:\\work\\image-reviwer\\.tmp-tray-recheck\\rA\\data', 'copied': 268, 'missing': 189, 'wanted': 457, 'pairs': [('C:\\ai\\ComfyUI_windows_portable\\ComfyUI\\output\\ComfyUI\\Anima\\20261010', 'C:\\work\\image-reviwer\\.tmp-tray-recheck\\rA\\data\\library\\0'), ('C:\\work\\illust-authoring\\.store\\anima-dev', 'C:\\work\\image-reviwer\\.tmp-tray-recheck\\rA\\data\\library\\1'), ('C:\\work\\image-reviwer\\.data', 'C:\\work\\image-reviwer\\.tmp-tray-recheck\\rA\\data')], 'library': 'C:\\work\\image-reviwer\\.tmp-tray-recheck\\rA\\data\\library'}
+path values 1114 outside 0
+asset 461 deletion_log 194
+== seed（tags / exclusion / pending） ==
+語: 3 語を入れ、2 枚に結び付けた
+注意: 群を引けませんでした（database is locked）。phash のある 2 枚で代用します
+除外: 01M4Z0KJ / 01M4Z0KJ を「別物として確定」にした（理由は script タグ）
+保留: seed-1792416034 を段 3 にした（残り 300 秒。実体は C:\work\image-reviwer\.tmp-tray-recheck\rA\data\pending-delete\seed-1792416034\132800_00001_.png）
+入れた: C:\work\image-reviwer\.tmp-tray-recheck\rA\data
+== 8792 にサーバを立てる（複製・実データではない） ==
+server up: pid 11980 data=C:\work\image-reviwer\.tmp-tray-recheck\rA\data
+assets: 01M58RMCQ09JV8H7S8NYPDRFAP,01M58RMCQ38NBSSN7X6EK8NVR4,01M58RMCQ59JS9HGJGCDM4JYRD,01M58RMCQ781NVF7R5PPBTZ5R5,01M58RMCQ989CTZXRTPJNWFNBY,01M58RMCQB9YQRBVCE0VBXEBCF,01M4Z0KJR69CW8RA2R5Q9ZXHHW,01M4Z0KJR78C7SNRHM9W92EB9Q / group: 01M58PERHX9ZTVS1XVDA82YZQ2
+compare        exit=0 ok=12 ng=0
+requests       exit=0 ok=4 ng=0
+group          exit=0 ok=4 ng=0
+asset          exit=0 ok=4 ng=0
+tags           exit=0 ok=4 ng=0
+jobs           exit=0 ok=4 ng=0
+duplicates     exit=0 ok=4 ng=0
+pending        exit=0 ok=4 ng=0
+pending-ids    exit=0 ok=4 ng=0
+library        exit=0 ok=4 ng=0
+settings       exit=0 ok=4 ng=0
+== 合計 ok=52 ng=0 ==
+== サーバを止める ==
+server gone: True
+exit=0

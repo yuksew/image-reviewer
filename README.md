@@ -254,6 +254,7 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/duplicates-keep-button.md`](docs/duplicates-keep-button.md) | **重複の整理の「残す 1 枚以外を削除する…」**（利用者の要望の追い足し。ラジオに「残す」の語・群ごとのボタン・**渡す直前に `keep` を除く**二重の守り・本物の Chrome 25 検査） | — |
 | [`docs/japanese-ui-audit-report.md`](docs/japanese-ui-audit-report.md)、[`docs/japanese-ui-fix.md`](docs/japanese-ui-fix.md) | **日本語 UI の監査**（「日本語のシステムとして自然か」の軸。判定は**「一部に不揃い」**で、規約 A〜F・違反 A16/B11/C30/D17/E11/F9・用語 27 語の判定・質問 G-1〜G-10）と、その**修正の記録**（**§6.1 を規約 A〜F＝通し番号 1〜6 に振り直した**・分類ごとの件数・直す前→後・残した物と理由・1024×700 の検査を足した話） | §6.1, §17 |
 | [`schemas/backup-manifest.schema.json`](schemas/backup-manifest.schema.json) | **日次スナップショットの `manifest.json` の契約**（`restore` が復元の前に読む。`abi: 0.1`） | — |
+| [`docs/move-failed-message.md`](docs/move-failed-message.md) | **移動できなかったときの案内**（利用者の依頼。**パスで判定しない**・2 文＋詳細・`code` は `move_failed` のまま。段 2・後から進める・まとめての 4 経路が**同じ 1 か所**。壊すと落ちる 6 本・三点セット 576 / 406 / 11 本） | §6.1 |
 
 - P5 の点検・監査の**生ログ（`docs/p5-review-run.jsonl` / `p5-audit-run.jsonl` / `p5-2-audit-run.jsonl` /
   `p5-3-audit-run.jsonl`。計 約 11.7 MB）は文書表に数えない**。本文は各 `*-report.md` と `*-run-note.md`

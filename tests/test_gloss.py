@@ -216,9 +216,10 @@ def test_edited_gloss_is_never_overwritten(env):
     got = service(env, engine).translate(tag_ids=list(ids.values()), force=True)
 
     rows = gloss_rows(env)
-    assert rows[ids["1girl"]] == ("人が直した", 1), "人が直した語釈を上書きした"
+    assert rows[ids["1girl"]] == ("人が直した", 1), "人が直した日本語訳を上書きした"
     assert rows[ids["long_hair"]] == ("長髪", 0)
-    assert [s["reason"] for s in got["skipped"]] == ["人が直した語釈は上書きしません"]
+    # **（D-2）** 画面に出うる `reason` は「日本語訳」（`design.md` §17 の画面の語）
+    assert [s["reason"] for s in got["skipped"]] == ["人が直した日本語訳は上書きしません"]
     assert engine.calls == [["long_hair"]], "守る語まで模型に送っている"
 
 

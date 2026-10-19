@@ -400,7 +400,8 @@ def create_app() -> FastAPI:
         asset = _asset_or_404(asset_id)
         path = _primary_path(asset)
         if not path or not os.path.exists(path):
-            raise HTTPException(404, "実体が見つかりません")
+            # **（D-5）** 画面の語は「ファイル」（§17）
+            raise HTTPException(404, "ファイルが見つかりません")
         return FileResponse(path, headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/assets/{asset_id}/thumb")
@@ -408,7 +409,7 @@ def create_app() -> FastAPI:
         asset = _asset_or_404(asset_id)
         path = _primary_path(asset)
         if not path or not os.path.exists(path):
-            raise HTTPException(404, "実体が見つかりません")
+            raise HTTPException(404, "ファイルが見つかりません")
         # P8-4: **読み取り専用のときは作らない**（`<data>` に書き足さない）。
         # 既にあるサムネイルは返す（見るだけなら使える）
         if store.read_only and not thumbs.thumb_path(data_dir(), asset["sha256"], size).exists():
@@ -439,12 +440,13 @@ def create_app() -> FastAPI:
         asset = _asset_or_404(asset_id)
         path = _primary_path(asset)
         if not path:
-            raise HTTPException(404, "実体がありません")
+            raise HTTPException(404, "ファイルがありません")
         from . import png_meta
 
         chunks = png_meta.read_png(path)
         if not chunks:
-            raise HTTPException(404, "PNG として読めない")
+            # **（B-3）** 敬体に揃える（同じコマンドの他の行と同じ調子）
+            raise HTTPException(404, "PNG として読めません")
         key = "prompt" if format == "api" else "workflow"
         if format == "ui":
             if "workflow" not in chunks["text"]:
@@ -455,7 +457,7 @@ def create_app() -> FastAPI:
         try:
             payload = json.loads(raw.decode("utf-8", "replace"))
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(500, f"グラフを読めない: {exc}") from exc
+            raise HTTPException(500, f"グラフを読めません（{exc}）。") from exc
         return JSONResponse(payload, headers={
             "Content-Disposition": f'attachment; filename="{asset_id[:12]}-{format}.json"'})
 

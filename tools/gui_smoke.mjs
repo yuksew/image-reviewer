@@ -6,7 +6,7 @@
 // - 見る: `renderStage()` / `renderDiff()` が作った HTML 文字列（基準の印・「基準にする」・
 //   分からないセル・`changed` だけを描くこと・並び順・差分の理由と強制）と、
 //   マウス / キーで `base=` が書き換わること、
-//   **キーを 1 つも押さずに「強制して出す」へ届くこと**（監査 A1。
+//   **キーを 1 つも押さずに「それでも出す」へ届くこと**（監査 A1。
 //   `index.html` の入れ子を読んで、**祖先の `hidden`** も見る）
 // - **見ない**: 見た目（CSS の当たり方）、画像の表示、実際のブラウザの挙動、
 //   タイルの選択の印（`document.querySelector` は作り物なので `select()` は何もしない）と
@@ -331,8 +331,8 @@ check(diffHtml.includes('class="cell unknown"') && diffHtml.includes('分から�
   '分からないセルを「分からない」と描く（監査 B2）');
 check(diffHtml.includes('前置語: (masterpiece'), '分かっている前置語を添えている（監査 B2）');
 check(!/class="cell unknown"[^>]*>—</.test(diffHtml), '分からないセルを「無い（—）」と描かない');
-check(diffHtml.includes('訳を捕獲していない（分かりません）'), '語の差分に「分からない」を出す');
-check(diffHtml.includes('訳を捕獲していない画像がある'), '語の差分の要約が「同じ」と言わない');
+check(diffHtml.includes('訳を取り込んでいない（分かりません）'), '語の差分に「分からない」を出す');
+check(diffHtml.includes('訳を取り込んでいない画像がある'), '語の差分の要約が「同じ」と言わない');
 // 監査 C1（数値の書体）: 数値のセルだけ `num` を付ける（等幅版の一族を当てるため）
 check(/class="cell changed num"/.test(diffHtml),
   'seed のセルに num を付ける（監査 C1。`seed` は kind が text でも数値）');
@@ -385,7 +385,7 @@ check(el('cmp-heat').disabled === false, '出せる組ではボタンが押せ�
 check(el('cmp-heat').getAttribute('aria-disabled') === 'false',
   '出せる組は aria-disabled=false（監査 A1）');
 check(visible('cmp-heatforce'),
-  '出せる組でも「強制して出す」を出しておく（監査 C1。同じ seed でも 85 組中 81 組は合わない）');
+  '出せる組でも「それでも出す」を出しておく（監査 C1。同じ seed でも 85 組中 81 組は合わない）');
 
 // 「同じ seed」は「合う」の予測ではない（監査 C1）。言い切らない文言になっているか
 FIXTURE.pairs[0].same_seed = true;
@@ -395,7 +395,7 @@ check(el('cmp-heatwhy').textContent.includes('同じ seed')
   `同じ seed では言い切らない（監査 C1）: ${el('cmp-heatwhy').textContent}`);
 FIXTURE.pairs[0].same_seed = false;
 check(visible('cmp-heatforce'),
-  '出せる組でも「強制して出す」を出しておく（監査 C1。同じ seed でも 85 組中 81 組は合わない）');
+  '出せる組でも「それでも出す」を出しておく（監査 C1。同じ seed でも 85 組中 81 組は合わない）');
 
 // 条件の外（遠い組）。ここから **キーは 1 つも押さない**（監査 A1: マウスだけで届くか。
 // 以前のこの節は `d` を押してから見ていたので、包みの中の強制の口を見逃していた）
@@ -409,7 +409,7 @@ check(el('cmp-heat').getAttribute('aria-disabled') === 'true',
 check(el('cmp-heatwhy').textContent.includes('pHash 距離 40'),
   `出せない理由を 1 行で出す: ${el('cmp-heatwhy').textContent}`);
 check(visible('cmp-heatforce'),
-  'キーを押さなくても「強制して出す」が見えている（監査 A1）');
+  'キーを押さなくても「それでも出す」が見えている（監査 A1）');
 check(!isInside('cmp-heatforce', 'cmp-heatwrap'),
   '強制の口は `hidden` の包み（`#cmp-heatwrap`）の中に無い（監査 A1）');
 check(el('cmp-heatforce').disabled !== true, '強制の口は押せる（監査 A1）');
@@ -423,7 +423,7 @@ check(el('cmp-heatimg').innerHTML.includes('差分を出せません'),
   '出せない組では画像ではなく理由を出す');
 check(visible('cmp-heatforce'), '理由を出した後も強制の口が見えている（監査 A1）');
 
-// 「強制して出す」を**マウスで**押す → 組の口を叩く
+// 「それでも出す」を**マウスで**押す → 組の口を叩く
 PAIR_FIXTURE.heatmap = { enabled: false, forced: true, reason: null, distance_threshold: 6,
                          available: true, aligned: true, dx: -24, dy: 0, peak_ratio: 55.9,
                          corr: 0.949, image: 'data:image/webp;base64,UklGRg==' };
@@ -649,7 +649,7 @@ check(String(location.hash).includes(`#/asset/`) && String(location.hash).includ
 const chose = String(location.hash).split('#/asset/')[1].split('?')[0];
 location.hash = '';
 el('group-delete').dispatch('click');
-check(el('group-delete').textContent === '選んだ 1 枚を削除へ回す',
+check(el('group-delete').textContent === '選んだ 1 枚を削除する…',
   `まとまりの入口の文言: ${el('group-delete').textContent}`);
 check(location.hash === `#/pending-deletes?ids=${chose}`,
   `まとまりの入口が削除の確認へ渡す（監査 C-1）: ${location.hash}`);
@@ -804,13 +804,13 @@ const rowNoGloss = tagsUi.wordRowHtml(words.find((w) => w.name === 'comic'));
 check(rowWithGloss.includes('class="en"') && rowWithGloss.includes('class="ja"'),
   '2 行 1 組で出す（§8.2-1）');
 check(!/[()]/.test(rowWithGloss.split('class="ja"')[1].split('</div>')[0]),
-  '語釈の行に括弧を足さない（§8.2-1）');
+  '日本語訳の行に括弧を足さない（§8.2-1）');
 check(rowWithGloss.includes('rem_(re:zero)') === false && tagsUi.wordRowHtml(words[0]).includes('rem_(re:zero)'),
   '語そのものの括弧は消さない（点検 A-1）');
-check(rowNoGloss.includes('日本語の語釈はまだありません。') && rowNoGloss.includes('tg-translate'),
-  '語釈が無ければ文と「訳す」を出す（§8.2-2）');
-check(!rowWithGloss.includes('日本語の語釈はまだありません。'),
-  '語釈があれば「まだありません」を出さない（§8.2-2）');
+check(rowNoGloss.includes('日本語訳はまだありません。') && rowNoGloss.includes('tg-translate'),
+  '日本語訳が無ければ文と「訳す」を出す（§8.2-2）');
+check(!rowWithGloss.includes('日本語訳はまだありません。'),
+  '日本語訳があれば「まだありません」を出さない（§8.2-2）');
 
 const marks = tagsUi.sourceMarks(['png', 'wd14', 'manual']);
 check(marks.includes('>PNG<') && marks.includes('>タガー<') && marks.includes('>手<'),
@@ -827,7 +827,7 @@ check(tagsUi.wordRowHtml(words.find((w) => w.name === 'comic')).includes('tg-rem
 check(!rowWithGloss.includes('tg-remove'), '「外す」は png / wd14 の行に出さない（§8.2-6）');
 const scriptRow = tagsUi.wordRowHtml(words.find((w) => w.name.startsWith('<script>')));
 check(!scriptRow.includes('<script>') && scriptRow.includes('&lt;script&gt;'),
-  '語釈の `<script>` を生のまま出さない（§8.2-7）');
+  '日本語訳の `<script>` を生のまま出さない（§8.2-7）');
 
 writes.length = 0;
 const idMap = await tagsUi.loadIds();
@@ -844,10 +844,10 @@ check(writes.length === 0 && nothing.calls === 0,
   'id が分からない語では模型を回さない（押さなければ 0 回。§8.2-4）');
 
 check(tagsUi.panelHtml(TAG_PANEL).includes('訳す（20 語まで）'), 'まとめて訳すの口を出す');
-check(tagsUi.panelHtml(TAG_PANEL).includes('タガーは下ごしらえで、手の破綻までは読めません。'),
+check(tagsUi.panelHtml(TAG_PANEL).includes('タガーの結果は下書きです。手の破綻までは読めません。'),
   'タガーの限界の 1 行を出す（§5.1）');
-check(tagsUi.briefHtml(TAG_PANEL).includes('語釈待ち 3 語'),
-  `語釈待ちの数を出す: ${tagsUi.briefHtml(TAG_PANEL)}`);
+check(tagsUi.briefHtml(TAG_PANEL).includes('訳待ち 3 語'),
+  `訳待ちの数を出す: ${tagsUi.briefHtml(TAG_PANEL)}`);
 
 const running = { id: 'j1', kind: 'tag', state: 'running', progress: { done: 3, total: 10 },
                   counts: { tagged: 3, skipped: 0, failed: 0 }, note: null, message: null,
@@ -944,19 +944,21 @@ const PENDING_BODY = {
       to_path: null, hold_path: 'C:\\data\\pending-delete\\d1\\A1.png', remaining_sec: 192,
       purge_at: '2026-10-18T03:20:00Z', restored_at: null, size: 1_400_000, reason: null,
       actor: 'agent', at: '2026-10-18T03:15:00Z', request_id: 'r1', state: 'pending',
-      mine: false, undoable: true, needs_as_copy: false, stuck_reason: null },
+      mine: false, undoable: true, needs_as_copy: false, stuck_reason: null,
+      closed_at: null, close_reason: null, closeable: false },
     { id: 'd2', asset_id: 'a2', stage: 3, path: 'd:\\lib\\a2.png',
       display_path: 'D:\\lib\\A2.png', from_path: 'D:\\lib\\A2.png',
       to_path: null, hold_path: 'C:\\data\\pending-delete\\d2\\A2.png', remaining_sec: null,
       purge_at: null, restored_at: null, size: 900_000, reason: null,
       actor: 'human', at: '2026-10-18T02:00:00Z', request_id: 'r2', state: 'stuck',
-      mine: true, undoable: true, needs_as_copy: true, stuck_reason: 'target_exists' },
+      mine: true, undoable: true, needs_as_copy: true, stuck_reason: 'target_exists',
+      closed_at: null, close_reason: null, closeable: false },
     { id: 'd3', asset_id: 'a3', stage: 3, path: 'd:\\lib\\a3.png',
       display_path: 'D:\\lib\\A3.png', from_path: 'D:\\lib\\A3.png',
       to_path: null, hold_path: null, remaining_sec: 10, purge_at: '2026-10-18T03:20:00Z',
       restored_at: null, size: 10, reason: null, actor: 'human', at: '2026-10-18T03:00:00Z',
       request_id: null, state: 'pending', mine: false, undoable: false, needs_as_copy: false,
-      stuck_reason: null },
+      stuck_reason: null, closed_at: null, close_reason: null, closeable: false },
     // **（監査 C-2）段 1 の行**: 前の版は段 3 しか返さなかったので、画面で段 1 を実行しても
     // その行が出ず「戻す」の押し先が無かった（`undo` は元から段 1〜3 に効く）
     { id: 'd4', asset_id: 'a4', stage: 1, path: 'd:\\lib\\a4.png',
@@ -964,14 +966,18 @@ const PENDING_BODY = {
       to_path: null, hold_path: null, remaining_sec: null, purge_at: null,
       restored_at: null, size: 800_000, reason: null, actor: 'human',
       at: '2026-10-18T01:00:00Z', request_id: null, state: 'hidden', mine: true,
-      undoable: true, needs_as_copy: false, stuck_reason: null },
+      undoable: true, needs_as_copy: false, stuck_reason: null,
+      // **（P10）** 段 1 の行は「アプリのゴミ箱へ移す」と「ファイルが無いので片付ける」を出す
+      closed_at: null, close_reason: null, closeable: true },
     // **段 2 の行は「取り消せる削除」に出さない**（すぐ下のゴミ箱の欄に出る。二重に出さない）
     { id: 'd5', asset_id: 'a5', stage: 2, path: 'd:\\lib\\a5.png',
       display_path: 'D:\\lib\\A5.png', from_path: 'D:\\lib\\A5.png',
       to_path: 'C:\\data\\trash\\20261018\\A5.png', hold_path: null, remaining_sec: null,
       purge_at: null, restored_at: null, size: 700_000, reason: null, actor: 'human',
       at: '2026-10-18T00:30:00Z', request_id: null, state: 'trashed', mine: true,
-      undoable: true, needs_as_copy: false, stuck_reason: null },
+      undoable: true, needs_as_copy: false, stuck_reason: null,
+      // **（P10）** 段 2 の行は「片付ける」だけ（下のゴミ箱の欄に出る）
+      closed_at: null, close_reason: null, closeable: true },
   ],
   count: 5, window_sec: 300, pending: 2,
   found: [{ path: 'C:\\data\\pending-delete\\orphan\\lost.png', size: 12, mtime_ns: 7 }],
@@ -984,7 +990,8 @@ const TRASH_BODY = {
       to_path: 'C:\\data\\trash\\20261018\\A9.png', hold_path: null, remaining_sec: null,
       purge_at: null, restored_at: null, size: 500_000, reason: null, actor: 'human',
       at: '2026-10-18T01:00:00Z', request_id: null, state: 'trashed', mine: true,
-      undoable: false, needs_as_copy: false },
+      undoable: false, needs_as_copy: false, closed_at: null, close_reason: null,
+      closeable: true },
   ] }],
   count: 1, bytes: 500_000,
 };
@@ -1005,6 +1012,13 @@ let PREVIEW_NOW = PREVIEW_BODY;
 let BULK_FAILS = null;                       // 409 の本文を入れると失敗の道を見られる
 let BULK_STAGE = 1;                          // 実行の応答の `stage`（P9 の監査 G-5 の検査用）
 let UNDO_FAILS = null;                       // **（監査 C-3）** 取り消しの失敗の道
+// **（P10）** まとめての応答（1 件の口の失敗の道は `ADVANCE_FAILS` / `CLOSE_FAILS`）
+let ADVANCE_NOW = { advanced: [], skipped: [], count: 0, skipped_count: 0, replayed: false };
+let CLOSE_NOW = { closed: [{ deletion_id: 'd4', closed: true, files_touched: 0 },
+                           { deletion_id: 't1', closed: true, files_touched: 0 }],
+                  skipped: [], count: 2, skipped_count: 0, replayed: false, reason: 'missing' };
+let ADVANCE_FAILS = null;
+let CLOSE_FAILS = null;
 let PENDING_NOW = PENDING_BODY;              // 409 の後の読み直しを見るために差し替える
 const res = (body, status = 200) => ({
   ok: status >= 200 && status < 300, status,
@@ -1046,6 +1060,20 @@ globalThis.fetch = async (url, options) => {
   }
   if (u.startsWith('/api/pending-deletes')) return res({ deleted: false, restored: true });
   if (u.startsWith('/api/trash')) return res({ restored: true, deletion_id: 't1' });
+  // **（P10）後から段 2 へ進める・実体が無い行を片付ける**。**下の `/api/deletions/` の
+  // 総当たりより先に置く**（後に置くと `purged` の本文が返り、本文の検査が素通りする）
+  if (u === '/api/deletions/advance') return res({ ...ADVANCE_NOW, kind: 'advance', stage: 2 });
+  if (u === '/api/deletions/close') return res(CLOSE_NOW);
+  if (/^\/api\/deletions\/[^/]+\/advance$/.test(u)) {
+    if (ADVANCE_FAILS) return res(ADVANCE_FAILS.body, ADVANCE_FAILS.status);
+    return res({ deletion_id: 'd4', stage: 2, asset_id: 'a4', advanced: true, replayed: false,
+                 to_path: 'C:\\data\\trash\\20261018\\A4.png' });
+  }
+  if (/^\/api\/deletions\/[^/]+\/close$/.test(u)) {
+    if (CLOSE_FAILS) return res(CLOSE_FAILS.body, CLOSE_FAILS.status);
+    return res({ deletion_id: 'd4', closed: true, closed_at: '2026-10-18T04:00:00Z',
+                 close_reason: 'missing', stage: 1, files_touched: 0, replayed: false });
+  }
   if (u.startsWith('/api/deletions/')) return res({ deletion_id: 'd2', purged: true });
   if (u.startsWith('/api/groups')) return res({ id: 'grp-1', kind: 'duplicates' });
   if (u.startsWith('/api/pending') || u.startsWith('/api/trash')) return res(PENDING_BODY);
@@ -1308,7 +1336,7 @@ check(String(el('dup-headline').innerHTML || '').includes('#/group/grp-1'),
 // 5. **押す検査**: 「削除へ回す」→ 最近の削除へ**渡すだけ**（ここでは消さない）
 // **（利用者の要望）「残す」に付けた 1 枚（a2）は、チェックが付いていても渡さない**（二重の守り）。
 // 下部バーの枚数も**渡す枚**で数える（「これから何が起きるか」を言う。§6.1 の規則 4）
-check(String(el('dup-bar').innerHTML || '').includes('選んだ 2 枚を削除へ回す')
+check(String(el('dup-bar').innerHTML || '').includes('選んだ 2 枚を削除する…')
   && String(el('dup-bar').innerHTML || '').includes('残す 1 枚は渡しません。'),
   `チェック 3 枚でも「残す」を外した 2 枚で数える: `
   + `${(String(el('dup-bar').innerHTML || '').match(/選んだ[^<]*/) || [])[0]}`);
@@ -1326,10 +1354,10 @@ check(pdUi.deleteHref(['a1', 'a2']) === '#/pending-deletes?ids=a1,a2'
 const barDel = el('btn-delete');
 pdUi.wireDeleteEntry(barDel, () => ['a1', 'a2']);
 pdUi.renderDeleteEntry(barDel, 0);
-check(barDel.textContent === '選んだ 0 枚を削除へ回す' && barDel.disabled === true,
+check(barDel.textContent === '選んだ画像を削除する…' && barDel.disabled === true,
   `1 枚も選んでいなければ押せない: ${barDel.textContent}`);
 pdUi.renderDeleteEntry(barDel, 2);
-check(barDel.textContent === '選んだ 2 枚を削除へ回す' && barDel.disabled === false,
+check(barDel.textContent === '選んだ 2 枚を削除する…' && barDel.disabled === false,
   `選んだ枚を文言に出す（下部バー）: ${barDel.textContent}`);
 location.hash = '';
 barDel.dispatch('click');
@@ -1337,7 +1365,7 @@ check(location.hash === '#/pending-deletes?ids=a1,a2',
   `下部バーの入口が削除の確認へ渡す（監査 C-1）: ${location.hash}`);
 location.hash = '';
 
-// 5c. **押す検査（利用者の要望）**: 群ごとの「残す 1 枚以外を削除へ回す」→
+// 5c. **押す検査（利用者の要望）**: 群ごとの「残す 1 枚以外を削除する…」→
 //     **その群の「残す」以外の全部**を `#/pending-deletes?ids=` へ渡す（**`keep` は入れない**）。
 //     まず**ラジオで残す 1 枚を変えて**から押す（おすすめの a2 ではなく a1 を残す）
 await dupUi.showDuplicates('?max=6');                 // 既定に戻す（keep はおすすめの a2）
@@ -1364,8 +1392,8 @@ DUP_BODY = { ...DUP_NEAR, total_groups: 1, total_images: 1, excluded_pairs: 0,
 await dupUi.showDuplicates('?max=6');
 const oneBtn = buttonIn('dup-list', 'dup-keep-out');
 check(oneBtn.seen && oneBtn.disabled,
-  `1 枚の群では「残す 1 枚以外を削除へ回す」を押せない（見えた=${oneBtn.seen}）`);
-check(String(el('dup-list').innerHTML || '').includes('この群は 1 枚だけです。削除へ回す枚がありません。'),
+  `1 枚の群では「残す 1 枚以外を削除する…」を押せない（見えた=${oneBtn.seen}）`);
+check(String(el('dup-list').innerHTML || '').includes('この群は 1 枚だけです。削除する枚がありません。'),
   `押せない理由を title に出す: ${(String(el('dup-list').innerHTML || '')
     .match(/title="この群[^"]*"/) || [])[0]}`);
 check(dupUi.keepOutIds(0).length === 0, '1 枚の群では渡す枚が 0');
@@ -1395,9 +1423,9 @@ const stepped = pdUi.stepRemain([{ remaining_sec: 5 }, { remaining_sec: null }])
 check(stepped[0].remaining_sec === 4 && stepped[1].remaining_sec === null,
   '毎秒の見た目だけを減らす（`GET` は書かない）');
 const strip3 = pdUi.stageStrip(3);
-check(strip3.includes('1 カタログから外す') && strip3.includes('2 ゴミ箱') && strip3.includes('3 実体を消す'),
+check(strip3.includes('1 カタログから外す') && strip3.includes('2 アプリのゴミ箱') && strip3.includes('3 ファイルを消す'),
   `3 段階の進行を出す: ${strip3.replace(/</g, '‹')}`);
-check(/class="pd-step on">3 実体を消す/.test(strip3), 'いまの段に印を付ける');
+check(/class="pd-step on">3 ファイルを消す/.test(strip3), 'いまの段に印を付ける');
 check(!/class="pd-step on">1 印/.test(strip3), '前の段には印を付けない');
 
 // 8. 行の描画（誰が・残り時間・戻せない理由）
@@ -1419,8 +1447,8 @@ check(runHtml.includes('戻せませんでした。元の場所に既にファ�
   `stuck の行に理由を出す（監査 G-3）: ${(runHtml.match(/戻せませんでした[^<]*/) || [])[0]}`);
 check(pdUi.stuckText('move_failed').includes('元の場所へ移せませんでした')
   && pdUi.stuckText('different').includes('元の場所には別のファイルがあります')
-  && pdUi.stuckText('missing').includes('保留していたファイルが見つかりません')
-  && pdUi.stuckText(null).includes('保留していたファイルが見つかりません'),
+  && pdUi.stuckText('missing').includes('一時置き場に移したファイルが見つかりません')
+  && pdUi.stuckText(null).includes('一時置き場に移したファイルが見つかりません'),
   '理由ごとに 1 行（古い行は missing と同じ）');
 check(runHtml.includes('別名で戻す'), 'stuck には「別名で戻す」を出す');
 // **（監査 C-2）段 1 の行も出て、そこから戻せる**（`deletion_log` の 1 行 = 画面の 1 行）。
@@ -1434,8 +1462,8 @@ check(!runHtml.includes('D:\\lib\\A5.png'),
 check(pdUi.rowHtml(PENDING_BODY.items[3]).includes('>戻す<')
   && pdUi.rowHtml(PENDING_BODY.items[0]).includes('>取り消す<'),
   '語を段で分ける（段 1・2 は「戻す」、段 3 の窓は「取り消す」）');
-check(runHtml.includes('取り消せる削除はありません。') === false, '0 件の文は出さない');
-check(String(el('pd-found').innerHTML || '').includes('台帳に無いファイルが保留領域に 1 件あります。消しません。'),
+check(runHtml.includes('戻せる削除はありません。') === false, '0 件の文は出さない');
+check(String(el('pd-found').innerHTML || '').includes('台帳に無いファイルが一時置き場に 1 件あります。消しません。'),
   '拾い物を出して「消しません」と言う（G-4）');
 check(String(el('pd-trash').innerHTML || '').includes('20261018')
   && String(el('pd-trash').innerHTML).includes('戻す'), 'ゴミ箱を日付ごとに出す（Q7）');
@@ -1516,6 +1544,171 @@ const trPosts = writes.filter((w) => w.url === '/api/trash/restore');
 check(trPosts.length === 1 && JSON.parse(String(trPosts[0]?.body || '{}')).deletion_id === 't1',
   `ゴミ箱の「戻す」は 1 回だけ叩く: ${trPosts.length} 回`);
 
+// 12b. **（P10。利用者の要望）後から段 2 へ進める・実体が無い行を片付ける**
+//
+// 段 1 の行が行き止まりだったのを塞ぐ口（`docs/deletions-advance.md`）。**押す検査**を入れる
+// （`wirePending()` の本物の聞き手を叩く）。**確認を挟むのは片付けだけ**（戻せないため）。
+await pdUi.showPending('?ids=');
+const p10Rows = String(el('pd-running').innerHTML || '');
+check(p10Rows.includes(pdUi.ADVANCE_LABEL), `段 1 の行に「${pdUi.ADVANCE_LABEL}」を出す`);
+check((p10Rows.match(/class="pd-advance"/g) || []).length === 1,
+  `段 1 の行だけに出す（段 3 の行には出さない）: ${(p10Rows.match(/class="pd-advance"/g) || []).length} 個`);
+check((p10Rows.match(/class="pd-close"/g) || []).length === 1,
+  `片付けは段 1 の行に出す: ${(p10Rows.match(/class="pd-close"/g) || []).length} 個`);
+check(pdUi.rowHtml(PENDING_BODY.items[0]).includes('pd-advance') === false
+  && pdUi.rowHtml(PENDING_BODY.items[0]).includes('pd-close') === false,
+  '段 3 の行には新しいボタンを出さない（今までどおり）');
+check(pdUi.rowHtml(PENDING_BODY.items[4]).includes('pd-close') === true,
+  '段 2 の行には「片付ける」だけを出す');
+check(String(el('pd-trash').innerHTML || '').includes('class="pd-close"'),
+  'ゴミ箱の欄（段 2）にも「片付ける」を出す');
+check(/title="[^"]*ファイルは消しません/.test(p10Rows), '片付けのボタンに「ファイルは消しません」を添える');
+check(p10Rows.includes('class="pd-pick"'), 'まとめてのチェックを出す');
+check(String(el('pd-bulk').innerHTML || '').includes('全部選ぶ')
+  && String(el('pd-bulk').innerHTML).includes('選んだ行をまとめて片付ける'),
+  `選ぶ前は 0 件と書かない（押せない）: ${(String(el('pd-bulk').innerHTML || '')
+    .match(/選んだ[^<]*/) || [])[0]}`);
+
+// 12c. **全部選ぶ**（段 1 とゴミ箱の段 2 を選ぶ）→ 枚はその操作が効く行で数える
+el('pd-bulk').dispatch('change', { target: hitOf('.pd-all-box', {}, { checked: true }) });
+const bulkHtml = String(el('pd-bulk').innerHTML || '');
+check(bulkHtml.includes('選んだ 1 件をまとめてアプリのゴミ箱へ移す')
+  && bulkHtml.includes('選んだ 2 件をまとめて片付ける'),
+  `枚は操作ごとに数える: ${(bulkHtml.match(/選んだ [0-9,]+ 件をまとめて[^<]*/g) || []).join(' / ')}`);
+check(/class="pd-all-box" checked/.test(bulkHtml), '全部選ぶに印が付く');
+
+// 12d. **押す検査**: まとめて片付けるは**確認を 1 回挟む**（やめたら叩かない）
+writes.length = 0;
+globalThis.confirm = () => false;
+el('pd-bulk').dispatch('click', { target: hitOf('.pd-close-many', {}) });
+await tick();
+check(writes.filter((w) => w.url === '/api/deletions/close').length === 0,
+  '確認でやめたら片付けない');
+globalThis.confirm = () => true;
+el('pd-bulk').dispatch('click', { target: hitOf('.pd-close-many', {}) });
+await tick();
+await tick();
+const closePosts = writes.filter((w) => w.url === '/api/deletions/close');
+check(closePosts.length === 1, `まとめて片付けるは 1 回だけ叩く: ${closePosts.length} 回`);
+const closeBody = JSON.parse(String(closePosts[0]?.body || '{}'));
+check(closeBody.reason === 'missing' && closeBody.ids.length === 2,
+  `reason と選んだ行を送る: ${JSON.stringify(closeBody)}`);
+check(closeBody.ids.includes('d4') && closeBody.ids.includes('t1'),
+  '段 1 と段 2 の選んだ行を送る（段 3 は送らない）');
+check(String(el('pd-msg').innerHTML || '').includes('2 件を片付けました。'),
+  `結果は「N 件を片付けました。」: ${String(el('pd-msg').innerHTML || '').slice(0, 60)}`);
+
+// 12e. 断られた行は**数えて 1 行で知らせる**（黙って捨てない）・その行だけ選択に残す
+CLOSE_NOW = {
+  kind: 'close', requested: 2, count: 1, skipped_count: 1, replayed: false,
+  reason: 'missing', closed: [{ deletion_id: 't1', closed: true, files_touched: 0 }],
+  skipped: [{ deletion_id: 'd4', reason: 'file_found', message: 'ファイルがまだあります' }],
+};
+await pdUi.showPending('?ids=');
+pdUi.pickAll(true);
+writes.length = 0;
+globalThis.confirm = () => true;
+el('pd-bulk').dispatch('click', { target: hitOf('.pd-close-many', {}) });
+await tick();
+await tick();
+const partialHtml = String(el('pd-msg').innerHTML || '');
+check(partialHtml.includes('1 件を片付けました。')
+  && partialHtml.includes('1 件は片付けませんでした（ファイルがまだあります）。'),
+  `成功と断りを別々に数える: ${partialHtml.slice(0, 90)}`);
+check(String(el('pd-bulk').innerHTML || '').includes('選んだ 1 件をまとめて片付ける'),
+  '断られた行だけ選択に残す（そのまま押し直せる）');
+CLOSE_NOW = { kind: 'close', requested: 0, count: 2, skipped_count: 0, replayed: false,
+              reason: 'missing', closed: [], skipped: [] };
+
+// 12f. **押す検査**: まとめてアプリのゴミ箱へ移す（**確認は挟まない**＝戻せる）
+await pdUi.showPending('?ids=');
+pdUi.pickAll(true);
+ADVANCE_NOW = { advanced: [{ deletion_id: 'd4', stage: 2 }], skipped: [], count: 1,
+                skipped_count: 0, replayed: false };
+writes.length = 0;
+globalThis.confirm = () => false;                    // 押しても確認は**呼ばれない**
+el('pd-bulk').dispatch('click', { target: hitOf('.pd-advance-many', {}) });
+await tick();
+await tick();
+const advPosts = writes.filter((w) => w.url === '/api/deletions/advance');
+check(advPosts.length === 1, `まとめて移すは 1 回だけ叩く: ${advPosts.length} 回`);
+const advBody = JSON.parse(String(advPosts[0]?.body || '{}'));
+check(advBody.stage === 2 && advBody.ids.length === 1 && advBody.ids[0] === 'd4',
+  `段 2 への要求は段 1 の行だけ: ${JSON.stringify(advBody)}`);
+check(String(el('pd-msg').innerHTML || '').includes('1 件をアプリのゴミ箱へ移しました。'),
+  `結果は「N 件をアプリのゴミ箱へ移しました。」: ${String(el('pd-msg').innerHTML || '').slice(0, 60)}`);
+ADVANCE_NOW = { advanced: [], skipped: [], count: 0, skipped_count: 0, replayed: false };
+
+// 12g. **押す検査**: 1 行ずつ（段 1 → 段 2）
+writes.length = 0;
+await pdUi.showPending('?ids=');
+el('pd-running').dispatch('click', { target: hitOf('.pd-advance', { id: 'd4' }) });
+await tick();
+await tick();
+const oneAdv = writes.filter((w) => w.url === '/api/deletions/d4/advance');
+check(oneAdv.length === 1 && JSON.parse(String(oneAdv[0]?.body || '{}')).stage === 2,
+  `1 行の「アプリのゴミ箱へ移す」は 1 回だけ叩く: ${oneAdv.length} 回`);
+check(String(el('pd-msg').innerHTML || '').includes('1 件をアプリのゴミ箱へ移しました。'),
+  '1 行の結果も同じ語で知らせる');
+
+// 12h. **実体が無いときの 409 は、本文がそのまま次の一手**（「ファイルが無いので片付ける」）
+ADVANCE_FAILS = { status: 409, body: {
+  detail: '登録した場所にファイルがありません。「ファイルが無いので片付ける」で、この行を終わりにできます',
+  code: 'missing_file' } };
+writes.length = 0;
+el('pd-running').dispatch('click', { target: hitOf('.pd-advance', { id: 'd4' }) });
+await tick();
+await tick();
+check(String(el('pd-msg').innerHTML || '').includes('ファイルが無いので片付ける'),
+  `断りの文で次の一手を案内する: ${String(el('pd-msg').innerHTML || '').slice(0, 80)}`);
+check(String(el('pd-running').innerHTML || '').includes('class="pd-close"'),
+  '断られた後も読み直して「片付ける」が押せる（失敗の道でも `load()`）');
+ADVANCE_FAILS = null;
+
+// 12i. **押す検査**: 1 行の片付けは確認を 1 回挟む（やめたら叩かない）
+writes.length = 0;
+globalThis.confirm = () => false;
+el('pd-running').dispatch('click', { target: hitOf('.pd-close', { id: 'd4' }) });
+await tick();
+check(writes.filter((w) => w.url === '/api/deletions/d4/close').length === 0,
+  '確認でやめたら片付けない');
+globalThis.confirm = () => true;
+el('pd-running').dispatch('click', { target: hitOf('.pd-close', { id: 'd4' }) });
+await tick();
+await tick();
+const oneClose = writes.filter((w) => w.url === '/api/deletions/d4/close');
+check(oneClose.length === 1 && JSON.parse(String(oneClose[0]?.body || '{}')).reason === 'missing',
+  `1 行の「ファイルが無いので片付ける」は 1 回だけ叩く: ${oneClose.length} 回`);
+check(String(el('pd-msg').innerHTML || '').includes('1 件を片付けました。'),
+  '1 行の片付けも同じ語で知らせる');
+
+// 12j. **上限（200 件）を超える選択は分けて送る**（サーバの上限は 1 回 200 件）
+const MANY_ROWS = Array.from({ length: 201 }, (_, n) => ({
+  id: `m${n}`, asset_id: `a${n}`, stage: 1, path: `d:\\lib\\m${n}.png`,
+  display_path: `D:\\lib\\M${n}.png`, from_path: null, to_path: null, hold_path: null,
+  remaining_sec: null, purge_at: null, restored_at: null, closed_at: null, size: 10,
+  reason: null, actor: 'human', at: '2026-10-18T01:00:00Z', request_id: null, state: 'hidden',
+  mine: true, undoable: true, needs_as_copy: false, stuck_reason: null, closeable: true,
+}));
+PENDING_NOW = { ...PENDING_BODY, items: MANY_ROWS, count: 201, pending: 0 };
+await pdUi.showPending('?ids=');
+pdUi.pickAll(true);
+writes.length = 0;
+globalThis.confirm = () => true;
+el('pd-bulk').dispatch('click', { target: hitOf('.pd-close-many', {}) });
+for (let n = 0; n < 6; n += 1) await tick();          // 2 回の POST を待つ
+const chunkPosts = writes.filter((w) => w.url === '/api/deletions/close');
+const chunkSizes = chunkPosts.map((w) => JSON.parse(String(w.body || '{}')).ids.length);
+check(chunkPosts.length === 2, `200 件ずつ分けて送る: ${chunkPosts.length} 回`);
+// 201 行（段 1）＋ゴミ箱の 1 行（段 2）＝ 202 件。**足すと全部**（黙って捨てない）
+check(chunkSizes[0] === 200 && chunkSizes[1] < 200
+  && chunkSizes.reduce((a, b) => a + b, 0) === 202,
+  `1 回目 200 件・2 回目は残り全部: ${chunkSizes.join(' / ')}`);
+PENDING_NOW = PENDING_BODY;
+CLOSE_NOW = { kind: 'close', requested: 0, count: 2, skipped_count: 0, replayed: false,
+              reason: 'missing', closed: [], skipped: [] };
+globalThis.confirm = () => true;
+
 // 13. **押す検査**: 削除の確認（`?ids=`）→ 段の選択 → 凍結 → 実行（**画面の中の段**）
 // **ボタンと結果の 1 行は、選んだ段の名前をそのまま動詞にする**（`frontend-design.md` §6.1 の規則 4）。
 // 段ごとに語が変わることを見る（前は段に関係なく「消す用意をする」だった）
@@ -1523,8 +1716,8 @@ await pdUi.showPending('?ids=a1,a2');
 let confirmHtml = String(el('pd-confirm').innerHTML || '');
 check(confirmHtml.includes('選んだ 2 枚') && confirmHtml.includes('消す内容を確かめる'),
   '渡された枚と「消す内容を確かめる」を出す');
-check(confirmHtml.includes('段 1 カタログから外す') && confirmHtml.includes('段 2 ゴミ箱へ移す')
-  && confirmHtml.includes('段 3 実体を消す') && !confirmHtml.includes('実体を消す用意'), '段を 3 つ出す');
+check(confirmHtml.includes('段 1 カタログから外す') && confirmHtml.includes('段 2 アプリのゴミ箱へ移す')
+  && confirmHtml.includes('段 3 ファイルを消す') && !confirmHtml.includes('用意'), '段を 3 つ出す');
 check(pdUi.stageTaken() === 1, '既定は段 1（いきなり消さない）');
 check(pdUi.askStage(3) === true && pdUi.stageTaken() === 3, '段を選べる');
 pdUi.askStage(1);
@@ -1562,28 +1755,29 @@ check(!/あと \d+:\d\d/.test(String(el('pd-confirm').innerHTML || '')),
 // **利用者に見える文に「用意」を出さない**（規則 4。前はボタン・結果・凡例にあった）
 check(!/用意/.test(String(el('pd-confirm').innerHTML || '') + String(el('pd-legend').innerHTML || '')),
   `「用意」を利用者に見せない（規則 4）: ${(String(el('pd-legend').innerHTML || '').match(/段 3[^<]*/) || [])[0]}`);
-// **（P9 の監査 G-5）段 1・3 の直後に「いま取る」の道を 1 行で案内する**（自動では取らない）
-check(String(el('pd-confirm').innerHTML || '').includes('いま取る'),
-  `段 1 の直後に控えの道を案内する（G-5）: ${(String(el('pd-confirm').innerHTML || '').match(/控えは[^<]*/) || [])[0]}`);
+// **（P9 の監査 G-5。C-2）段 1・3 の直後に「取り直す」の道を 1 行で案内する**（自動では取らない）。
+// **画面に無い「いま取る」を案内しない**（監査 C-2 が見つけた誤り）
+check(String(el('pd-confirm').innerHTML || '').includes('取り直す'),
+  `段 1 の直後にバックアップの道を案内する（G-5）: ${(String(el('pd-confirm').innerHTML || '').match(/バックアップは[^<]*/) || [])[0]}`);
 check(String(el('pd-confirm').innerHTML || '').includes('#/settings'),
-  '案内は設定（「いま取る」のある画面）へ行く');
+  '案内は設定（「取り直す」のある画面）へ行く');
 BULK_STAGE = 2;                                    // 段 2（ゴミ箱）では案内しない
 PREVIEW_NOW = { ...PREVIEW_BODY, stage: 2,
                 frees: { stage: 2, bytes: 0, at: null, note: 'ゴミ箱へ移すだけです（容量は空きません）' } };
 await pdUi.showPending('?ids=a1,a2');
 pdUi.askStage(2);
 await pdUi.preview();
-// **段 2 の実行のボタンは「2 枚をゴミ箱へ移す」**
+// **段 2 の実行のボタンは「2 枚をアプリのゴミ箱へ移す」**
 let stageHtml = String(el('pd-confirm').innerHTML || '');
-check(stageHtml.includes('>2 枚をゴミ箱へ移す</button>'),
+check(stageHtml.includes('>2 枚をアプリのゴミ箱へ移す</button>'),
   `段 2 の実行のボタン（${(stageHtml.match(/pd-exec[^>]*>[^<]*/) || [])[0]}）`);
 el('pd-confirm').dispatch('click', { target: hitOf('.pd-exec', {}) });
 await tick();
 await tick();
-check(!String(el('pd-confirm').innerHTML || '').includes('いま取る'),
-  '段 2（ゴミ箱へ移す）では控えの案内を出さない（戻せるので急がない）');
+check(!String(el('pd-confirm').innerHTML || '').includes('取り直す'),
+  '段 2（アプリのゴミ箱へ移す）ではバックアップの案内を出さない（戻せるので急がない）');
 stageHtml = String(el('pd-confirm').innerHTML || '');
-check(stageHtml.includes('2 枚をゴミ箱へ移しました。いつでも戻せます。'),
+check(stageHtml.includes('2 枚をアプリのゴミ箱へ移しました。いつでも戻せます。'),
   `段 2 の結果は「ゴミ箱へ移しました」＋「いつでも戻せます」: ${(stageHtml.match(/pd-done[^>]*>[^<]*/) || [])[0]}`);
 check(!/あと \d+:\d\d/.test(stageHtml), '段 2 も窓の残り時間を出さない');
 BULK_STAGE = 1;
@@ -1598,24 +1792,24 @@ await pdUi.showPending('?ids=a1,a2');
 pdUi.askStage(3);
 await pdUi.preview();
 confirmHtml = String(el('pd-confirm').innerHTML || '');
-// **段 3 の実行のボタンは「2 枚の実体を消す」**
-check(confirmHtml.includes('>2 枚の実体を消す</button>'),
+// **段 3 の実行のボタンは「2 枚のファイルを消す」**
+check(confirmHtml.includes('>2 枚のファイルを消す</button>'),
   `段 3 の実行のボタン（${(confirmHtml.match(/pd-exec[^>]*>[^<]*/) || [])[0]}）`);
-check(confirmHtml.includes('最後の 1 つが 1 枚あります') && confirmHtml.includes('これも消す'),
-  '最後の 1 つは重い確認を出す');
+check(confirmHtml.includes('この 1 枚は、ほかの場所にコピーがありません。消すと中身そのものが無くなります。')
+  && confirmHtml.includes('コピーの無い画像も消す'), 'コピーの無い画像の確認を出す（C-6）');
 // **（監査 G-4）段 3 の前置きは実際の置き場から組む**（固定のツール名を埋め込まない）。
 // 印が無いのは `D:\lib` だけなので、そこだけ出す（`C:\other` には印がある）
-check(confirmHtml.includes('この置き場は段 3 の許可が付いていません（D:\\lib）'),
-  `段 3 の前置きを実際の置き場から組む（監査 G-4）: ${(confirmHtml.match(/この置き場[^<]*/) || [])[0]}`);
+check(confirmHtml.includes('このフォルダは段 3 の許可が付いていません（D:\\lib）'),
+  `段 3 の前置きを実際のフォルダから組む（監査 G-4。D-6）: ${(confirmHtml.match(/このフォルダ[^<]*/) || [])[0]}`);
 check(!confirmHtml.includes('illust-authoring') && !confirmHtml.includes('C:\\other'),
   '固定の名前を埋め込まない（印のある置き場は黙る。監査 G-4）');
-check(confirmHtml.includes('許可の無い置き場の 1 枚'), '段 3 にできない枚を出す（D-2）');
+check(confirmHtml.includes('許可の無いフォルダの 1 枚'), '段 3 にできない枚を出す（D-2・D-6）');
 writes.length = 0;
 el('pd-confirm').dispatch('click', { target: hitOf('.pd-exec', {}) });
 await tick();
 check(writes.filter((w) => w.url === '/api/locations/bulk-delete').length === 0,
-  '「これも消す」に印が無ければ消さない');
-check(String(el('pd-msg').innerHTML || '').includes('これも消す'),
+  '「コピーの無い画像も消す」に印が無ければ消さない（C-6）');
+check(String(el('pd-msg').innerHTML || '').includes('コピーの無い画像も消す'),
   '印を付けるよう促す');
 el('pd-confirm').dispatch('change', { target: hitOf('.pd-last-box', {}, { checked: true }) });
 writes.length = 0;
@@ -1625,10 +1819,10 @@ await tick();
 const bl3 = writes.filter((w) => w.url === '/api/locations/bulk-delete');
 check(bl3.length === 1 && JSON.parse(String(bl3[0]?.body || '{}')).confirm_last_copy === true,
   `印を付けたら confirm_last_copy を送る: ${bl3[0]?.body}`);
-// **段 3 の結果は「実体を消しました」＋「あと M:SS は取り消せます」**（段 3 だけ窓がある。§4.6）
+// **段 3 の結果は「ファイルを消しました」＋「あと M:SS は取り消せます」**（段 3 だけ窓がある。§4.6）
 stageHtml = String(el('pd-confirm').innerHTML || '');
-check(stageHtml.includes('2 枚の実体を消しました。') && /あと \d+:\d\d は取り消せます。/.test(stageHtml),
-  `段 3 の結果は「実体を消しました」＋「あと M:SS は取り消せます」: ${(stageHtml.match(/pd-done[^>]*>[^<]*/) || [])[0]}`);
+check(stageHtml.includes('2 枚のファイルを消しました。') && /あと \d+:\d\d は取り消せます。/.test(stageHtml),
+  `段 3 の結果は「ファイルを消しました」＋「あと M:SS は取り消せます」: ${(stageHtml.match(/pd-done[^>]*>[^<]*/) || [])[0]}`);
 BULK_STAGE = 1;
 
 // 15. 凍結が失効したら 1 行出して押せなくする（§5）
@@ -1651,7 +1845,7 @@ BULK_FAILS = null;
 PENDING_NOW = { ...PENDING_BODY, items: PENDING_BODY.items.filter((i) => i.state === 'trashed') };
 await pdUi.showPending('?ids=');
 check(String(el('pd-running').innerHTML || '')
-  .includes('取り消せる削除はありません。ゴミ箱の 1 件は下から戻せます。'),
+  .includes('戻せる削除はありません。アプリのゴミ箱の 1 件は下から戻せます。'),
   `段 2 だけのときはゴミ箱を案内する: ${String(el('pd-running').innerHTML || '').slice(0, 60)}`);
 check(String(el('pd-trash').innerHTML || '').includes('戻す'), 'その行はゴミ箱の欄から戻せる');
 PENDING_NOW = PENDING_BODY;
@@ -1782,28 +1976,28 @@ check(stUi.lastTakenAt(BACKUP_NOW) === '2026-10-18T03:15:00Z',
 check(stUi.kindText('pre-topup') === '表の形を変える前'
   && stUi.kindText('daily') === '日次' && stUi.kindText('manual') === '取り直し'
   && stUi.kindText('nazo') === 'その他',
-  '控えの種類は利用者の言葉で出す（`kind` をそのまま出さない。文言表は「取り直し」。D-1）');
+  'バックアップの種類は利用者の言葉で出す（`kind` をそのまま出さない。文言表は「取り直し」。D-1）');
 writes.length = 0;
 settingsWrites.length = 0;
 await stUi.showSettings();
 let bkHtml = String(el('st-backup').innerHTML || '');
 check(bkHtml.includes('最後に取ったのは') && bkHtml.includes(pdUi.fmtWhen('2026-10-18T03:15:00Z')),
   `最後に取った時刻を出す: ${(bkHtml.match(/最後に取ったのは[^<]*/) || [])[0]}`);
-check(bkHtml.includes('C:\\work\\image-reviwer\\.backup\\daily') && bkHtml.includes('設定の値です'),
+check(bkHtml.includes('C:\\work\\image-reviwer\\.backup\\daily') && bkHtml.includes('（設定の値）'),
   '置き場と、それが設定の値か既定かを出す');
 check(bkHtml.includes('今日の分は取れています。'), '今日の分の状態を出す（文言表の文。D-2）');
 check(!bkHtml.includes('（次は'), '「今日の分」に括弧を重ねない（API の `next_run_note` は出さない。D-2）');
-check(bkHtml.includes('バックアップが 3 世代あります（直近 7 世代を残します）'), '控えの数と残す数を出す');
+check(bkHtml.includes('バックアップが 3 世代あります（直近 7 世代を残します）'), 'バックアップの数と残す数を出す');
 check(bkHtml.includes("[WinError 5] アクセスが拒否されました: "
   + "'C:\\Users\\yukse\\image-reviewer-backups'"),
   `最後の失敗を**全文**で出す（B-1'）: ${(bkHtml.match(/st-failed[\s\S]{0,60}/) || [])[0]}`);
-check(bkHtml.includes('置き場を作れないときは、書き込める場所に変えてください。'),
+check(bkHtml.includes('保存先を作れないときは、書き込める場所に変えてください。'),
   '次にできることを 1 行で出す');
 check(bkHtml.includes('20261018-121500') && bkHtml.includes('日次') && bkHtml.includes('取り直す')
   && bkHtml.includes('表の形を変える前'), '直近の一覧を種類つきで出す');
 check(/class="st-now"[^>]*>取り直す</.test(bkHtml),
   `ボタンは「取り直す」（文言表が正。D-1）: ${(bkHtml.match(/class="st-now"[^>]*>[^<]*/) || [])[0]}`);
-check(bkHtml.includes('placeholder="絶対パス"'), '置き場の入力に「絶対パス」と書く（D-9）');
+check(bkHtml.includes('placeholder="例: D:\\backups\\image-reviewer"'), '保存先の入力に例を書く（C-17）');
 check(bkHtml.includes('image-reviewer restore') && !bkHtml.includes('st-restore'),
   '復元はコマンドだと書く（画面から戻さない。§3.3）');
 
@@ -1813,7 +2007,7 @@ await stUi.showSettings();
 check(String(el('st-backup').innerHTML || '').includes('今日の分はまだです。'),
   'まだの日は「今日の分はまだです。」と出す（D-2）');
 
-// 19c. **読めない控え**（`manifest.json` が無い物）も語で出す
+// 19c. **読めないバックアップ**（`manifest.json` が無い物）も語で出す
 //      （P8-5 の監査 D-6。壊し試験 G11「文言を消しても緑」だった穴）
 BACKUP_NOW = { ...BACKUP_BODY, snapshots: [...BACKUP_BODY.snapshots,
   { name: '20261018-130000', kind: 'manual', created_at: '2026-10-18T04:00:00Z',
@@ -1827,9 +2021,9 @@ await stUi.showSettings();
 // 20. 設定の画面: 置き場ごとの「段 3 を許す」印（Q8）
 let rtHtml = String(el('st-roots').innerHTML || '');
 check(rtHtml.includes('許可あり') && rtHtml.includes('許可なし'), '置き場ごとに段 3 の許可の状態を出す');
-check(rtHtml.includes('許可を外す') && rtHtml.includes('この置き場で段 3 を許す'),
+check(rtHtml.includes('許可を外す') && rtHtml.includes('このフォルダで段 3 を許す'),
   '付け外しのボタンを分ける');
-check(rtHtml.includes('許可の無い置き場では段 3（実体を消す）を選べません。段 1・2 はいつでも使えます。'),
+check(rtHtml.includes('許可の無いフォルダでは段 3（ファイルを消す）を選べません。段 1・2 はいつでも使えます。'),
   '許可の意味を 1 行で書く');
 check(el('st-brief').textContent === 'バックアップ 3 世代、段 3 の許可 1 / 2',
   `見出しにバックアップと許可の数を出す: ${el('st-brief').textContent}`);
@@ -1847,7 +2041,7 @@ check(decodeURIComponent(String(allowPosts[0]?.url || '')).includes('/api/roots/
 check(JSON.parse(String(allowPosts[0]?.body || '{}')).allow === true, 'allow: true を送る');
 check(settingsWrites[0]?.headers?.['X-Image-Reviewer-Actor'] === 'human',
   `人だけの口に名乗る（P8-3 の監査 D-8）: ${JSON.stringify(settingsWrites[0]?.headers)}`);
-check(String(el('st-msg').innerHTML || '').includes('この置き場で段 3 を許します。'),
+check(String(el('st-msg').innerHTML || '').includes('このフォルダで段 3 を許します。'),
   `押した結果を 1 行で知らせる: ${String(el('st-msg').innerHTML || '').slice(0, 60)}`);
 
 // 21b. **二度押し**（1 回目の応答が返る前に 2 回目を押す。**P8-5 の監査 C-1**）→ POST は 1 回
@@ -1971,8 +2165,8 @@ let pdConfirm = String(el('pd-confirm').innerHTML || '');
 check(!pdConfirm.includes('value="3"') && pdConfirm.includes('value="1"')
   && pdConfirm.includes('value="2"'),
   '許可の無い置き場では段 3 を出さない（段 1・2 だけ。Q8・E-3）');
-check(pdConfirm.includes('この置き場には段 3 の許可がありません。段 1・2 だけ選べます。許可は設定で付けられます。'),
-  `断りの 1 行を出す: ${(pdConfirm.match(/この置き場[^<]*/) || [])[0]}`);
+check(pdConfirm.includes('このフォルダには段 3 の許可がありません。段 1・2 だけ選べます。許可は設定で付けられます。'),
+  `断りの 1 行を出す: ${(pdConfirm.match(/このフォルダ[^<]*/) || [])[0]}`);
 check(pdConfirm.includes('href="#/settings"'), '許可を付ける場所（設定）へ行ける');
 check(pdUi.askStage(3) === false && pdUi.stageTaken() === 1,
   '出していない段は押しても選ばない（段 1 のまま）');
@@ -1991,8 +2185,8 @@ ASSETS_FAILS = true;
 await pdUi.showPending('?ids=a1,a2');
 pdConfirm = String(el('pd-confirm').innerHTML || '');
 check(!pdConfirm.includes('value="3"'), '確かめられないときも段 3 を出さない（安全側）');
-check(pdConfirm.includes('置き場を確かめられないので、段 3 は出していません。'),
-  `確かめられなかったと言う: ${(pdConfirm.match(/置き場を確かめ[^<]*/) || [])[0]}`);
+check(pdConfirm.includes('フォルダを確かめられないので、段 3 は出していません。'),
+  `確かめられなかったと言う: ${(pdConfirm.match(/フォルダを確かめ[^<]*/) || [])[0]}`);
 ASSETS_FAILS = false;
 
 // 28b. **一覧の上限（2000 枚）を超える置き場**（P8-5 の監査 D-5）。
@@ -2051,7 +2245,7 @@ const liveItems = Array.from({ length: 262 }, (_, i) => ({ id: `x${i}`, has_prov
 const prov = countsUi.provenanceCounts(liveItems, 262, REAL_STATS);
 check(prov.with === 200 && prov.without === 62,
   `来歴あり／なしも生きた枚の内訳: ${prov.with} / ${prov.without}（stats の 375/80 を使わない）`);
-check(countsUi.briefText(10000, 2000) === '10000 枚（先頭 2000 枚を表示）',
+check(countsUi.briefText(10000, 2000) === '10,000 枚（先頭 2,000 枚を表示）',
   `切れているときだけ添える: ${countsUi.briefText(10000, 2000)}`);
 
 // 32. **（ワーディング監査 G-12）左の列の「来歴あり」「来歴なし」は押したら絞る。**
@@ -2084,7 +2278,7 @@ check(filtersUi.railSelection('kind:photo', 'without').provenance === 'all',
 check(filtersUi.emptyText(true).includes('条件に合う画像がありません')
   && filtersUi.emptyText(true).includes('絞り込みを外すと全部が見えます'),
   `絞り込みで 0 枚のときの文（W-3）: ${filtersUi.emptyText(true)}`);
-check(filtersUi.emptyText(false).includes('この入れ物にはまだ画像がありません'),
+check(filtersUi.emptyText(false).includes('画像がまだ登録されていません'),
   '絞り込みでないときは今までどおり（走査していない）');
 check(filtersUi.isFiltering('all', 'all') === false && filtersUi.isFiltering('all', 'without') === true,
   '来歴の軸だけでも「絞り込み中」と数える');

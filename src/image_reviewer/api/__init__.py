@@ -163,8 +163,9 @@ def sqlite_error_handler(request: Request, exc: sqlite3.DatabaseError) -> JSONRe
             status_code=503, headers={"Retry-After": "5"})
     if _is_busy(exc):
         # **（P9 の監査 D-2）「混んでいる」は 500 ではなく 503 ＋ もう一度**
+        # **（B-10）** 「処理」は `frontend-design.md` §6 の使わない語。起きていることをそのまま書く
         return JSONResponse(
-            {"detail": "DB がいま混んでいます（ほかの処理が書き込んでいます）。"
+            {"detail": "DB がいま混んでいます（ほかの書き込みが進んでいます）。"
                        "少し待って、もう一度試してください",
              "code": "busy",
              "details": {"kind": type(exc).__name__, "error": str(exc),

@@ -310,7 +310,8 @@ class AnnotationService:
     def _open(self, asset: dict) -> Image.Image:
         path = _primary_path(asset)
         if not path or not os.path.exists(path):
-            raise ReviewError(409, "画像の実体がありません", code="asset_file_missing",
+            # **（D-5）** 画面の語は「ファイル」
+            raise ReviewError(409, "画像のファイルがありません", code="asset_file_missing",
                               details={"asset_id": asset["id"]})
         return Image.open(path)
 

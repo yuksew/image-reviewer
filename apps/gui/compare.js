@@ -10,11 +10,11 @@
 //   （画面は `order` の順に並べ替え、`enabled` と `reason` をそのまま描く）。
 //   seed 順だけは、サーバが返した `provenance.seed` を並べ替える（値の計算はしない）
 // - 差分ヒートマップの画像は `POST /api/compare/pair` が**要求のたびに作る**（保存しない）。
-//   条件の外でも「強制して出す」で見られる（点検 G6）。位置が合わないときは
+//   条件の外でも「それでも出す」で見られる（点検 G6）。位置が合わないときは
 //   画像ではなく理由（「位置が合いません」）が出る
 // - 絞り込み（`cover`）を使わない。枠の高さを揃え、幅は絵の縦横比に従う（`comparison.md` §2.1）
 // - マウスだけで完結する（ホイールで拡大・ドラッグで移動）。キーは補助（§6）
-//   **監査 A1**: 出せない組の「強制して出す」もマウスだけで届く（理由の 1 行の隣に出し、
+//   **監査 A1**: 出せない組の「それでも出す」もマウスだけで届く（理由の 1 行の隣に出し、
 //   「差分ヒートマップ」のボタンも `disabled` にしない。`d` は補助）
 // - **基準（`base`）は URL が正**（`#/compare?ids=…&base=…`。監査 C1）。タイルの
 //   「基準にする」でも `b` キーでも、`base=` を書き換えてサーバから取り直す
@@ -131,8 +131,9 @@ export async function showCompare(search) {
   } catch (error) {
     state.doc = null;
     brief('比較できません');
+    // **（C-8）** 英語の例外文は本文に出さず、次の一手を添える（§6.1 の規約 3）
     $('cmp-diff').innerHTML =
-      `<div class="cmp-note">比較できません: ${esc(error.message)}</div>`;
+      `<div class="cmp-note">比較できませんでした。もう一度試してください（詳細: ${esc(error.message)}）。</div>`;
   }
 }
 
@@ -386,10 +387,11 @@ function renderDiff() {
       const value = row.values[at];
       if (unknown.has(id)) {
         const known = prefix[id];
-        // **（ワーディング監査 W-22）** 敬体に揃え、「未捕獲」はほどく（G-6）
+        // **（ワーディング監査 W-22。D-4）** 敬体に揃え、「未捕獲」はほどく（G-6）
+        // **「捕獲」→「取り込む」**（`design.md` §17 の画面の語）
         const title = known
-          ? `最終プロンプトは分かりません（訳を捕獲していません）。分かっているのは前置語だけです: ${known}`
-          : '最終プロンプトは分かりません（訳を捕獲しておらず、来歴にもありません）';
+          ? `最終プロンプトは分かりません（訳を取り込んでいません）。分かっているのは前置語だけです: ${known}`
+          : '最終プロンプトは分かりません（訳を取り込んでおらず、来歴にもありません）';
         return `<td class="cell unknown${numClass}" title="${esc(title)}">`
           + '<span class="unknown-mark">分からない</span>'
           + (known ? `<span class="partial">前置語: ${esc(known)}</span>` : '') + '</td>';
@@ -443,7 +445,7 @@ function promptBlock() {
     return '<div class="cmp-note">語が多すぎるので語の差分は省きました'
       + '（表には値をそのまま出しています）。</div>';
   }
-  // 監査 B2: 訳が未捕獲の枚は「分からない」と描く（空の行にしない）
+  // 監査 B2: 訳を取り込んでいない枚は「分からない」と描く（空の行にしない。**D-4**）
   const unknownIds = new Set(detail.unknown || []);
   // 監査 D5: 行の並びも**画面の並び**（番号だけ直しても、6,3,1,7… の順では読みにくい）
   const others = Object.keys(detail.per_asset)
@@ -453,13 +455,13 @@ function promptBlock() {
   if (unknownIds.has(detail.base)) {
     // 基準そのものが分からないと、他の枚の語と比べられない（「追加」とは言わない）
     lines.push('<div class="cmp-line"><span class="who">基準</span>'
-      + '<span class="word unknown">訳を捕獲していない（分かりません）</span></div>');
+      + '<span class="word unknown">訳を取り込んでいない（分かりません）</span></div>');
   }
   for (const id of others) {
     const index = displayIndex(id);                 // 監査 C2: 番号は画面の並び
     if (unknownIds.has(id)) {
       lines.push(`<div class="cmp-line"><span class="who">${index + 1}</span>`
-        + '<span class="word unknown">訳を捕獲していない（分かりません）</span></div>');
+        + '<span class="word unknown">訳を取り込んでいない（分かりません）</span></div>');
       continue;
     }
     const words = detail.per_asset[id].map((word) => {
@@ -475,7 +477,7 @@ function promptBlock() {
     `<span class="word ${esc(token.state)}" title="${esc(token.state)}">${esc(token.t)}</span>`)
     .join(' ');
   const summary = unknownIds.size
-    ? `訳を捕獲していない画像がある（${unknownIds.size} 枚は分かりません）`
+    ? `訳を取り込んでいない画像がある（${unknownIds.size} 枚は分かりません）`
     : detail.normalized_equal ? '語も重みも同じ'
       : detail.reweighted ? '語は同じ・重みが違う' : '語が違う';
   const moved = detail.tokens.filter((token) => token.state === 'moved').length;
@@ -537,7 +539,7 @@ function heatLine() {
   // 発火せず、強制の口（`#cmp-heatforce`）が隠れた包みの中にあると**マウスだけでは
   // 到達できない**（包みを開くのは `d` キーだけだった＝`comparison.md` §6 に反する）。
   // 押せないことは `aria-disabled` と見た目（`is-off`）で示し、click は `toggleHeat()`
-  // （理由と「強制して出す」を開く）に結んである。
+  // （理由と「それでも出す」を開く）に結んである。
   if (!rule) {
     if (button) {
       button.disabled = false;
@@ -556,7 +558,7 @@ function heatLine() {
     button.classList.toggle('is-off', !enabled);
     button.title = enabled
       ? '差分ヒートマップを出す（d）'
-      : `出せません: ${rule.heatmap.reason}（「強制して出す」で見られます）`;
+      : `出せません。${rule.heatmap.reason}（「それでも出す」で見られます）`;
   }
   if (why) {
     // 監査 C1（実行込みのやり直し）: 同じ seed は「合う」の予測ではない（実データでは
@@ -567,13 +569,13 @@ function heatLine() {
         : `差分: 出せます（pHash 距離 ${rule.phash_distance}）`)
       : `差分: ${rule.heatmap.reason}`;
   }
-  // 監査 C1: 「強制して出す」は**常に**出しておく（規則の外の組だけでは、同じ seed の
+  // 監査 C1: 「それでも出す」は**常に**出しておく（規則の外の組だけでは、同じ seed の
   // 85 組中 81 組が「位置が合いません」で行き止まりになる）。すでに絵が出ているときは
   // `showForce()` が自分で隠す。
   showForce(true);
 }
 
-// 「強制して出す」の見え方（**1 か所で決める**。監査 A1）。
+// 「それでも出す」の見え方（**1 か所で決める**。監査 A1。**C-24** で「それでも出す」をやめた）。
 // `wanted` = 「規則の外なので押せば出せる」組かどうか。すでに強制した絵が出ているときは
 // 用が済んでいるので隠す（`state.heat.heatmap.available`）。
 function showForce(wanted) {
@@ -607,7 +609,8 @@ function metricsLine(body) {
   if (body.mean_abs != null) parts.push(`平均差 ${Number(body.mean_abs).toFixed(1)}`);
   parts.push(body.phash_distance == null ? 'pHash 距離 —' : `pHash 距離 ${body.phash_distance}`);
   const heat = body.heatmap || {};
-  if (heat.dx != null) parts.push(`ずれ ${heat.dx}×${heat.dy}px`);
+  // **（A-10）** 数字と単位の間は半角空白 1 つ（「1024 × 1024」と同じ形）
+  if (heat.dx != null) parts.push(`ずれ ${heat.dx} × ${heat.dy} px`);
   return parts.join(' / ');
 }
 
@@ -637,7 +640,7 @@ function renderHeat() {
   }
 }
 
-// 「差分ヒートマップ」を開く。条件の外では**要求を出さずに理由と「強制して出す」**を出す
+// 「差分ヒートマップ」を開く。条件の外では**要求を出さずに理由と「それでも出す」**を出す
 // （点検 G6。画像の計算は 2 枚の復号を伴うので、出せない組では走らせない）
 function openHeat() {
   const rule = heatRule();
@@ -860,7 +863,7 @@ function toggleSame() {
 }
 
 // 「差分ヒートマップ」ボタンと `d` キー（**キーは補助**。§6。監査 A1: ボタンだけでも届く）。
-// 開いていれば閉じ、閉じていれば出す（条件の外は理由＋「強制して出す」を開く）
+// 開いていれば閉じ、閉じていれば出す（条件の外は理由＋「それでも出す」を開く）
 function toggleHeat() {
   if (state.heat) {
     closeHeat();
@@ -878,7 +881,7 @@ export function wireCompare() {
   // P5-3
   const order = $('cmp-order');
   if (order) order.addEventListener('click', cycleOrder);
-  // 監査 A1: 出せる組ではそのまま出す。出せない組では理由と「強制して出す」を開く
+  // 監査 A1: 出せる組ではそのまま出す。出せない組では理由と「それでも出す」を開く
   // （`toggleHeat()` が両方を決める。`disabled` にしないので click が必ず届く）
   const heat = $('cmp-heat');
   if (heat) heat.addEventListener('click', toggleHeat);

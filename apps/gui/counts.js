@@ -22,11 +22,23 @@ export function liveTotal(stats, total) {
   return Number((stats || {}).assets) || 0;
 }
 
+/**
+ * 件数の表示（**4 桁以上に「,」**。日本語 UI の監査 A-3。§6.1 の規約 1）。
+ *
+ * **ID・seed・年には使わない**（`toLocaleString('ja-JP')` は 4 桁未満をそのまま返すので、
+ * 3 桁以下の値は今までと同じ見た目になる）。
+ */
+export function fmtCount(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '0';
+  return v.toLocaleString('ja-JP');
+}
+
 /** 上部バーの文言（切れているときだけ「先頭 M 枚を表示」を添える）。 */
 export function briefText(total, listed) {
   const n = Number(total) || 0;
   const shown = Number(listed) || 0;
-  return (shown && n > shown) ? `${n} 枚（先頭 ${shown} 枚を表示）` : `${n} 枚`;
+  return (shown && n > shown) ? `${fmtCount(n)} 枚（先頭 ${fmtCount(shown)} 枚を表示）` : `${fmtCount(n)} 枚`;
 }
 
 /**

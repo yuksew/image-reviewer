@@ -9,10 +9,14 @@
 - `GET  /api/trash` — ゴミ箱（段 2。日付ごと）／`POST /api/trash/restore` — ゴミ箱から戻す（**人だけ**）
 - `GET  /api/deletions/previews/{id}` — 凍結した一覧（**実行時に評価し直さない**ことの確認）
 - `POST /api/deletions/{id}/purge` — **「いま消す」**（保留領域のファイルを今すぐ消す。**人だけ**）
+- `POST /api/deletions/{id}/advance` / `POST /api/deletions/advance` — **後から段 2 へ進める**
+  （**人だけ**。P10。`docs/deletions-advance.md`）
+- `POST /api/deletions/{id}/close` / `POST /api/deletions/close` — **実体が無い行を片付ける**
+  （**人だけ**。P10。ファイルは 1 つも消さない・動かさない）
 
 **削除は人もエージェントも可**（利用者の回答 Q2。`require_human` を掛けない）。
-**人だけ**なのは `as_copy`（別名で戻す）・ゴミ箱からの復帰・「いま消す」で、検査は
-`deletions.py` の中の 1 か所（`_require_human`）にある。
+**人だけ**なのは `as_copy`（別名で戻す）・ゴミ箱からの復帰・「いま消す」・**後から段 2 へ進める**・
+**片付ける**で、検査は `deletions.py` の中の 1 か所（`_require_human`）にある。
 
 **`GET` は 1 バイトも書かない**（`remaining_sec` も減らさない。減らすのはタイマー）。
 守り（Host / Origin / Content-Type）は `app.py` の middleware がアプリ全体に掛ける。
@@ -174,3 +178,67 @@ def deletions_purge(request: Request, deletion_id: str, body: dict | None = Body
     got = body or {}
     return deletions_of(request).purge_now(
         deletion_id, confirm=_flag(got.get("confirm")), actor=actor_of(request))
+
+
+# ---- 後から段 2 へ進める・実体が無い行を片付ける（P10。利用者の要望）----
+#
+# 記録: `docs/deletions-advance.md`。**どちらも人だけ**（検査は `deletions.py` の `_require_human`
+# の 1 か所）。**段 3 への直行は作らない**（段 2 まで＝`_advance_stage_of`）。
+# **`GET` は 1 バイトも書かない**（どちらも `POST`）。
+# まとめての上限は 1 回 200 件（`MAX_BATCH_PER_CALL`。超えたら **422 `too_many`** で 1 件も進めない）。
+
+
+@router.post("/deletions/advance")
+def deletions_advance_many(request: Request, body: dict = Body(...)):
+    """**まとめて段 2 へ進める**（`{ids: [...], stage: 2}`。**人だけ**）。
+
+    1 件ずつ同じ道（`_advance_one`）を通し、**断った 1 件は `skipped` に理由つきで残して
+    残りを進める**（`{advanced, skipped, count, skipped_count, requested}`）。
+    """
+    got = body or {}
+    return deletions_of(request).advance_many(
+        got.get("ids"), stage=got.get("stage"), actor=actor_of(request))
+
+
+@router.post("/deletions/{deletion_id}/advance")
+def deletions_advance(request: Request, deletion_id: str, body: dict | None = Body(default=None)):
+    """**カタログから外した行を、後からアプリのゴミ箱へ移す**（`{stage: 2}`。**人だけ**。P10）。
+
+    - 登録した場所にファイルが在れば、**段 2 と同じ道**で `<data>/trash/<日付>/<ハッシュ>/` へ
+      移す（**上書きしない**＝409 `target_exists`／別ボリュームは 409 `cross_volume`）
+    - ファイルが無ければ **409 `missing_file`**（「ファイルが無いので片付ける」を案内する）
+    - 既に段 2 以上なら **409 `already_stage2` / `already_stage3`**（**二重に移さない**）
+    - **段 3 へは直行しない**（`stage` は 2 だけ）
+    """
+    got = body or {}
+    return deletions_of(request).advance(
+        deletion_id, stage=got.get("stage"), actor=actor_of(request))
+
+
+@router.post("/deletions/close")
+def deletions_close_many(request: Request, body: dict = Body(...)):
+    """**まとめて片付ける**（`{ids: [...], reason: "missing"}`。**人だけ**。P10）。
+
+    実データの 194 行を 1 回で片付けるための口（利用者の要望）。**ファイルがまだ在る行は
+    断って `skipped` に残す**（**生きているファイルを片付けない**）。
+    """
+    got = body or {}
+    return deletions_of(request).close_many(
+        got.get("ids"), reason=got.get("reason"), actor=actor_of(request))
+
+
+@router.post("/deletions/{deletion_id}/close")
+def deletions_close(request: Request, deletion_id: str, body: dict | None = Body(default=None)):
+    """**実体が無い行を片付ける**（`{reason: "missing"}`。**人だけ**。P10）。
+
+    **登録の場所・元の場所・ゴミ箱・一時置き場のどこにも実体が無いことを確かめてから**、
+    その行を終わりにする（`closed_at` / `close_reason`）。1 つでも見つかったら
+    **409 `file_found`**（**生きているファイルを片付けない**）。
+
+    **ファイルは 1 つも消さない・動かさない**（`files_touched: 0`）。**`asset.deleted_at` は
+    そのまま**（カタログには戻さない）。**既に片付けている行は 200 で `replayed: true`**
+    （二重に記録しない）。
+    """
+    got = body or {}
+    return deletions_of(request).close(
+        deletion_id, reason=got.get("reason"), actor=actor_of(request))

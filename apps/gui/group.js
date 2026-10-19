@@ -114,8 +114,10 @@ function render() {
     const prov = chosen ? (state.prov[chosen] || '') : '';
     stage.innerHTML = chosen
       ? `<img src="/api/assets/${esc(chosen)}/thumb?size=1024" alt="">`
+        // **（F-3）** 状態の語とモデル名が接して「未判断anima-…」と見えていた。**区切りに「、」を入れる**
+        // （絵の上には重ねず、`styles.css` の `.grp-cap` を**絵の下の帯**に置いた）
         + `<div class="grp-cap">${esc(row ? itemLabel(row, state.items.indexOf(row)) : '')}`
-        + (prov ? `<span class="grp-prov">${esc(prov)}</span>` : '') + '</div>'
+        + (prov ? `、<span class="grp-prov">${esc(prov)}</span>` : '') + '</div>'
       : '<div class="grp-note">このまとまりには画像がありません。</div>';
   }
   if (chosen) fillProv(chosen);      // 選択中の 1 枚の来歴（監査 C3。1 枚につき 1 回だけ引く）
@@ -151,11 +153,15 @@ function render() {
   const del = $('group-delete');
   if (del) {
     del.disabled = !chosen;
-    del.textContent = '選んだ 1 枚を削除へ回す';
+    // **（C-5・G-9）** 「削除へ回す」ではなく「削除する…」
+    del.textContent = '選んだ 1 枚を削除する…';
   }
   const note = $('group-note');
   if (note) {
-    note.textContent = state.error ? `まとまりを読めません: ${state.error}` : (state.note || '');
+    // **（C-8）** 英語の例外文は本文に出さず、次の一手を添える（§6.1 の規約 3）
+    note.textContent = state.error
+      ? `まとまりを読めませんでした。もう一度試してください（詳細: ${state.error}）。`
+      : (state.note || '');
     note.hidden = !note.textContent;
   }
 }

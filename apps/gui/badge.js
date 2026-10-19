@@ -158,7 +158,7 @@ export function renderDeleteBadge(items) {
     .map((it) => Number(it.remaining_sec) || 0);
   // **（ワーディング監査 W-71）** メタ情報の中黒をやめ、「あと 3:12」は括弧に入れる（規則 1）
   const text = rows.length
-    ? `最近の削除 ${rows.length}`
+    ? `最近の削除 ${Number(rows.length).toLocaleString('ja-JP')}`
       + (windows.length ? `（あと ${fmtRemain(Math.min(...windows))}）` : '')
     : '';
   el.textContent = text;

@@ -65,7 +65,8 @@ async function refresh() {
     state.items = body.items || [];
     state.error = null;
   } catch (error) {
-    state.error = `注記を読めません: ${error.message}`;
+    // **（C-8）** 英語の例外文は本文に出さず、次の一手を添える（§6.1 の規約 3）
+    state.error = `注記を読めませんでした。もう一度試してください（詳細: ${error.message}）。`;
   }
   render();
 }
@@ -81,10 +82,12 @@ function render() {
       ? rows.map(({ item, no }) => {
         const shape = item.shape === 'ellipse' ? '楕円' : item.shape === 'rect' ? '矩形' : 'メモ';
         const who = item.actor === 'agent' ? 'エージェント' : '人';
-        const body = item.body ? esc(item.body) : '<span class="none">（メモなし）</span>';
+        // **（A-12）** 値が無いときの文は「（なし）」の 1 形
+        const body = item.body ? esc(item.body) : '<span class="none">（なし）</span>';
         // メモ（領域なし）は**切れない**ので、リンクを出さない（押すと 422 になる。監査 C-8）
+        // **（C-16・G-1）** 押すと何かが起きる物は終止形（「切り出し」→「切り出しを保存する」）
         const crop = item.shape
-          ? `<a class="anno-get" href="/api/annotations/${esc(item.id)}/crop" download>切り出し</a>`
+          ? `<a class="anno-get" href="/api/annotations/${esc(item.id)}/crop" download>切り出しを保存する</a>`
           : '';
         return `<div class="anno-row" data-anno="${esc(item.id)}">
             <span class="anno-no">${no}</span>
@@ -147,7 +150,8 @@ async function commit(image) {
   const box = normalized(draft);
   // **4 px 未満は作らない**（誤操作。§8.2-6）
   if (box.width < MIN_DRAG_PX || box.height < MIN_DRAG_PX) {
-    state.note = '小さすぎるので作りませんでした（4 px 以上で囲んでください）';
+    // **（A-4・G-10）** 通知も文なので「。」を付ける
+    state.note = '小さすぎるので作りませんでした（4 px 以上で囲んでください）。';
     render();
     return;
   }
@@ -169,7 +173,7 @@ async function commit(image) {
     }
     state.note = '注記を付けました。メモを書くなら一覧の「メモ」から書けます。';
   } catch (error) {
-    state.error = `注記を付けられません: ${error.message}`;
+    state.error = `注記を付けられませんでした。もう一度試してください（詳細: ${error.message}）。`;
   }
   await refresh();
 }
@@ -180,7 +184,7 @@ async function addMemo() {
   const field = $('anno-memo');
   const text = (field?.value || '').trim();
   if (!text) {
-    state.error = 'メモが空です';
+    state.error = 'メモが空です。何か書いてから押してください。';
     render();
     return;
   }
@@ -194,9 +198,9 @@ async function addMemo() {
     }
     if (field) field.value = '';
     state.error = null;
-    state.note = 'メモを足しました';
+    state.note = 'メモを足しました。';
   } catch (error) {
-    state.error = `メモを足せません: ${error.message}`;
+    state.error = `メモを足せませんでした。もう一度試してください（詳細: ${error.message}）。`;
   }
   await refresh();
 }
@@ -209,10 +213,10 @@ async function remove(id) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.detail || res.status);
     }
-    state.note = '消しました';
+    state.note = '消しました。';
     state.error = null;
   } catch (error) {
-    state.error = `消せません: ${error.message}`;
+    state.error = `消せませんでした。もう一度試してください（詳細: ${error.message}）。`;
   }
   await refresh();
 }
@@ -231,9 +235,9 @@ async function exportJson() {
     a.download = `annotations-${state.assetId}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    state.note = '座標と文の JSON を作りました';
+    state.note = '座標と文の JSON を作りました。';
   } catch (error) {
-    state.error = `書き出せません: ${error.message}`;
+    state.error = `書き出せませんでした。もう一度試してください（詳細: ${error.message}）。`;
   }
   render();
 }
@@ -246,9 +250,9 @@ async function exportCrops() {
     });
     const doc = await res.json();
     if (!res.ok) throw new Error(doc.detail || res.status);
-    state.note = `切り出しを ${doc.crops.length} 枚書き出しました（${doc.crops[0]?.path.split('/')[0]}/…）`;
+    state.note = `切り出しを ${doc.crops.length} 枚書き出しました（${doc.crops[0]?.path.split('/')[0]}/…）。`;
   } catch (error) {
-    state.error = `書き出せません: ${error.message}`;
+    state.error = `書き出せませんでした。もう一度試してください（詳細: ${error.message}）。`;
   }
   render();
 }
@@ -280,7 +284,8 @@ export async function mountAnnotations(container, assetId) {
     <div class="anno-bar">
       <input type="text" id="anno-memo" placeholder="画像 1 枚へのメモ">
       <button type="button" id="anno-memo-add">メモを足す</button>
-      <button type="button" id="anno-json">座標 JSON</button>
+      <!-- **（C-16・G-1）** 名詞形を終止形に（「座標 JSON」→「座標 JSON を作る」） -->
+      <button type="button" id="anno-json">座標 JSON を作る</button>
       <button type="button" id="anno-crops">切り出しを書き出す</button>
     </div>
     <div class="stat" id="anno-note"></div>

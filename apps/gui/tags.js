@@ -4,11 +4,12 @@
 //       docs/frontend-design.md §4.13（タグ）
 //
 // 約束:
-// - **2 行 1 組**（1 行目 英語 / 2 行目 日本語の語釈）。**語釈の行に括弧書きを足さない**。
+// - **2 行 1 組**（1 行目 英語 / 2 行目 日本語訳）。**日本語訳の行に括弧書きを足さない**。
 //   **語そのものの括弧は消さない**（`rem_(re:zero)` はそのまま出す。点検 A-1 / G-5）
+//   **（D-2）** 画面の語は「日本語訳」（内部の語は「語釈」。`design.md` §17）
 // - **`GET` は訳さない**。訳すのは `POST /api/tags/gloss`（§0.10）
 // - **同じ語を 1 行にまとめる**（出所は `sources` に全部。§2.4）
-// - **`esc()` を必ず通す**（語と語釈は外から来る文字列）
+// - **`esc()` を必ず通す**（語と日本語訳は外から来る文字列）
 
 const $ = (id) => document.getElementById(id);
 const GLOSS_API = '/api/tags/gloss';
@@ -102,15 +103,19 @@ export function scoreText(word) {
   return `<span class="tg-score num">${Number(word.score).toFixed(3)}</span>`;
 }
 
-/** 1 語の 2 行 1 組（§5.1）。`gloss` が無ければ「まだありません」＋「訳す」。 */
+/** 1 語の 2 行 1 組（§5.1）。`gloss` が無ければ「まだありません」＋「訳す」。
+ *
+ * **（D-2・D-15）** 画面の語は「日本語訳」。「語彙外」は言語学の語なので「それ以外」にする
+ * （既定の検索では出ない、の意味は `title` で補う）。
+ */
 export function wordRowHtml(word, { pending = true } = {}) {
   const unknown = word.known === false
-    ? '<span class="tg-unknown" title="タグの語彙（Danbooru）に無い語。既定の検索では出ません">語彙外</span>' : '';
+    ? '<span class="tg-unknown" title="Danbooru の語ではありません（PNG の文から来た語）。既定の検索では出ません">それ以外</span>' : '';
   const remove = (word.sources || []).includes('manual')
     ? `<button class="tg-remove" data-name="${esc(word.name)}" title="人が付けた語を外す">外す</button>` : '';
   const gloss = word.gloss
     ? `<div class="ja">${esc(word.gloss)}${word.gloss_edited ? '<span class="tg-edited">人が直した</span>' : ''}</div>`
-    : `<div class="ja tg-none">日本語の語釈はまだありません。`
+    : `<div class="ja tg-none">日本語訳はまだありません。`
       + (pending ? `<button class="tg-translate" data-name="${esc(word.name)}">訳す</button>` : '')
       + '</div>';
   return `<div class="tg-row" data-name="${esc(word.name)}">`
@@ -120,14 +125,14 @@ export function wordRowHtml(word, { pending = true } = {}) {
     + '</div>';
 }
 
-/** 語釈待ちの数と出所ごとの数（`counts` は出所ごと。§3.4）。 */
+/** 日本語訳待ちの数と出所ごとの数（`counts` は出所ごと。§3.4）。**「無い」は「（なし）」の 1 形**（A-12）。 */
 export function briefHtml(data) {
   const counts = data.counts || {};
   const parts = Object.keys(SOURCE_LABEL)
     .filter((s) => counts[s])
     .map((s) => `${SOURCE_LABEL[s]} ${counts[s]}`);
   const pending = (data.pending_gloss || []).length;
-  return `${parts.join('、') || 'タグなし'}${pending ? `、語釈待ち ${pending} 語` : ''}`;
+  return `${parts.join('、') || '（なし）'}${pending ? `、訳待ち ${pending} 語` : ''}`;
 }
 
 /** 欄ぜんたい（見出し・説明・操作・本体）。 */
@@ -142,14 +147,15 @@ export function panelHtml(data) {
   return `<div class="tg-brief">${esc(briefHtml(data))}</div>`
     + body
     + '<div class="tg-actions">'
-    + `<button id="tg-translate-all"${pending ? '' : ' disabled'} title="見えている語のうち語釈が無いものを ${GLOSS_LIMIT} 語まで訳す">`
+    + `<button id="tg-translate-all"${pending ? '' : ' disabled'} title="見えている語のうち日本語訳が無いものを ${GLOSS_LIMIT} 語まで訳す">`
     + `訳す（${GLOSS_LIMIT} 語まで）</button>`
     + '<span class="tg-add"><input id="tg-add-input" type="text" placeholder="語を足す（例: long_hair）" '
     + 'list="tg-candidates" autocomplete="off"><datalist id="tg-candidates"></datalist>'
     + '<button id="tg-add-go">足す</button></span>'
     + '</div>'
     + '<div class="tg-msg" id="tg-msg" hidden></div>'
-    + '<div class="tg-help">タガーは下ごしらえで、手の破綻までは読めません。人が見て直してください。'
+    // **（D-10）** 「下ごしらえ」は料理の比喩。要求の「これは下書きです」と同じ語にする
+    + '<div class="tg-help">タガーの結果は下書きです。手の破綻までは読めません。人が見て直してください。'
     + '訳は自動ですが、直せます。</div>';
 }
 
@@ -194,7 +200,7 @@ export function messageOf(body) {
   const u = (body.untranslated || []).length;
   const s = (body.skipped || []).length;
   const parts = [`${t} 語を訳しました`];
-  if (s) parts.push(`${s} 語は語釈済み`);
+  if (s) parts.push(`${s} 語は訳済み`);
   if (u) parts.push(`${u} 語は訳せませんでした（保存していません）`);
   return `${parts.join('、')}。`;
 }
@@ -227,7 +233,8 @@ function wirePanel(container) {
         const el = $('tg-msg');
         if (el) { el.textContent = messageOf(body); el.hidden = false; }
       } catch (error) {
-        msg(`訳せません: ${error.message}`, true);
+        // **（C-8）** 英語の例外文は括弧の中へ。次の一手を 1 文で足す（§6.1 の規約 3）
+        msg(`訳せませんでした。もう一度試してください（詳細: ${error.message}）。`, true);
         translateAll.disabled = false;
       }
     });
@@ -241,7 +248,7 @@ function wirePanel(container) {
         const el = $('tg-msg');
         if (el) { el.textContent = messageOf(body); el.hidden = false; }
       } catch (error) {
-        msg(`訳せません: ${error.message}`, true);
+        msg(`訳せませんでした。もう一度試してください（詳細: ${error.message}）。`, true);
         btn.disabled = false;
       }
     });
@@ -249,11 +256,16 @@ function wirePanel(container) {
   for (const btn of container.querySelectorAll('.tg-remove')) {
     btn.addEventListener('click', async () => {
       const id = idOf(btn.dataset.name);
-      if (id == null) { msg('語の id が分かりません（読み直してください）', true); return; }
+      // **（A-4・G-10）** 通知も文なので「。」を付ける
+      if (id == null) { msg('語の id が分かりません。もう一度読み込んでください。', true); return; }
       const res = await fetch(`/api/assets/${encodeURIComponent(state.assetId)}/tags/${id}`, {
         method: 'DELETE', headers: { 'X-Image-Reviewer-Actor': 'human' },
       });
-      if (!res.ok) { const b = await res.json().catch(() => ({})); msg(b.detail || `外せません（${res.status}）`, true); return; }
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        msg(b.detail || `外せませんでした。もう一度試してください（詳細: ${res.status}）。`, true);
+        return;
+      }
       await reload();
       msg('外しました。');
     });
@@ -282,7 +294,7 @@ function wirePanel(container) {
         body: JSON.stringify({ name }),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) { msg(body.detail || `付けられません（${res.status}）`, true); return; }
+      if (!res.ok) { msg(body.detail || `付けられませんでした。もう一度試してください（詳細: ${res.status}）。`, true); return; }
       addInput.value = '';
       await reload();
       msg(body.added ? '足しました。' : 'もう付いています。');
@@ -299,7 +311,8 @@ export async function mountTags(container, assetId) {
     await loadIds();
     await reload();
   } catch (error) {
-    container.innerHTML = `<div class="note">タグを読めません: ${esc(error.message)}</div>`;
+    // **（C-8）** 英語の例外文は括弧の中へ
+    container.innerHTML = `<div class="note">タグを読めませんでした。もう一度試してください（詳細: ${esc(error.message)}）。</div>`;
   }
 }
 

@@ -102,23 +102,24 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 - **エージェントからの要求**（受付・一覧・断る・判断で閉じる）。
 - **注記**（矩形・楕円・画像 1 枚へのメモ・座標 JSON・切り出し PNG）。
 - **タグ**（内蔵タガーと ComfyUI 経由。出どころつき・手で足す / 外す・`#/tags` の一覧と検索・`#/jobs` の進行）。
-- **日本語の語釈**（見えている語だけ訳す・人が直せる・**人が直した語釈は訳し直しで上書きしない**）。
+- **日本語訳**（見えている語だけ訳す・人が直せる・**人が直した日本語訳は訳し直しで上書きしない**。
+  画面の語は「日本語訳」。「語釈」は内部の語＝`docs/design.md` §17）。
 - **重複の整理**（`#/duplicates`。pHash の距離 **≤ 6 を既定**に ≤ 3 / ≤ 6 / ≤ 10 を切り替え。
-  **代表の推薦**と理由・「別物として確定」と**解除**・まとまりにする・削除へ回す）。
-- **削除と取り消し**（`#/pending-deletes`。**段 1 カタログから外す / 段 2 ゴミ箱 / 段 3 実体を消す**の 3 段階。
-  **実体を消した後も 5 分以内なら戻せる**。一括削除は**凍結 → 実行**。**誰が消したか**を残し、
+  **残す 1 枚の推薦**と理由・「別物として確定」と**解除する**・まとまりにする・削除する…）。
+- **削除と取り消し**（`#/pending-deletes`。**段 1 カタログから外す / 段 2 アプリのゴミ箱 / 段 3 ファイルを消す**の 3 段階。
+  **ファイルを消した後も 5 分以内なら戻せる**。一括削除は**凍結 → 実行**。**誰が消したか**を残し、
   **エージェントも消せるが 1 回 200 枚まで**）。
-- **バックアップと復元**（`#/settings` と上部バーの 1 行。日次スナップショット・7 世代・
+- **バックアップと復元**（`#/settings` と上部バーの 1 行。日次バックアップ・7 世代・
   `backup` / `restore` / `rebuild-metadata`）。
 - **参照切れの再リンク**（**口だけ**。`POST /api/locations/relink` は**人だけ**で、
   **中身の `sha256` が一致したときだけ繋ぐ**。`GET /api/locations/missing` で一覧が引ける）。
 
 - **バックアップは `<data>` の外（既定 `%USERPROFILE%\image-reviewer-backups`）に日次で取る。**
-- **この環境では置き場を `C:\work\image-reviwer\.backup\daily\` に設定してある**（2026-10-18・利用者の決定）。
+- **この環境では保存先を `C:\work\image-reviwer\.backup\daily\` に設定してある**（2026-10-18・利用者の決定）。
   既定の `%USERPROFILE%\image-reviewer-backups` は**アプリのプロセスから作れなかった**（`WinError 5`。
-  同じ持ち主のシェルからは作れた＝原因は未特定）。`#/settings` の「置き場を変える」で戻せる。
+  同じ持ち主のシェルからは作れた＝原因は未特定）。`#/settings` の「保存先を変える」で戻せる。
   **同じドライブなので、ドライブが壊れた場合は両方失う。**
-  `<data>` ごと消しても、そこから戻せる（`image-reviewer restore <dir>`。`<data>` の中は置き場にできない）。
+  `<data>` ごと消しても、そこから戻せる（`image-reviewer restore <dir>`。`<data>` の中は保存先にできない）。
   取れなかったときは**上部バーと `#/settings` に失敗の全文**が出る（黙って失敗しない）。
 - **未実装**:
   - **トレイ（タスクトレイ常駐）**——常駐の実装がリポジトリに無い。
@@ -191,7 +192,8 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/p8-3-band-miss.md`](docs/p8-3-band-miss.md) | **帯の取りこぼしの調査**（8bit × 8 本 → **4bit × 16 本**に作り直した根拠。距離 0〜64 の総当たりとの一致） | — |
 | [`docs/p9-implementation.md`](docs/p9-implementation.md)、[`docs/p9-audit-report.md`](docs/p9-audit-report.md)、[`docs/p9-audit-triage.md`](docs/p9-audit-triage.md) | **P9 の記録**（§12.1 の実測・exe 化の判断）と、その**監査報告**（C-1〜C-3・D 10 件・G 6 件）と**仕分け**（指摘ごとに 1 行。C-1 は新しい読み取り専用の接続で `quick_check`） | — |
 | [`docs/wording-audit-report.md`](docs/wording-audit-report.md)、[`docs/wording-fix.md`](docs/wording-fix.md) | **ワーディング監査**（利用者に見える日本語 約 1,200 行を 1 行ずつ見た報告。判定は「自然」で、原因は中国語ではなく**癖 3 つ**）と、その**修正の記録**（規則 3 つ・直した 141 件・食い違い 24 行の裁定・用語の対応表・残した物） | — |
-| [`docs/duplicates-keep-button.md`](docs/duplicates-keep-button.md) | **重複の整理の「残す 1 枚以外を削除へ回す」**（利用者の要望の追い足し。ラジオに「残す」の語・群ごとのボタン・**渡す直前に `keep` を除く**二重の守り・本物の Chrome 25 検査） | — |
+| [`docs/duplicates-keep-button.md`](docs/duplicates-keep-button.md) | **重複の整理の「残す 1 枚以外を削除する…」**（利用者の要望の追い足し。ラジオに「残す」の語・群ごとのボタン・**渡す直前に `keep` を除く**二重の守り・本物の Chrome 25 検査） | — |
+| [`docs/japanese-ui-audit-report.md`](docs/japanese-ui-audit-report.md)、[`docs/japanese-ui-fix.md`](docs/japanese-ui-fix.md) | **日本語 UI の監査**（「日本語のシステムとして自然か」の軸。判定は**「一部に不揃い」**で、規約 A〜F・違反 A16/B11/C30/D17/E11/F9・用語 27 語の判定・質問 G-1〜G-10）と、その**修正の記録**（**§6.1 を規約 A〜F＝通し番号 1〜6 に振り直した**・分類ごとの件数・直す前→後・残した物と理由・1024×700 の検査を足した話） | §6.1, §17 |
 | [`schemas/backup-manifest.schema.json`](schemas/backup-manifest.schema.json) | **日次スナップショットの `manifest.json` の契約**（`restore` が復元の前に読む。`abi: 0.1`） | — |
 
 - P5 の点検・監査の**生ログ（`docs/p5-review-run.jsonl` / `p5-audit-run.jsonl` / `p5-2-audit-run.jsonl` /

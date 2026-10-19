@@ -8,12 +8,11 @@
 </head>
 <body>
 <div id="app">
+  <!-- **（E-1・G-8）上部の注意書きは 2 文**。1 文は 40 字まで（§6.1 の規約 5）。
+       **工程の番号（P7）と設計書の所在を画面に出さない**（規約 4）。廃止の記録は README に置く。
+       **ソースの途中で改行しない**（改行が空白になって文の途中に隙間が出る。規約 6） -->
   <div class="proto">
-    <strong>プロトタイプです。</strong>入っているのは閲覧と来歴、判断（キープ / ボツ）、
-    比較、要求の一覧とまとまりの判断、注記、タグと語釈、<b>重複の整理</b>、
-    削除の 3 段階と 5 分の取り消し、バックアップと復元です。
-    <b>条件の記録（P7）は 2026-10-17 に廃止</b>し、監視の常駐も作っていません（訳は「訳を捕獲」で取ります）。
-    設計は docs/ にあります。
+    <strong>プロトタイプです。</strong>閲覧・判断・比較・要求・注記・タグ・重複の整理・削除・バックアップが入っています。
   </div>
 
   <div class="topbar">
@@ -42,25 +41,29 @@
          `#/duplicates` への入口が画面に 1 つも無く、URL を打たないと入れなかった。
          **出る条件は無い**（いつでも押せる）。押すと道が変わるだけ（`GET` も `POST` もしない） -->
     <a class="back set-open" id="stat-duplicates" href="#/duplicates">重複の整理</a>
-    <!-- P8-5: 設定（`#/settings`。バックアップの詳細と置き場の段 3 の印） -->
+    <!-- P8-5: 設定（`#/settings`。バックアップの詳細とフォルダの段 3 の許可） -->
     <a class="back set-open" id="stat-settings" href="#/settings">設定</a>
     <button id="btn-provenance" title="来歴のある画像だけ / ない画像だけ / すべて を切り替える">来歴: すべて</button>
-    <button id="btn-density">密度: 普</button>
-    <button id="btn-theme">テーマ: 暗幕</button>
-    <button id="btn-capture" title="ComfyUI の /history から英訳を捕獲する（監視の代わり）">訳を捕獲</button>
-    <button id="btn-scan" title="登録済みのフォルダを走査し直す">再走査</button>
+    <!-- **（C-13・C-12）** 切替は「名前: 値」。1 字の「普」と題材の「暗幕」を使わない（§6.1 の規約 3・4） -->
+    <button id="btn-density">密度: 標準</button>
+    <button id="btn-theme">テーマ: 暗い</button>
+    <!-- **（C-14・D-4）** 押すと何かが起きるボタンは終止形。「捕獲」ではなく「取り込む」 -->
+    <button id="btn-capture" title="ComfyUI の /history から英訳を取り込む（監視の代わり）">訳を取り込む</button>
+    <button id="btn-scan" title="登録済みのフォルダを走査し直す">再走査する</button>
   </div>
 
   <div class="body">
     <div class="rail">
-      <h2>入れ物</h2>
+      <!-- **（D-1）** 中身は絞り込み（種別と来歴の軸）なので、見出しも「絞り込み」にする -->
+      <h2>絞り込み</h2>
       <div class="item on" data-filter="all"><span>すべて</span><span class="n" id="c-all">0</span></div>
       <div class="item" data-filter="with"><span>来歴あり</span><span class="n" id="c-with">0</span></div>
       <div class="item" data-filter="without"><span>来歴なし</span><span class="n" id="c-without">0</span></div>
       <h2>種別</h2>
       <div class="item" data-filter="kind:generated"><span>生成物</span><span class="n" id="c-gen">0</span></div>
       <div class="item" data-filter="kind:reference"><span>参考資料</span><span class="n" id="c-ref">0</span></div>
-      <div class="item" data-filter="kind:photo"><span>写真・スクショ</span><span class="n" id="c-photo">0</span></div>
+      <!-- **（D-9）** 「スクショ」ではなく「スクリーンショット」（§17 の画面の語） -->
+      <div class="item" data-filter="kind:photo"><span>写真・スクリーンショット</span><span class="n" id="c-photo">0</span></div>
       <h2>モデル</h2>
       <div id="models"></div>
       <h2>走査したフォルダ</h2>
@@ -69,7 +72,7 @@
 
     <div class="sheet" id="sheet">
       <div class="rows" id="rows"></div>
-      <div class="empty" id="sheet-empty" hidden>この入れ物にはまだ画像がありません。走査するフォルダを追加すると、ここに並びます。</div>
+      <div class="empty" id="sheet-empty" hidden>画像がまだ登録されていません。</div>
     </div>
 
     <div class="detail hidden" id="detail"></div>
@@ -83,7 +86,9 @@
     <button id="btn-compare" title="Ctrl / Shift + クリックで選んだ画像を並べて比べる（2〜8 枚）">比較を開く</button>
     <!-- P8-3: **削除の入口**（`frontend-design.md` §11 の「削除の入口」。
          監査 C-1: ライブラリの下部バーにも置く。**ここでは消さない**＝`#/pending-deletes?ids=` へ渡すだけ） -->
-    <button id="btn-delete" title="Ctrl / Shift + クリックで選んだ画像を削除の確認へ回す">選んだ 0 枚を削除へ回す</button>
+    <!-- **（C-5・C-22・G-9）** 削除の確認へ渡す入口。**「回す」を使わない**。
+         0 枚のときは枚数を書かない（`renderDeleteEntry` が組み立てる） -->
+    <button id="btn-delete" title="Ctrl / Shift + クリックで選んだ画像を削除の確認へ渡す">選んだ画像を削除する…</button>
     <span id="bar-hint">クリックで来歴を表示 / Ctrl + クリックで比較に選ぶ</span>
   </div>
 
@@ -96,14 +101,14 @@
       <span class="stat" id="req-brief">—</span>
       <span class="spacer"></span>
       <span class="req-tabs" id="req-tabs"></span>
-      <button id="req-again" title="再読込">再読込</button>
+      <!-- **（C-16・C-23）** 押すと何かが起きるボタンは終止形。`title` はボタンと同じ文を書かない -->
+      <button id="req-again" title="サーバから読み直す">再読込する</button>
     </div>
     <div class="req-list" id="req-list"></div>
     <div class="empty" id="req-empty" hidden></div>
+    <!-- **（B-9）** 「さばく」は砕けた語。「ここで受けます」にする -->
     <div class="req-help">
-      エージェントが投げた要求をここでさばきます。<b>「開いて決める」</b>でまとまりレビューへ入り、
-      決めると要求は閉じます。<b>「断る」</b>には理由が要ります（エージェントが次の手を決められます）。
-      <b>「あとで」</b>は何も書きません。
+      エージェントが投げた要求をここで受けます。<b>「開いて決める」</b>でまとまりレビューへ入り、決めると要求は閉じます。<b>「断る」</b>には理由が要ります（エージェントが次の手を決められます）。<b>「あとで」</b>は何も書きません。
     </div>
   </div>
 
@@ -130,21 +135,20 @@
         <button id="group-decide">この 1 枚に決める</button>
         <button id="group-allreject">全部ボツ</button>
         <!-- P8-3: **まとまりからの削除の入口**（`frontend-design.md` §11。監査 C-1）。
-             フィルムストリップで選んでいる 1 枚を `#/pending-deletes?ids=` へ渡すだけ -->
-        <button id="group-delete" title="選んでいる 1 枚を削除の確認へ回す">選んだ 1 枚を削除へ回す</button>
+             フィルムストリップで選んでいる 1 枚を `#/pending-deletes?ids=` へ渡すだけ。
+             **（C-5・G-9）**「削除へ回す」ではなく「削除する…」 -->
+        <button id="group-delete" title="選んでいる 1 枚を削除の確認へ渡す">選んだ 1 枚を削除する…</button>
         <button id="group-zoom" title="選んだ 1 枚を拡大で開く（そこで注記を付けられます）">選んだ 1 枚を拡大で開く</button>
       </div>
       <div class="grp-note" id="group-note" hidden></div>
       <div class="grp-help">
-        <b>注記を付けてから決める</b>のが本筋です（「選んだ 1 枚を拡大で開く」から注記へ）。
-        ボツには理由が要ります（1 枚ごと・まとまり全体とも）。<b>「あとで」</b>は判断を書きません。
-        マウスだけで完結します（キーは補助）。
+        <b>注記を付けてから決める</b>のが本筋です（「選んだ 1 枚を拡大で開く」から注記へ）。ボツには理由が要ります（1 枚ごと・まとまり全体とも）。<b>「あとで」</b>は判断を書きません。マウスだけで完結します（キーは補助）。
       </div>
     </div>
   </div>
 
   <!-- 語の一覧（P4-3）。`#/tags?q=...&known=1|0|all`。
-       語を選ぶと右で語釈を確認・修正できる（設計 p4-design.md §5.2） -->
+       語を選ぶと右で日本語訳を確認・修正できる（設計 p4-design.md §5.2） -->
   <div id="tags">
     <div class="topbar">
       <a class="back" href="#">一覧へ</a>
@@ -155,8 +159,9 @@
         <input id="tags-q" type="search" placeholder="語で絞る（前方一致）" autocomplete="off">
         <button type="submit">絞る</button>
       </form>
-      <button id="tags-known" title="語彙にある語 / 語彙外 / すべて を切り替える">表示: 語彙あり</button>
-      <button id="tags-translate" title="語釈の無い語を 20 語まで訳す">訳す（20 語まで）</button>
+      <!-- **（D-2・D-15）** 「語彙あり / 語彙外」→「Danbooru の語 / それ以外」。「語釈」→「日本語訳」 -->
+      <button id="tags-known" title="Danbooru の語 / それ以外 / すべて を切り替える">表示: Danbooru の語</button>
+      <button id="tags-translate" title="日本語訳の無い語を 20 語まで訳す">訳す（20 語まで）</button>
     </div>
     <div class="tl-body">
       <div class="tl-list" id="tags-list"></div>
@@ -176,9 +181,9 @@
       <button id="tags-start">タグ付けを始める</button>
       <span class="stat" id="tl-job-msg"></span>
     </div>
+    <!-- **（E-6）** 1 文を 40 字まで。**「語彙（Danbooru）」「語彙外」を使わない**（D-2・D-15） -->
     <div class="tl-help">
-      件数の多い順に出ます。<b>既定は語彙（Danbooru）にある語だけ</b>で、「語彙外」を選ぶと PNG の自然文から来た語も見られます。
-      語釈は<b>自動</b>です。直した語釈は、訳し直しても上書きしません。
+      件数の多い順に出ます。既定は <b>Danbooru の語</b>だけです。「それ以外」を選ぶと、プロンプトの文から来た語も見られます。日本語訳は<b>自動</b>です。直した日本語訳は、訳し直しても上書きしません。
     </div>
   </div>
 
@@ -192,9 +197,9 @@
       <a class="back" href="#/tags">タグへ</a>
     </div>
     <div class="jb-list" id="jobs-list"></div>
+    <!-- **（E-9）** ボタン名は鉤括弧で囲む（「もう一度で」と読めないように） -->
     <div class="jb-help">
-      タグ付けの進行です。<b>中断</b>は 1 枚ごとに受け付けます。失敗した画像は理由つきで出るので、
-      <b>もう一度</b>で失敗した分だけやり直せます。終わったジョブは履歴として残ります。
+      タグ付けの進行です。<b>「中断する」</b>は 1 枚ごとに受け付けます。失敗した画像は理由つきで出るので、<b>「もう一度」</b>で失敗した分だけやり直せます。終わったジョブは履歴として残ります。
     </div>
   </div>
 
@@ -214,13 +219,10 @@
       <div class="dup-list" id="dup-list"></div>
     </div>
     <div class="dup-bar" id="dup-bar"></div>
+    <!-- **（E-3・B-6・B-7・A-6）** 帯は 3 文まで。「まとまり」を 3 回繰り返さない。
+         文の途中で改行しない（括弧の前に空白が出る。規約 6） -->
     <div class="dup-help">
-      <b>確実なものから</b>並びます（群の中のいちばん遠い組の距離が小さい順）。
-      <b>おすすめ</b>は推薦です（人・画素数・サイズ・新しさの順に見ています）。
-      残す 1 枚は<b>人が選び直せます</b>。まとまりを作るのは<b>押したときだけ</b>で、
-      代表を決めるのはまとまりレビューです。<b>初めは 1 枚も選ばれていません</b>
-      （<b>「全部選ぶ」</b>で全部にチェックが入ります）。<b>ここでは消しません</b>
-      （選んだ画像は削除の確認へ渡します）。
+      <b>確実なものから</b>並びます。<b>おすすめ</b>は推薦です。残す 1 枚は人が選び直せ、決めるのはまとまりレビューです。<b>「まとまりにする」</b>は押したときだけ働きます。<b>ここでは消しません</b>（選んだ画像は削除の確認へ渡します）。
     </div>
   </div>
 
@@ -232,7 +234,7 @@
       <span class="name">最近の削除</span>
       <span class="stat" id="pd-brief">—</span>
       <span class="spacer"></span>
-      <button id="pd-again">再読込</button>
+      <button id="pd-again" title="サーバから読み直す">再読込する</button>
     </div>
     <div class="pd-body">
       <!-- P8-5: **走査中の 1 行**（`frontend-design.md` §4.6。`GET /api/scan`）。
@@ -240,19 +242,24 @@
       <div id="pd-scan"></div>
       <div id="pd-confirm"></div>
       <div class="pd-block">
-        <div class="pd-sub">取り消せる削除<span class="stat">残り時間のうちに「取り消す」で戻せます。</span></div>
+        <!-- **（C-3）** 見出しを実態に合わせる（取り消せる数が 0 でも段 1 の行が並ぶ）。
+             `pending.js` が同じ語で組み立てる -->
+        <div class="pd-sub">削除した画像（段 1〜3）<span class="stat">段 3 は残り時間のうちに「取り消す」で、段 1・2 は「戻す」でいつでも戻せます。</span></div>
         <div id="pd-legend"></div>
+        <!-- **（P10。利用者の要望）** まとめての帯（「全部選ぶ」＋「まとめて片付ける」＋
+             「まとめてアプリのゴミ箱へ移す」）。`pending.js` の `bulkHtml()` が組み立てる。
+             段 1 の行は後からアプリのゴミ箱へ移せる（段 1 が行き止まりだったのを塞ぐ） -->
+        <div id="pd-bulk"></div>
         <div id="pd-running"></div>
       </div>
       <div id="pd-found"></div>
       <div id="pd-trash"></div>
       <div class="pd-msg" id="pd-msg"></div>
     </div>
+    <!-- **（E-4・B-11・A-6）** 段の説明は上の 1 行だけ。ここは「人だけが押せる操作」と
+         「アプリのゴミ箱は自動で消さない」の 2 文。主語を省かない -->
     <div class="pd-help">
-      消した直後の 5 分は<b>取り消す</b>で戻せます（残り時間はアプリが動いていた時間で数えます）。
-      <b>「いま消す」と「別名で戻す」</b>は人だけが押せます。人が消したものも、エージェントが消したものも戻せます
-      （エージェントは自分の分だけ）。ゴミ箱は<b>自動では消しません</b>。
-      段 3 は<b>許可した置き場だけ</b>で選べます（<a href="#/settings">設定</a>）。
+      <b>「いま消す」と「別名で戻す」</b>は人だけが押せます。人はどちらの削除も戻せます。エージェントは自分の分だけ戻せます。アプリのゴミ箱は<b>自動では消しません</b>。
     </div>
   </div>
 
@@ -271,10 +278,10 @@
       <div id="st-roots"></div>
       <div id="st-msg"></div>
     </div>
+    <!-- **（E-7・D-5・D-6）** 主語（アプリ）を省かず、硬い漢語をほどく。
+         「置き場」→「フォルダ」、「実体」→「ファイル」、「人の意思表示」→「人の合図」 -->
     <div class="st-help">
-      <b>バックアップ</b>は 30 秒ごとに「今日の分がまだなら取る」を見ています。
-      <b>段 3 の許可</b>は、その置き場で実体を消すことを許すという<b>人の意思表示</b>です。
-      許可の無い置き場では段 1・2 だけが使えます。
+      <b>バックアップ</b>は 30 秒ごとに、今日の分がまだなら取ります。段 3 の許可は、そのフォルダのファイルを消してよいという<b>人の合図</b>です。許可の無いフォルダでは段 1・2 だけが使えます。
     </div>
   </div>
 
@@ -288,7 +295,7 @@
       <button id="cmp-order" title="並び順を切り替える（r）: 入力順 / seed 順 / 似ている順">並び: 入力順</button>
       <button id="cmp-heat" title="差分ヒートマップを出す（d）">差分ヒートマップ</button>
       <button id="cmp-same" title="同じ行を出す / 畳む（m）">同じ行: 畳む</button>
-      <button id="cmp-sync" title="同期ズームの on / off（z）">同期ズーム: 入</button>
+      <button id="cmp-sync" title="同期ズームの入 / 切（z）">同期ズーム: 入</button>
       <button id="cmp-one" title="等倍に戻す（0）">等倍</button>
       <span class="stat" id="cmp-zoom">1.00×</span>
     </div>
@@ -309,18 +316,13 @@
          こうするとキーを知らなくてもマウスだけで届く（`comparison.md` §6） -->
     <div class="cmp-heatwhy-line">
       <div class="cmp-heatwhy" id="cmp-heatwhy"></div>
-      <button id="cmp-heatforce" hidden>強制して出す</button>
+      <!-- **（C-24）** 「強制」は何を押し切るのか分からない。**「それでも出す」**にする -->
+      <button id="cmp-heatforce" hidden>それでも出す</button>
     </div>
     <div class="cmp-diff" id="cmp-diff"></div>
+    <!-- **（E-2）** 帯は 2 文まで。**文の途中で改行しない**（括弧の前に空白が出る。規約 6） -->
     <div class="cmp-help">
-      ホイールで拡大（0.5〜8 倍）/ ドラッグで移動 / ダブルクリックで等倍。
-      タイルの<b>「基準にする」</b>を押すと、その 1 枚を基準にして、ほかの画像と比べます
-      （基準には<b>上端の青い帯</b>が付きます）。
-      <b>差分ヒートマップ</b>は同じ seed か pHash 距離が近い組でだけ自動で出ます
-      （出せないときは理由を 1 行で出し、<b>強制して出す</b>で見られます）。
-      キー: <b>1</b>〜<b>8</b> 選択、<b>b</b> 選択中を基準、<b>d</b> 差分、<b>r</b> 並び順、
-      <b>z</b> 同期、<b>m</b> 同じ行、<b>+</b> <b>-</b> <b>0</b> 倍率、<b>Esc</b> 閉じる。
-      差分と指標はサーバが計算した値をそのまま出しています。
+      ホイールで拡大、ドラッグで移動、ダブルクリックで等倍。キーは <b>1</b>〜<b>8</b> で選択、<b>b</b> で基準、<b>d</b> で差分。
     </div>
   </div>
 </div>

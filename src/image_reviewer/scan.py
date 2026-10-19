@@ -114,7 +114,8 @@ def scan(store: Store, roots: list[str], *, on_progress=None) -> dict:
                     # 種別の規則（点検 C2）: prompt があれば生成物。無ければ PNG は生成物と推定する
                     kind, kind_source = "generated", "auto:prompt" if meta else "auto:png"
                 else:
-                    note = chunks.get("error") or "prompt チャンクが無い（生成条件が残っていない画像）"
+                    # **（B-3）** 注記も敬体に（CLI と画面の来歴にそのまま出る）
+                    note = chunks.get("error") or "prompt チャンクがありません（生成条件が残っていない画像です）"
                     kind, kind_source = "generated", "auto:png"
             else:
                 kind, kind_source = "photo", "auto:jpeg"
@@ -146,10 +147,10 @@ def _analyze(raw: bytes, text: dict) -> dict:
     try:
         graph = json.loads(raw.decode("utf-8", "replace"))
     except Exception as exc:  # noqa: BLE001
-        out["note"] = f"prompt チャンクを JSON として読めない: {exc}"
+        out["note"] = f"prompt チャンクを JSON として読めません（{exc}）。"
         return out
     if not isinstance(graph, dict) or not all(isinstance(v, dict) for v in graph.values()):
-        out["note"] = "prompt チャンクが API 形式のグラフではない"
+        out["note"] = "prompt チャンクが API 形式のグラフではありません"
         return out
     info = png_meta.analyze_graph(graph)
     info["graph_format"] = "api+ui" if "workflow" in text else "api"

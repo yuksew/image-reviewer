@@ -12,6 +12,9 @@
 const API = '/api/review-requests';
 const MAX_INDEX_FETCH = 20;      // AI の推しの「何番目」を出すために groups を引く上限（下の注記）
 
+// **（A-1）** 時刻の形は画面で 1 つ（`pending.js` の `fmtWhen` を借りる。`2026-10-19 02:31`）
+import { fmtWhen } from './pending.js';
+
 const $ = (id) => document.getElementById(id);
 
 const state = {
@@ -88,6 +91,7 @@ export function cardHtml(item) {
       + (note ? `<span class="req-note">「${esc(note)}」</span>` : '')
       + '<span class="req-draft">これは下書きです。決めるのは人です。</span></div>'
     : '';
+  // **（C-16・G-1）** 押すと何かが起きるボタンは終止形（「断る」は終止形でよい）
   const buttons = item.state === 'open'
     ? '<div class="req-actions">'
       + `<button class="req-open" data-group="${esc(item.group_id)}">開いて決める</button>`
@@ -100,13 +104,19 @@ export function cardHtml(item) {
       + '<button class="req-decline-send">断る</button>'
       + '</div>'
     : '';
+  // **（B-8）** 決めた枚の**番号が引けるときは「N 番に決めました」**（まとまりレビューの帯と同じ語）。
+  // 引けないときだけ「1 枚を選びました」（要求のカードは枚数しか分からないことがある）
   const closed = item.state === 'done' && item.response
-    ? `<div class="req-closed">この要求は閉じました${
-      (item.response.selected_asset_ids || []).length ? '（1 枚を選びました）' : ''
-    }。エージェントがここを読みます。</div>`
+    ? (() => {
+      const sel = (item.response.selected_asset_ids || [])[0] || null;
+      const order = state.order[item.id] || [];
+      const at = sel ? order.indexOf(sel) + 1 : 0;
+      const how = at > 0 ? `（${at} 番に決めました）` : (sel ? '（1 枚を選びました）' : '');
+      return `<div class="req-closed">この要求は閉じました${how}。エージェントがここを読みます。</div>`;
+    })()
     : '';
   const declined = item.state === 'declined'
-    ? `<div class="req-declined">断りました: ${esc(item.decline_note || '（理由なし）')}</div>` : '';
+    ? `<div class="req-declined">断りました: ${esc(item.decline_note || '（なし）')}</div>` : '';
   const superseded = item.state === 'superseded' && item.superseded_by
     ? '<div class="req-superseded">同じ対象の新しい要求で差し替わりました。前の要求はここに残っています。'
       + `<a href="#/requests?state=all&open=${esc(item.superseded_by)}">新しい要求を開く</a></div>` : '';
@@ -116,13 +126,15 @@ export function cardHtml(item) {
       + `<div class="req-line"><span class="k">見てほしいこと</span>${conditions.length ? conditions.map(esc).join(' / ') : '（なし）'}</div>`
       // **（ワーディング監査 W-55）** 「どこから」だけ砕けていた。ほかの見出しと同じ漢語に揃える
       + `<div class="req-line"><span class="k">出どころ</span>${esc(item.origin || '（なし）')}</div>`
-      // **（ワーディング監査 W-9）** `wants` の値を英語のまま出さない（§6.1 の規則 2）
-      + `<div class="req-line"><span class="k">応答に求めるもの</span>${(item.wants || []).map((w) => esc(WANTS_LABEL[w] || `その他（${w}）`)).join(' / ') || '（なし）'}</div>`
+      // **（ワーディング監査 W-9。D-17）** `wants` の値を英語のまま出さない（§6.1 の規則 4）。
+      // 「応答に求めるもの」は硬いので「返してほしいもの」にする
+      + `<div class="req-line"><span class="k">返してほしいもの</span>${(item.wants || []).map((w) => esc(WANTS_LABEL[w] || `その他（${w}）`)).join(' / ') || '（なし）'}</div>`
       + `<div class="req-line"><span class="k">まとまり</span><a href="#/group/${esc(item.group_id)}">${esc(item.group_id)}</a></div>`
-      + (item.closed_at ? `<div class="req-line"><span class="k">閉じた時刻</span>${esc(item.closed_at)}（${esc(item.closed_by || '—')}）</div>` : '')
+      // **（A-1）** 閉じた時刻も画面の形（現地の `2026-10-19 02:31`）に揃える
+      + (item.closed_at ? `<div class="req-line"><span class="k">閉じた時刻</span>${esc(fmtWhen(item.closed_at))}（${esc(item.closed_by || '—')}）</div>` : '')
       + '</div>'
     : '';
-  // **カードの外側（`.req-card` の入れ物）は `render()` が作る**（ここは中身だけ）。
+  // **カードの外側（`.req-card` の枠）は `render()` が作る**（ここは中身だけ）。
   // 入れ子にすると同じ class が二重になり、`querySelectorAll('.req-card')` が 2 倍返る
   return `<div class="req-head"><span class="req-ask">${esc(item.ask || '（用件なし）')}</span>`
     + `<span class="req-ago">${esc(agoText(item.created_at))}</span></div>`
@@ -137,11 +149,12 @@ function render() {
   if (!list) return;
   const items = state.items;
   $('req-empty').hidden = items.length > 0 || !!state.error;
+  // **（C-8）** 英語の例外文は本文に出さず、次の一手を添える（§6.1 の規約 3）
   $('req-empty').textContent = state.error
-    ? `要求を読めません: ${state.error}`
+    ? `要求を読めませんでした。もう一度試してください（詳細: ${state.error}）。`
     : 'エージェントからの要求はありません。要求が来るとここに出ます。';
   $('req-brief').textContent = state.loading ? '読み込み中…'
-    : `${items.length} 件${state.counts.open ? `（未対応 ${state.counts.open}）` : ''}`;
+    : `${Number(items.length).toLocaleString('ja-JP')} 件${state.counts.open ? `（未対応 ${Number(state.counts.open).toLocaleString('ja-JP')}）` : ''}`;
   // カードは**要素として**組む（`innerHTML` の文字列だけにすると、軽い DOM の身代わり
   // 〔`tools/gui_smoke.mjs`〕が中身を拾えない。`compare.js` のタイルと同じ流儀）
   list.innerHTML = '';

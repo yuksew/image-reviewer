@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import db, reasons
@@ -28,6 +29,62 @@ from .store import Store, normalize_path
 
 # 監査 B1: 取り込みで書く台帳の行の注記（「なぜ写しが非 unreviewed なのか」をここで説明する）
 MIGRATED_NOTE = "store.json から取り込み"
+
+
+class JaHelpFormatter(argparse.HelpFormatter):
+    """`--help` の骨組みを日本語にする（**C-19・G-5**。監査の推奨を採用）。
+
+    argparse の既定は英語（`usage:` / `positional arguments:` / `options:` /
+    `show this help message and exit`）。利用者が打つ CLI は `scan` と `serve` だけなので、
+    ここで差し替える（数行で済む）。
+    """
+
+    def add_usage(self, usage, actions, groups, prefix=None):  # noqa: ANN001
+        super().add_usage(usage, actions, groups,
+                          prefix if prefix is not None else "使い方: ")
+
+
+class JaArgumentParser(argparse.ArgumentParser):
+    """見出しを「コマンド」「オプション」にし、`-h` の 1 行も日本語にする。"""
+
+    def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        kwargs.setdefault("formatter_class", JaHelpFormatter)
+        kwargs.setdefault("add_help", False)
+        super().__init__(*args, **kwargs)
+        self._positionals.title = "コマンド"
+        self._optionals.title = "オプション"
+        self.add_argument("-h", "--help", action="help",
+                          help="この使い方を表示して終了する")
+
+
+def _when(iso: str | None) -> str:
+    """**画面と同じ現地の 1 形式**（`2026-10-19 02:31`）にする（**A-1・G-7**）。
+
+    台帳と manifest は UTC の ISO で持っている（`db.now()`）。CLI だけ UTC を出していたので、
+    同じ 1 回のバックアップが画面と CLI で別の時刻に見えていた。
+    """
+    if not iso:
+        return "—"
+    try:
+        at = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return str(iso)
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return at.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def _bytes(n) -> str:  # noqa: ANN001
+    """**画面と同じ容量の書き方**（KB は整数、MB は小数 1 桁。**A-2・規則 1**）。
+
+    前は「DB 3428.0 KB」と KB に小数を付けていた（画面は「3.4 MB」）。
+    """
+    size = int(n or 0)
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size // 1024} KB"
+    return f"{size / 1048576:.1f} MB"
 
 
 def _store(*, flush: bool = True):
@@ -71,7 +128,7 @@ def cmd_scan(args) -> int:
     try:
         roots = args.root or store.roots() or []
         if not roots:
-            print("--root を指定してください（初回は必須）", file=sys.stderr)
+            print("--root を指定してください（初回は必須です）。", file=sys.stderr)
             return 2
         # P8-2（G-2・C-6）: サーバと同じ錠を取る（同じプロセスで走査と削除が重ならないように）。
         # **プロセスをまたぐ錠ではない**ので、走査中に別プロセスのサーバが消すことは防げない
@@ -80,9 +137,12 @@ def cmd_scan(args) -> int:
         with guard.scan_guard():
             stats = scan(store, roots,
                          on_progress=lambda s: print(f"  ... {s['images']} 枚", flush=True))
-        print(f"走査: 見た {stats['seen']} / 画像 {stats['images']} / 新規 {stats['created']} / "
-              f"既知 {stats['known']} / 入れ替わり {stats['changed']} / 画像でない {stats['not_image']}")
-        print(f"来歴あり {stats['with_provenance']} / 参照切れにした {stats['missing']}")
+        # **（A-14・C-18）** 「/」で 6 組を並べる形をやめ、**何を数えたかが読める文**にする
+        # （「画像 0」と「既知 299」が同じ行にあり、「画像」が何を数えているか分からなかった）
+        print(f"走査しました: {stats['seen']} 件を見て、新しく読んだ {stats['created']}、"
+              f"登録済み {stats['known']}、入れ替わり {stats['changed']}、"
+              f"画像でない {stats['not_image']}。"
+              f"来歴あり {stats['with_provenance']}、参照切れにした {stats['missing']}。")
         for err in stats["errors"][:10]:
             print(f"  エラー: {err}", file=sys.stderr)
         return 0
@@ -103,8 +163,9 @@ def cmd_capture(args) -> int:
             print(stats["error"], file=sys.stderr)
             return 2
         # **（ワーディング監査 C-3）** 端末の出力は敬体に揃える（同じ CLI の他の行と同じ）
+        # **（D-4）** 「捕獲」→「取り込む」（`design.md` §17 の画面の語）
         print(f"/history を {stats['history_entries']} 件見ました。")
-        print(f"訳が未取得の画像 {stats['checked']} 枚のうち {stats['captured']} 枚で訳を捕獲しました。")
+        print(f"訳が未取得の画像 {stats['checked']} 枚のうち {stats['captured']} 枚で訳を取り込みました。")
         print(f"  実行が見つからない {stats['no_history']} / ja2en でない {stats['not_textgen']} / "
               f"テキスト出力が無い {stats['no_text_output']}")
         return 0
@@ -189,27 +250,38 @@ def cmd_backup(args) -> int:
         store.close()
     manifest = got["manifest"]
     print(f"バックアップを取りました: {got['dir']}")
-    print(f"  作った時刻 {manifest['created_at']} / 版 {manifest['app_version']} / "
+    # **（A-1・G-7）** 時刻は画面と同じ現地の 1 形式にする（前は UTC の ISO だった）
+    print(f"  作った時刻 {_when(manifest['created_at'])} / 版 {manifest['app_version']} / "
           f"abi {manifest['abi']}")
     counts = manifest["counts"]
     # **（ワーディング監査 C-9）** 単位を揃える（まとまりは件、注記は件、語は語）
     print(f"  画像 {counts['assets']} 枚 / 判断 {counts['decisions']} 件 / "
           f"まとまり {counts['groups']} 件 / 注記 {counts['annotations']} 件 / 語 {counts['tags']} 語")
-    print(f"  DB {manifest['db_bytes'] / 1024:.1f} KB（{manifest['db_sha256'][:19]}…）")
+    # **（A-2）** 容量の書き方を画面に揃える（KB は整数、MB は小数 1 桁）
+    print(f"  DB {_bytes(manifest['db_bytes'])}（sha256 {manifest['db_sha256'][:19]}…）")
     check = got.get("db_check") or {}
     if check:
         stages = check.get("stages") or {}
-        print(f"  写しの検査: {check.get('stage')}（quick_check="
-              f"{(stages.get('quick_check') or {}).get('detail')}）")
+        # **（E-11）** 「写し」「quick_check=ok」は内部の語。人が読める 1 行にする
+        stage = str(check.get("stage") or "")
+        if stage == "ok":
+            print("  コピーの検査: 問題なし")
+        else:
+            print(f"  コピーの検査: {stage}"
+                  f"（quick_check: {(stages.get('quick_check') or {}).get('detail')}）")
     files = got["files"]
-    print(f"  sidecar / export: 写した {files['copied']} / 変わっていないので共有した {files['linked']} "
-          f"/ 設定 {got['settings']} 件")
+    # **（E-11・D-3）** 「写した」「sidecar / export」を人が読める形に
+    print(f"  sidecar と export: コピーした {files['copied']}、"
+          f"変わっていないので共有した {files['linked']}、設定 {got['settings']} 件")
     if got["library"]["files"]:
-        print(f"  画像の実体 {got['library']['files']} 枚（"
-              f"{got['library']['bytes'] / 1048576:.1f} MB）")
+        # **（D-5）** 「実体」→「ファイル」
+        print(f"  画像のファイル {got['library']['files']} 枚（"
+              f"{_bytes(got['library']['bytes'])}）")
     if got["pruned"]:
-        print(f"  古いスナップショットを消しました: {', '.join(got['pruned'])}")
-    print(f"  置き場: {got['backup_dir']}")
+        # **（D-3）** 「スナップショット」→「バックアップ」
+        print(f"  古いバックアップを消しました: {', '.join(got['pruned'])}")
+    # **（D-6）** 登録したフォルダは「フォルダ」、バックアップの場所は「保存先」
+    print(f"  保存先: {got['backup_dir']}")
     return 0
 
 
@@ -235,7 +307,8 @@ def cmd_restore(args) -> int:
               f"{got['manifest_error']}")
     else:
         counts = manifest["counts"]
-        print(f"  作った時刻 {manifest['created_at']} / 版 {manifest['app_version']}")
+        # **（A-1・G-7）** 画面と同じ現地の 1 形式
+        print(f"  作った時刻 {_when(manifest['created_at'])} / 版 {manifest['app_version']}")
         print(f"  画像 {counts['assets']} 枚 / 判断 {counts['decisions']} 件 / "
               f"まとまり {counts['groups']} / 注記 {counts['annotations']} / 語 {counts['tags']}")
     # **（C-1）写しの中身が manifest と一致したか**（1 バイトでも違えば戻さない）
@@ -247,7 +320,8 @@ def cmd_restore(args) -> int:
     else:
         print(f"  注意: sha256 が manifest と違います（--force で進みました）: "
               f"期待 {str(sha.get('expected'))[:19]}… / 実際 {str(sha.get('actual'))[:19]}…")
-    print(f"  戻す前の quick_check: {got['before']['detail']}")
+    # **（E-11）** 「quick_check」は内部の語（人が読む 1 行にする）
+    print(f"  戻す前の検査: {got['before']['detail']}")
     if got["setaside"]:
         # **（ワーディング監査 C-1）** Markdown の記法（`**太字**`・バッククォート）を端末に出さない
         print(f"  元の DB を退避しました: {got['setaside']}"
@@ -257,9 +331,11 @@ def cmd_restore(args) -> int:
     for name, stat in got["copied"].items():
         print(f"  {name}: {stat['files']} ファイルを戻しました")
     if got["library"]["restored"] or got["library"]["missing"]:
-        print(f"  画像の実体: 戻した {got['library']['restored']} / 既にあった "
+        # **（D-5）** 「実体」→「ファイル」
+        print(f"  画像のファイル: 戻した {got['library']['restored']} / 既にあった "
               f"{got['library']['kept']} / 見つからない {got['library']['missing']}")
-    print("  参照切れを拾うため、走査を 1 回してください: image-reviewer scan --root <置き場>")
+    # **（D-6・C-1）** 「置き場」→「フォルダ」（登録したフォルダ）
+    print("  参照切れを拾うため、走査を 1 回してください: image-reviewer scan --root <フォルダ>")
     return 0
 
 
@@ -282,6 +358,7 @@ def cmd_rebuild_metadata(args) -> int:
           f"sidecar {got['sidecars']} ファイル")
     print(f"  ファイルが見つからない {got['missing_files']} / 元になるものが無い {got['no_source']}")
     for note in got["notes"][:10]:
+        # **（B-3）** 注記の本文も敬体（`png_meta` / `scan` が作る）
         print(f"  注記: {note}", file=sys.stderr)
     return 0
 
@@ -493,7 +570,8 @@ def cmd_migrate_from_json(args) -> int:
         target = store.data_dir / "db.sqlite3"
     finally:
         store.close()
-    print("JSON ストアから取り込みました（JSON は書き換えず、控えとして残します）。")
+    # **（D-3）** 「控え」→「バックアップ」
+    print("JSON ストアから取り込みました（JSON は書き換えず、バックアップとして残します）。")
     print(f"  新規 {result['created']} / 更新 {result['updated']} / そのまま {result['skipped']} 件")
     print(f"  画像 {result['assets']} 枚 / 場所 {result['locations']} 件 / "
           f"来歴あり {result['with_provenance']} / 来歴なし {result['without_provenance']} / "
@@ -506,14 +584,17 @@ def cmd_migrate_from_json(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="image-reviewer", description="image-reviewer（プロトタイプ）")
+    # **（C-19・G-5）** `--help` の骨組みを日本語にする（`usage:` / `positional arguments:` /
+    # `options:` / `show this help message and exit` を出さない）
+    parser = JaArgumentParser(prog="image-reviewer", description="image-reviewer（プロトタイプ）")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_scan = sub.add_parser("scan", help="フォルダを走査して登録する")
     p_scan.add_argument("--root", action="append", help="走査するフォルダ（複数指定できる）")
     p_scan.set_defaults(func=cmd_scan)
 
-    p_cap = sub.add_parser("capture", help="ComfyUI の /history から英訳を捕獲する（監視の代わりの 1 回走査）")
+    # **（D-4）** 「捕獲」→「取り込む」
+    p_cap = sub.add_parser("capture", help="ComfyUI の /history から英訳を取り込む（監視の代わりの 1 回走査）")
     p_cap.add_argument("--base-url", default="http://127.0.0.1:8188")
     p_cap.set_defaults(func=cmd_capture)
 
@@ -533,9 +614,10 @@ def main(argv: list[str] | None = None) -> int:
     # **（ワーディング監査 C-1）** `--help` にも Markdown の記法を出さない
     p_backup = sub.add_parser("backup", help="いま 1 回バックアップを取る（必ず新しく取る）")
     p_backup.add_argument("--out", default=None,
-                          help="置き場（既定: 設定 backup_dir。<data> の中は断る）")
+                          help="保存先（既定: 設定の backup_dir。アプリの中（.data）は断る）")
+    # **（D-3・D-5）** 「実体も控える」→「画像のファイルもバックアップに含める」
     p_backup.add_argument("--include-library", action="store_true",
-                          help="画像の実体も控える（既定では取りません。参照モードの画像は利用者のものだからです）")
+                          help="画像のファイルもバックアップに含める（既定では含めません。参照モードの画像は利用者のものだからです）")
     p_backup.set_defaults(func=cmd_backup)
 
     p_restore = sub.add_parser("restore", help="バックアップから戻す（元の DB は退避してから）")

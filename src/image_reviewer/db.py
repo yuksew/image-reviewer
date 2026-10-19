@@ -591,6 +591,13 @@ CREATE TABLE IF NOT EXISTS deletion_log (
   -- 1 行を 4 通りに分けるのに使う（`reason` は「消した理由」で別の物）。版は上げずに足したので
   -- **古い v6 は `_top_up_v6` が `ALTER` で足す**（家風。「同じ版番号で形が違う DB」を塞ぐ）
   stuck_reason TEXT CHECK (stuck_reason IN ('target_exists', 'move_failed', 'different', 'missing')),
+  -- **（P10）片付けた印**（利用者の要望「実体が無いので片付ける」。`docs/deletions-advance.md`）。
+  -- 登録の場所・ゴミ箱・保留のどこにも実体が無い行を**終わりにする**（`asset.deleted_at` はそのまま
+  -- ＝カタログには戻さない。**ファイルは 1 つも消さない・動かさない**）。版は上げずに足すので
+  -- **古い v6 は `_top_up_v6` が `ALTER` で足す**（家風）。`close_reason` の語彙は
+  -- **サービス層でも守る**（`CHECK` に当てて 500 にしない）
+  closed_at    TEXT,
+  close_reason TEXT CHECK (close_reason IN ('missing')),
   actor        TEXT NOT NULL CHECK (actor IN ('human', 'agent')),
   at           TEXT NOT NULL
 );
@@ -772,6 +779,13 @@ TOP_UP_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("deletion_log", "stuck_reason",
      "ALTER TABLE deletion_log ADD COLUMN stuck_reason TEXT"
      " CHECK (stuck_reason IN ('target_exists', 'move_failed', 'different', 'missing'))"),
+    # **（P10）片付けた印**（`closed_at` と理由）。**版は上げない**ので、実データには
+    # `Store` が開く前の `pre-topup-*` の控えが付いてから足される（`missing_top_ups`）。
+    # 「実体が無いので片付ける」で行を終わりにする（`deletions.py` の `close`）
+    ("deletion_log", "closed_at", "ALTER TABLE deletion_log ADD COLUMN closed_at TEXT"),
+    ("deletion_log", "close_reason",
+     "ALTER TABLE deletion_log ADD COLUMN close_reason TEXT"
+     " CHECK (close_reason IN ('missing'))"),
     # **（P8-6）再リンクを履歴に残す**（移動先・理由・人）。
     # 設計 §0.11 は「入れ替わった」「繋ぎ直した」を `location_history` に残せと言うが、
     # **この 2 つを区別する列が無かった**（`path` は移動元、`replaced_by_asset_id` は入れ替わりの相手）。

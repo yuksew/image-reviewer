@@ -121,7 +121,7 @@ def get_gloss(request: Request, tag_id: int):
 
 @router.post("/tags/{tag_id}/gloss")
 def set_gloss(request: Request, tag_id: int, payload: dict = Body(default={})):
-    """**人が語釈を書く / 直す**（`source='manual'`・`edited=1`。§3.5・§4.2）。
+    """**人が日本語訳を書く / 直す**（`source='manual'`・`edited=1`。§3.5・§4.2）。
 
     `human` 以外 403（検査は `tags.require_human` の 1 か所）。
     """
@@ -129,7 +129,8 @@ def set_gloss(request: Request, tag_id: int, payload: dict = Body(default={})):
     tags.require_human(actor)
     ja = payload.get("ja")
     if not isinstance(ja, str) or not ja.strip():
-        raise ReviewError(422, "ja（日本語の語釈）が要ります", details={"ja": "1 文字以上"})
+        # **（D-2）** 画面に出うる文なので「日本語訳」を使う
+        raise ReviewError(422, "ja（日本語訳）が要ります", details={"ja": "1 文字以上"})
     if len(ja) > gloss.MAX_JA:
         raise ReviewError(422, f"ja は {gloss.MAX_JA} 文字までです",
                           details={"ja": f"{gloss.MAX_JA} 文字まで", "length": len(ja)})

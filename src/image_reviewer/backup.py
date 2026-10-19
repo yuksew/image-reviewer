@@ -176,7 +176,7 @@ def check_backup_dir(target, data_dir) -> Path:
     path = check_backup_target(target)
     if is_under(str(path), str(data_dir)) or is_under(str(data_dir), str(path)):
         raise ReviewError(
-            422, "バックアップの置き場はデータ置き場（<data>）の外にしてください",
+            422, "バックアップの保存先はアプリのデータ（.data）の外にしてください",
             code="bad_backup_dir",
             details={"backup_dir": str(path), "data_dir": str(data_dir)})
     return path
@@ -189,14 +189,14 @@ def check_backup_target(target) -> Path:
     """
     path = Path(target)
     if not path.is_absolute():
-        raise ReviewError(422, "バックアップの置き場は絶対パスで指定してください",
+        raise ReviewError(422, "バックアップの保存先は絶対パスで指定してください",
                           code="bad_backup_dir", details={"backup_dir": str(path)})
     if path.exists() and not path.is_dir():
-        raise ReviewError(422, "バックアップの置き場がフォルダではありません",
+        raise ReviewError(422, "バックアップの保存先がフォルダではありません",
                           code="bad_backup_dir", details={"backup_dir": str(path)})
     anchor = Path(path.anchor) if path.anchor else None
     if anchor is not None and not anchor.exists():
-        raise ReviewError(422, f"バックアップの置き場のドライブがありません: {path.anchor}",
+        raise ReviewError(422, f"バックアップの保存先のドライブがありません: {path.anchor}",
                           code="bad_backup_dir", details={"backup_dir": str(path)})
     return path
 
@@ -470,7 +470,7 @@ def _write_db_only(con: sqlite3.Connection, data_dir: Path, root, *, prefix: str
         health = check_snapshot_db(out)              # **控えを開いて検査する**
         if not health["ok"]:
             raise ReviewError(
-                409, f"控えの DB が検査に通りません（採用しません）: "
+                409, f"バックアップの DB が検査に通りません（採用しません）: "
                      f"{health['stage']}: {health['detail']}",
                 code="bad_snapshot",
                 details={"stage": health["stage"], "detail": health["detail"]})
@@ -622,8 +622,11 @@ def copy_incremental(src: Path, dst: Path, *, previous: Path | None = None) -> d
 
 
 def guidance_for(mode: str, reason: str | None, *, backup_dir=None) -> str | None:
-    """その状態のときに画面と CLI に出す案内（**黙って書き込まない**）。"""
-    where = f"（バックアップの置き場: {backup_dir}）" if backup_dir else ""
+    """その状態のときに画面と CLI に出す案内（**黙って書き込まない**）。
+
+    **（D-6）** 登録したフォルダは「フォルダ」、バックアップの場所は「保存先」（`design.md` §17）。
+    """
+    where = f"（バックアップの保存先: {backup_dir}）" if backup_dir else ""
     if mode == "ok":
         return None
     if reason == "version_ahead":
@@ -1097,7 +1100,7 @@ class BackupService:
         health = check_snapshot_db(db_out)
         if not health["ok"]:
             raise ReviewError(
-                409, f"写しの DB が検査に通りません（この世代は採用しません）: "
+                409, f"コピーの DB が検査に通りません（この世代は採用しません）: "
                      f"{health['stage']}: {health['detail']}",
                 code="bad_snapshot",
                 details={"stage": health["stage"], "detail": health["detail"],
@@ -1615,7 +1618,7 @@ def set_backup_dir(store, value, *, actor: str = "human") -> dict:
     前は 200 を返してから次の周期で `last_error` になるだけだった（人が気づけない）。
     """
     if actor != "human":
-        raise ReviewError(403, "バックアップの置き場の変更は人だけができます",
+        raise ReviewError(403, "バックアップの保存先の変更は人だけができます",
                           code="human_only", details={"actor": actor})
     if not isinstance(value, str) or not value.strip():
         raise ReviewError(422, "backup_dir は空でない文字列です", code="bad_backup_dir",

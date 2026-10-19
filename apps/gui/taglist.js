@@ -1,10 +1,11 @@
 // 語の一覧（`#/tags`。P4-3）
-// 設計: docs/p4-design.md §5.2（語の一覧・検索・語釈の確認と修正・訳す・一括タグ付けの入口）/
-//       §3.6（`GET /api/tags`。**既定は known=1**）/ §3.5（語釈の口）/ docs/frontend-design.md §4.13
+// 設計: docs/p4-design.md §5.2（語の一覧・検索・日本語訳の確認と修正・訳す・一括タグ付けの入口）/
+//       §3.6（`GET /api/tags`。**既定は known=1**）/ §3.5（訳の口）/ docs/frontend-design.md §4.13
 //
 // 約束:
 // - **`GET` は訳さない**（§0.10）。訳すのは `POST /api/tags/gloss` だけ
 // - **`known` の既定は `1`**（点検 §I-2。実データでは件数順の上位が品質語で埋まる）
+// - **（D-2・D-15）** 画面の語は「日本語訳」と「Danbooru の語 / それ以外」（「語釈」「語彙」を使わない）
 // - `esc()` を必ず通す
 
 const API = '/api/tags';
@@ -20,7 +21,8 @@ const $ = (id) => document.getElementById(id);
 const state = { q: '', known: '1', items: [], total: 0, counts: {}, selected: null, busy: false,
                 next: null };
 
-const KNOWN_LABEL = { 1: '語彙あり', 0: '語彙外', all: 'すべて' };
+// **（D-2・D-15）** 「語彙あり / 語彙外」→「Danbooru の語 / それ以外」
+const KNOWN_LABEL = { 1: 'Danbooru の語', 0: 'それ以外', all: 'すべて' };
 
 export function esc(value) {
   return String(value ?? '').replace(/[&<>"]/g,
@@ -36,19 +38,21 @@ export function query(search) {
 export function rowHtml(item) {
   const gloss = item.gloss
     ? `<span class="tl-gloss">${esc(item.gloss)}${item.gloss_edited ? '<span class="tg-edited">人が直した</span>' : ''}</span>`
-    : '<span class="tl-none">語釈なし</span>';
-  const unknown = item.known === false ? '<span class="tg-unknown">語彙外</span>' : '';
+    : '<span class="tl-none">訳なし</span>';
+  const unknown = item.known === false ? '<span class="tg-unknown" title="Danbooru の語ではありません">それ以外</span>' : '';
   return `<div class="tl-row${state.selected === item.name ? ' on' : ''}" data-name="${esc(item.name)}" data-id="${esc(String(item.tag_id))}">`
     + `<span class="tl-name">${esc(item.name)}</span>${unknown}`
-    + `<span class="tl-count num">${esc(String(item.uses))} 枚</span>`
+    + `<span class="tl-count num">${esc(Number(item.uses).toLocaleString('ja-JP'))} 枚</span>`
     + `<span class="tl-cat">${esc(categoryText(item))}</span>`
     + gloss
     + '</div>';
 }
 
 export function listHtml() {
-  const head = `${state.items.length} / ${state.total} 語`
-    + `（語彙あり ${state.counts.known ?? 0}、語彙外 ${state.counts.unknown ?? 0}）`;
+  // **（A-3）** 4 桁以上は「,」を付ける（語数の合計は 4 桁になりうる）
+  const head = `${Number(state.items.length).toLocaleString('ja-JP')} / ${Number(state.total).toLocaleString('ja-JP')} 語`
+    + `（Danbooru の語 ${Number(state.counts.known ?? 0).toLocaleString('ja-JP')}、`
+    + `それ以外 ${Number(state.counts.unknown ?? 0).toLocaleString('ja-JP')}）`;
   const rows = state.items.length
     ? state.items.map(rowHtml).join('')
     : '<div class="note">この条件の語はありません。</div>';
@@ -63,19 +67,20 @@ export function listHtml() {
 }
 
 function detailHtml(item) {
-  if (!item) return '<div class="note">左の語を選ぶと、語釈を確認して直せます。</div>';
+  if (!item) return '<div class="note">左の語を選ぶと、日本語訳を確認して直せます。</div>';
   const gloss = item.gloss || '';
   return `<div class="tl-detail-name">${esc(item.name)}`
-    + `<span class="tl-count num">${esc(String(item.uses))} 枚</span>`
+    + `<span class="tl-count num">${esc(Number(item.uses).toLocaleString('ja-JP'))} 枚</span>`
     + `<span class="tl-cat">${esc(categoryText(item))}</span></div>`
-    + `<div class="stat">${item.gloss ? (item.gloss_edited ? '人が直した語釈です。' : '自動で訳した語釈です。直せます。') : '日本語の語釈はまだありません。'}</div>`
-    + `<textarea id="tl-ja" rows="2" placeholder="日本語の語釈（例: 長い髪）">${esc(gloss)}</textarea>`
+    + `<div class="stat">${item.gloss ? (item.gloss_edited ? '人が直した日本語訳です。' : '自動で訳した日本語訳です。直せます。') : '日本語訳はまだありません。'}</div>`
+    + `<textarea id="tl-ja" rows="2" placeholder="日本語訳（例: 長い髪）">${esc(gloss)}</textarea>`
     + '<div class="tl-detail-actions">'
-    + '<button id="tl-save">保存</button>'
+    // **（C-15・G-1）** 同じ操作のボタンを終止形に揃える（「保存」→「保存する」）
+    + '<button id="tl-save">保存する</button>'
     + `<button id="tl-translate">訳す</button>`
     + '<span class="stat" id="tl-msg"></span></div>'
     // **（ワーディング監査 W-10）** 内部のフラグ名（`edited`）とバッククォートを画面に出さない
-    + '<div class="tg-help">訳は自動です。直した語釈は、訳し直しても上書きしません。</div>';
+    + '<div class="tg-help">訳は自動です。直した日本語訳は、訳し直しても上書きしません。</div>';
 }
 
 async function fetchPage({ cursor = null } = {}) {
@@ -140,18 +145,19 @@ function wireDetail(item) {
   if (save && ja && item) {
     save.addEventListener('click', async () => {
       const value = ja.value.trim();
-      if (!value) { msg('日本語を入れてください', true); return; }
+      // **（A-4・G-10）** 通知も文なので「。」を付ける
+      if (!value) { msg('日本語を入れてください。', true); return; }
       const res = await fetch(`${API}/${item.tag_id}/gloss`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Image-Reviewer-Actor': 'human' },
         body: JSON.stringify({ ja: value }),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) { msg(body.detail || `保存できません（${res.status}）`, true); return; }
+      if (!res.ok) { msg(body.detail || `保存できませんでした。もう一度試してください（詳細: ${res.status}）。`, true); return; }
       // **P4-3 の監査 B-2**: `load()` は詳細を `innerHTML` で作り直すので、
       // **先に描き直してから**知らせる（前は知らせた直後に消えていた）
       await load();
-      msg('保存しました（人が直した語釈になります）。');
+      msg('保存しました（人が直した日本語訳になります）。');
     });
   }
   if (translate && item) {
@@ -165,23 +171,23 @@ function wireDetail(item) {
   }
 }
 
-/** 語釈を作る（**`tag_id` の配列**を渡す）。**DOM は触らない**（知らせは呼んだ側が `load()` の後に出す。監査 B-2）。 */
+/** 日本語訳を作る（**`tag_id` の配列**を渡す）。**DOM は触らない**（知らせは呼んだ側が `load()` の後に出す。監査 B-2）。 */
 async function translateIds(ids) {
   const tagIds = ids.map((n) => Number(n)).filter((n) => Number.isFinite(n));
-  if (!tagIds.length) return { ok: false, detail: '訳す語がありません' };
+  if (!tagIds.length) return { ok: false, detail: '訳す語がありません。' };
   const res = await fetch('/api/tags/gloss', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Image-Reviewer-Actor': 'human' },
     body: JSON.stringify({ tag_ids: tagIds, limit: GLOSS_LIMIT }),
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) return { ok: false, detail: body.detail || `訳せません（${res.status}）` };
+  if (!res.ok) return { ok: false, detail: body.detail || `訳せませんでした。もう一度試してください（詳細: ${res.status}）。` };
   return { ok: true, ...body };
 }
 
 async function translatePending() {
   const pending = state.items.filter((it) => !it.gloss).slice(0, GLOSS_LIMIT);
-  if (!pending.length) { const el = $('tl-msg'); if (el) el.textContent = '語釈の無い語がありません。'; return; }
+  if (!pending.length) { const el = $('tl-msg'); if (el) el.textContent = '日本語訳の無い語がありません。'; return; }
   const got = await translateIds(pending.map((it) => it.tag_id));
   // **知らせは `load()` の後**（監査 B-2。先に出すと描き直しで消える）
   await load();
@@ -201,7 +207,7 @@ async function startJob() {
     body: JSON.stringify({ engine, limit, force }),
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) { if (msg) msg.textContent = body.detail || `始められません（${res.status}）`; return; }
+  if (!res.ok) { if (msg) msg.textContent = body.detail || `始められませんでした。もう一度試してください（詳細: ${res.status}）。`; return; }
   if (!body.job_id) { if (msg) msg.textContent = '付ける対象がありませんでした。'; return; }
   location.hash = '#/jobs';
 }

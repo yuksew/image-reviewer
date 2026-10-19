@@ -69,7 +69,9 @@ let IDS = (argOf('ids', '') || '').split(',').map((s) => s.trim()).filter(Boolea
 const COUNT = Number(argOf('count', '0'));          // --ids を省いたとき、API から何枚選ぶか
 const EXPECTED_ROWS = Number(argOf('rows', '0'));   // 0 = 行数は窓次第（合否に使わない）
 const MIN_USED = Number(argOf('min-used', '0'));    // 舞台の使われ方の下限（0〜1。0 で見ない）
-const VIEWPORTS = [[1400, 900], [1200, 800], [1920, 1080]];
+// **（F-1・F-2）1024×700 も計る**（監査は 1400×900 と 1024×700 の両方で見ている。
+// 日付と時刻が 2 行に割れたのは 1024 だった）
+const VIEWPORTS = [[1400, 900], [1024, 700], [1200, 800], [1920, 1080]];
 const ONLY = argOf('viewport', null);       // 例: --viewport 1200x800
 const SCREEN = argOf('screen', 'compare');  // compare | requests | tags | jobs
                                             // | duplicates / pending / library（P8-3）| group（P6-1b）
@@ -254,6 +256,12 @@ const MEASURE_ASSET = `(() => {
       return r.top >= 0 && r.top < innerHeight;
     })(),
     detailScrollTop: detail ? Math.round(detail.scrollTop) : 0,
+    // **（1024×700 の検査を足したときに気づいた）** 絵が届いたかを見る材料。
+    // 絵の高さが 0 のまま測ると、**実際より上にあるように見える**
+    previewH: (() => {
+      const im = document.querySelector('.detail img.preview');
+      return im ? Math.round(im.getBoundingClientRect().height) : 0;
+    })(),
     // ---- P4-3: タグの欄（設計 §8.3 の 1〜3）----
     // 語の行が**右の列から溢れない**か・**行の高さが揃っている**か（2 行 1 組が目で追えるか）
     tagRows: document.querySelectorAll('#tg-panel .tg-row').length,
@@ -591,6 +599,22 @@ const MEASURE_PENDING = `(() => {
     stage3Note: [...document.querySelectorAll('#pd-confirm .pd-warn')]
       .map((n) => n.textContent || '').join(' '),
     scan: (document.getElementById('pd-scan') || {}).textContent || '',
+    // **（P10。利用者の要望）** 後から段 2 へ進める・ファイルが無い行を片付ける口。
+    // **押す検査はここではしない**（複製の行を実際に移す・閉じてしまうので、押す検査は
+    // 「gui_smoke」＝偽サーバと「pytest」＝複製が受け持つ）。ここは**見えるか・語・はみ出し**だけ
+    bulkText: (document.getElementById('pd-bulk') || {}).textContent || '',
+    bulkVisible: (() => {
+      const bar = document.getElementById('pd-bulk');
+      if (!bar || !(bar.textContent || '').trim()) return false;
+      const r = bar.getBoundingClientRect();
+      return r.height > 0 && r.top >= 0 && r.top < innerHeight;
+    })(),
+    advances: document.querySelectorAll('#pd-running .pd-advance').length,
+    closes: document.querySelectorAll('#pd-running .pd-close').length,
+    trashCloses: document.querySelectorAll('#pd-trash .pd-close').length,
+    picks: document.querySelectorAll('#pd-running .pd-pick, #pd-trash .pd-pick').length,
+    strips: [...document.querySelectorAll('#pd-running .pd-strip')]
+      .map((n) => String(n.textContent || '').trim()),
     bodyOverflow: body ? Math.max(0, body.scrollWidth - body.clientWidth) : 0,
     pageOverflow: Math.max(0, de.scrollWidth - de.clientWidth),
   };
@@ -835,6 +859,9 @@ const MEASURE_SETTINGS = `(() => {
       return b ? Math.max(0, b.scrollWidth - b.clientWidth) : 0; })(),
     pageOverflow: Math.max(0, de.scrollWidth - de.clientWidth),
     firstMarkBox: box(firstMark),
+    // **（F-1）** 日付と時刻のセルの高さ（1 行なら 20 px 未満。2 行に割れると 30 px 超）
+    whenLines: [...document.querySelectorAll('#st-backup .st-snap-when')]
+      .map((w) => Math.round(w.getBoundingClientRect().height)),
     height: Math.round(root.getBoundingClientRect().height),
   };
 })()`;
@@ -1083,7 +1110,11 @@ try {
       let got = null;
       for (let i = 0; i < 60; i++) {
         got = await evaluate(MEASURE_ASSET);
-        if (got && (got.marks > 0 || got.rowsCount >= 0) && got.boxTop !== null) break;
+        // **（1024×700 の検査を足したときに気づいた）絵が届くまで待つ。** 待たないと
+        // `img.preview` の高さが 0 のまま測ってしまい、**実際より上にあるように見える**
+        // （1024 では「タグ欄が見える」の合否が入れ替わった）
+        if (got && got.previewH > 0
+            && (got.marks > 0 || got.rowsCount >= 0) && got.boxTop !== null) break;
         await sleep(250);
       }
       if (got) { await sleep(300); got = await evaluate(MEASURE_ASSET); }
@@ -1107,7 +1138,7 @@ try {
       // **P8-3 の監査 C-1**: **削除の入口が画像のすぐ下に見える**こと（`tgTop` と同じ形）。
       // 押すと `#/pending-deletes?ids=` へ行くこと（**押さないテストは穴を隠す**）
       if (!got.delVisible) bad.push(`削除の入口が見える（delTop=${got.delTop}px）`);
-      if (got.delText !== 'この 1 枚を削除へ回す') bad.push(`入口の文言（${got.delText}）`);
+      if (got.delText !== 'この 1 枚を削除する…') bad.push(`入口の文言（${got.delText}）`);
       const pressed = await evaluate(PRESS_ASSET_DELETE);
       if (!pressed || !pressed.pressed) bad.push('削除の入口を押せない');
       else if (!String(pressed.hash).startsWith('#/pending-deletes?ids=')) {
@@ -1129,7 +1160,7 @@ try {
       if (got.tagRows > 1 && got.tagHeightSpread > 2) {
         bad.push(`行の高さが揃う（差 ${got.tagHeightSpread}px）`);
       }
-      if (got.tagScripts !== 0 || got.tagRawScript) bad.push('語釈の `<script>` を実行しない（§8.2-7）');
+      if (got.tagScripts !== 0 || got.tagRawScript) bad.push('日本語訳の `<script>` を実行しない（§8.2-7）');
       if (bad.length) failures++;
       console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} 注記: `
         + `marks=${got.marks} rows=${got.rowsCount} outside=${got.outside} `
@@ -1140,7 +1171,7 @@ try {
         + ` 段=${(pressed || {}).stages}(${wantStages})`
         + ` markNos=[${got.markNos.join(',')}] rowNos=[${got.rowNos.join(',')}]`
         + ` タグ: rows=${got.tagRows} overflow=${got.tagOverflow} 高さの差=${got.tagHeightSpread}px`
-        + ` 折り返し=${got.tagWrapped}/語名=${got.tagWrappedEn} 印=${got.tagMarks} 語釈=${got.tagWithGloss} script=${got.tagScripts}`
+        + ` 折り返し=${got.tagWrapped}/語名=${got.tagWrappedEn} 印=${got.tagMarks} 日本語訳=${got.tagWithGloss} script=${got.tagScripts}`
         + (bad.length ? `  ← ${bad.join(', ')}` : ''));
     }
     ws.close();
@@ -1331,12 +1362,38 @@ try {
       if (got.rows <= 0 && !got.empty) bad.push('行か空の文が出る');
       if (got.scripts !== 0) bad.push('パスの `<script>` を実行しない');
       if (!String(got.bodyClass).includes('pending')) bad.push('道が最近の削除になっている');
-      // **（ワーディング監査 W-20）段 3 の呼び方は 1 つ**（`1 カタログから外す → 2 ゴミ箱 →
-      // 3 実体を消す`）。前の `3 実削除` は同じ段を 3 通りに呼んでいたので消えた
-      if (got.rows > 0 && !/3 実体を消す/.test(got.strip)) bad.push('段の印（3 実体を消す）');
+      // **（ワーディング監査 W-20。E-10・D-5）段の呼び方は 1 つ**で、行には**その行の段だけ**を出す
+      // （3 段の図は凡例に 1 回。193 行の各行に矢印を並べない）。段 3 は「ファイルを消す」
+      const stageWord = /^段 \d (カタログから外す|アプリのゴミ箱へ移す|ファイルを消す)$/;
+      if (got.rows > 0 && !stageWord.test(String(got.strip).trim())) {
+        bad.push(`段の語（${String(got.strip).trim()}）`);
+      }
       if (got.bodyOverflow !== 0) bad.push('本体が横に溢れない');
       if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
       if (got.rows > 0 && !got.entryVisible) bad.push('入口が見える（先頭の行）');
+      // **（P10）後から段 2 へ進める・片付ける口**（段 1 の行に 2 つ、段 2 の行に「片付ける」）。
+      // **語は §6.1 の規約**（「実体」を使わない・「用意」を使わない・段の名前をそのまま動詞にする）
+      if (got.rows > 0) {
+        const stage1 = got.strips.filter((t) => /^段 1 /.test(t)).length;
+        if (!got.bulkText.includes('全部選ぶ')) bad.push(`まとめての帯（${got.bulkText}）`);
+        if (!/選んだ(行|[0-9,]+ 件)をまとめて片付ける/.test(got.bulkText)) {
+          bad.push(`まとめて片付けるの語（${got.bulkText}）`);
+        }
+        if (!/選んだ(行|[0-9,]+ 件)をまとめてアプリのゴミ箱へ移す/.test(got.bulkText)) {
+          bad.push(`まとめて移すの語（${got.bulkText}）`);
+        }
+        if (got.picks < got.rows) bad.push(`まとめてのチェック（${got.picks}/${got.rows}）`);
+        if (stage1 && got.advances !== stage1) {
+          bad.push(`段 1 の行に「アプリのゴミ箱へ移す」（${got.advances}/${stage1}）`);
+        }
+        if (stage1 && got.closes < stage1) bad.push(`段 1 の行に「片付ける」（${got.closes}）`);
+        if (got.trash && got.trashCloses !== got.trash) {
+          bad.push(`ゴミ箱の段 2 の行に「片付ける」（${got.trashCloses}/${got.trash}）`);
+        }
+        if (/実体/.test(got.bulkText)) bad.push('「実体」を画面に出さない（規約 4）');
+        if (/用意/.test(got.bulkText)) bad.push('「用意」を画面に出さない（規約 3）');
+        if (!IDS.length && !got.bulkVisible) bad.push('まとめての帯が見える');
+      }
       if (rowExpected) {
         // **（P8-5 の追い込み）段 1 の行だけでも入口は出る**
         if (!entry || entry.hidden || !entry.visible) bad.push('上部バーの入口が見える');
@@ -1377,9 +1434,9 @@ try {
         const WANT_STAGE = {
           1: { button: '2 枚をカタログから外す', done: '2 枚をカタログから外しました。',
                note: 'いつでも戻せます。' },
-          2: { button: '2 枚をゴミ箱へ移す', done: '2 枚をゴミ箱へ移しました。',
+          2: { button: '2 枚をアプリのゴミ箱へ移す', done: '2 枚をゴミ箱へ移しました。',
                note: 'いつでも戻せます。' },
-          3: { button: '2 枚の実体を消す', done: '2 枚の実体を消しました。', note: null },
+          3: { button: '2 枚のファイルを消す', done: '2 枚のファイルを消しました。', note: null },
         };
         for (const run of stageRuns) {
           const want = WANT_STAGE[run.stage];
@@ -1409,7 +1466,7 @@ try {
             bad.push(`段 ${run.stage} は窓の残り時間を出さない（${run.doneText}）`);
           }
           if (/用意/.test(String(run.execText) + String(run.doneText))) {
-            bad.push(`段 ${run.stage} に「用意」を出さない（規則 4）`);
+            bad.push(`段 ${run.stage} に「用意」を出さない（規則 3）`);
           }
         }
         const execRuns = stageRuns.filter((r) => r.pressedExec);
@@ -1430,7 +1487,7 @@ try {
       }
       // **（P8-5）走査中の 1 行**（応答だけ差し替える。§4.6）
       const scan = await evaluate(PRESS_PENDING_SCAN);
-      if (!scan || !scan.pressed) bad.push('「再読込」を押せない');
+      if (!scan || !scan.pressed) bad.push('「再読込する」を押せない');
       else {
         if (!String(scan.text).includes('走査中です。終わるまで削除と取り消しは待ちます。')) {
           bad.push(`走査中の 1 行（${String(scan.text).slice(0, 24)}）`);
@@ -1455,6 +1512,9 @@ try {
         + `(API の行数=${rowExpected} 窓=${windowExpected}) `
         + `確認=${got.confirmVisible}(${String(got.confirmText).trim().slice(0, 12)}) `
         + `POST 取り消し=${undoPosts.length} 確かめる=${pvPosts.length} 実行=${bulkPosts.length} `
+        // **（P10）後から段 2 へ進める・片付ける口**の計測（押す検査は `gui_smoke` と `pytest`）
+        + `移す=${got.advances} 片付け=${got.closes}(${got.trashCloses}) `
+        + `チェック=${got.picks} 帯=${JSON.stringify(String(got.bulkText).replace(/\s+/g, ' ').trim().slice(0, 52))} `
         + `段ごとのボタン=${stageRuns.filter((r) => r.stage > 0)
           .map((r) => `${r.stage}:${r.offered ? r.execText : '—'}`).join(' / ') || '—'} `
         + `段ごとの結果=${stageRuns.filter((r) => r.stage > 0)
@@ -1518,6 +1578,11 @@ try {
       if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
       if (got.bodyOverflow !== 0) bad.push('本文が横に溢れない');
       if (got.scripts !== 0) bad.push('script タグを実行しない');
+      // **（F-1。足した検査）** 日付と時刻を 2 行に割らない（1024×700 で割れていた。
+      // `.st-snap-when` に `white-space: nowrap`。1 行なら 20 px 未満、2 行だと 30 px 超）
+      if (got.whenLines.some((h) => h > 20)) {
+        bad.push(`日付と時刻が 2 行に割れない（高さ ${got.whenLines.join('/')}）`);
+      }
       // **読み取り専用のときは「バックアップの欄」が案内に置き換わる**（控えの時刻・一覧は出ない。§6・C-3）
       const isRo = Boolean(want && want.readOnly) || got.readonly;
       if (!isRo) {
@@ -1525,18 +1590,18 @@ try {
           bad.push('最後に取った時刻（か「まだ取っていません」）');
         }
         if (want && want.snaps > 0 && got.snaps < 1) bad.push(`直近の一覧を出す（${want.snaps} 個ある）`);
-        if (want && want.snaps === 0 && !got.backupText.includes('まだ控えはありません')) {
-          bad.push('控えが 0 のときの 1 行');
+        if (want && want.snaps === 0 && !got.backupText.includes('まだバックアップはありません')) {
+          bad.push('バックアップが 0 のときの 1 行');
         }
         if (got.snaps > 0 && !/日次|取り直す|版を上げる前|表の形を変える前/.test(got.backupText)) {
-          bad.push('控えの種類を語で出す');
+          bad.push('バックアップの種類を語で出す');
         }
       } else if (!/DB を読み取り専用で開いています。/.test(got.backupText)
         || !/image-reviewer restore/.test(got.backupText)) {
         bad.push('読み取り専用の案内（1 行と復元の案内）');
       }
       if (got.marks.length !== (want ? want.roots : got.marks.length)) {
-        bad.push(`置き場ごとに印を出す（${got.marks.length}）`);
+        bad.push(`フォルダごとに許可を出す（${got.marks.length}）`);
       }
       if (want) {
         // **読み取り専用のときは「最後の失敗」の欄を出さない**（案内がその場所を取る。§6・C-3）
@@ -1555,7 +1620,7 @@ try {
       }
       if (!got.readonly) {
         if (!got.nowVisible) bad.push('「取り直す」が見える');
-        if (!got.saveVisible) bad.push('置き場を変える欄が見える');
+        if (!got.saveVisible) bad.push('保存先を変える欄が見える');
         if (!pressed || !pressed.pressedAllow) bad.push('印のボタンを押せない');
         else if (allowPosts.length !== 1) bad.push(`印の POST=${allowPosts.length}`);
         else if (JSON.parse(String(allowPosts[0].body || '{}')).allow !== pressed.allowWant) {
@@ -1573,12 +1638,12 @@ try {
         }
         if (!pressed || !pressed.pressedSave) bad.push('「保存する」を押せない');
         else if (savePosts.length !== 1 || savePosts[0].method !== 'PATCH') {
-          bad.push(`置き場の PATCH=${savePosts.length}`);
+          bad.push(`保存先の PATCH=${savePosts.length}`);
         } else if (JSON.parse(String(savePosts[0].body || '{}')).backup_dir
           !== 'D:\\gui-layout-backups') {
-          bad.push('入力した置き場を送る');
+          bad.push('入力した保存先を送る');
         }
-        if (pressed && !/置き場を変えました|この置き場で段 3 を許します|取り直しました/.test(pressed.msg)) {
+        if (pressed && !/保存先を変えました|このフォルダで段 3 を許します|取り直しました/.test(pressed.msg)) {
           bad.push(`押した結果を 1 行で出す（${String(pressed.msg).slice(0, 24)}）`);
         }
       } else if (/st-now|st-save/.test(got.backupText)) {
@@ -1586,7 +1651,7 @@ try {
       }
       if (bad.length) failures++;
       console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} 設定: `
-        + `控え=${got.snaps} 印=[${got.marks.join(',')}] 失敗=${got.failedVisible}(${JSON.stringify(got.failedText.slice(0, 28))}) `
+        + `バックアップ=${got.snaps} 許可=[${got.marks.join(',')}] 失敗=${got.failedVisible}(${JSON.stringify(got.failedText.slice(0, 28))}) `
         + `読み取り専用=${got.readonly} overflow=${got.bodyOverflow}/${got.pageOverflow} `
         + `押す=印${allowPosts.length}/取る${nowPosts.length}/保存${savePosts.length} `
         + `msg=${JSON.stringify(String((pressed || {}).msg).slice(0, 24))} script=${got.scripts} `
@@ -1652,11 +1717,11 @@ try {
       if (got.frames <= 0) bad.push('画像が出る');
       if (!got.barVisible) bad.push('下部バーが見える');
       if (!got.buttonVisible) bad.push('削除の入口が見える（下部バー）');
-      if (got.text !== '選んだ 0 枚を削除へ回す') bad.push(`入口の文言（${got.text}）`);
+      if (got.text !== '選んだ画像を削除する…') bad.push(`入口の文言（${got.text}）`);
       if (got.disabled !== true) bad.push('1 枚も選んでいなければ押せない');
       if (pressed.picked !== 2) bad.push(`Ctrl + クリックで 2 枚選ぶ（${pressed.picked}）`);
-      else if (pressed.text !== '選んだ 2 枚を削除へ回す') bad.push(`選んだ枚を文言に出す（${pressed.text}）`);
-      if (!pressed.pressed) bad.push('削除へ回すを押せない');
+      else if (pressed.text !== '選んだ 2 枚を削除する…') bad.push(`選んだ枚を文言に出す（${pressed.text}）`);
+      if (!pressed.pressed) bad.push('削除する…を押せない');
       else if (!/^#\/pending-deletes\?ids=/.test(String(pressed.hash))) {
         bad.push(`削除の確認へ渡す（${pressed.hash}）`);
       }

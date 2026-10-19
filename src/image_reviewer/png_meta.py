@@ -353,15 +353,16 @@ def provenance(path: str | Path) -> dict:
         return result
     raw = chunks["text"].get("prompt")
     if raw is None:
-        result["note"] = "prompt チャンクが無い（生成条件が残っていない画像）"
+        # **（B-3）** 注記も敬体に揃える（この文は画面の来歴の欄にも出る）
+        result["note"] = "prompt チャンクがありません（生成条件が残っていない画像です）"
         return result
     try:
         graph = json.loads(raw.decode("utf-8", "replace"))
     except Exception as exc:  # noqa: BLE001
-        result["note"] = f"prompt チャンクを JSON として読めない: {exc}"
+        result["note"] = f"prompt チャンクを JSON として読めません（{exc}）。"
         return result
     if not isinstance(graph, dict) or not all(isinstance(v, dict) for v in graph.values()):
-        result["note"] = "prompt チャンクが API 形式のグラフではない"
+        result["note"] = "prompt チャンクが API 形式のグラフではありません"
         return result
     result["graph_format"] = "api+ui" if "workflow" in chunks["text"] else "api"
     result["graph"] = graph

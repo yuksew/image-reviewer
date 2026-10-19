@@ -1,5 +1,5 @@
 // 設定（`#/settings`。P8-5）
-// 設計: docs/p8-design.md §3.3（バックアップと段 3 の印）・§5（画面）・§0.21（P8-5 で確定）、
+// 設計: docs/p8-design.md §3.3（バックアップと段 3 の許可）・§5（画面）・§0.21（P8-5 で確定）、
 //       docs/frontend-design.md §3（画面の一覧 10）・§4.5.1（上部バー）・§6（文言）・§11（設定の画面）
 //
 // 約束:
@@ -10,7 +10,7 @@
 // - **最後の失敗は全文で出す**（黙って失敗しない。P8-4 の再確認 B-1'・G-4）
 // - **「最後に取った時刻」は `daily` / `manual` だけ**から組む（`pre-topup` を数えない。
 //   P8-4 の再確認 D-5）
-// - 印は**利用者の明示の意思表示**（Q8）。押した後は**読み直す**（画面と DB をずらさない）
+// - 許可は**利用者の明示の意思表示**（Q8）。押した後は**読み直す**（画面と DB をずらさない）
 // - `esc()` を必ず通す
 // - **（P8-5 の監査 C-1）書き込むボタンは押している間 `disabled`。** `busy` を立てて描き直してから
 //   `fetch` する（`takeNow` / `saveDir` と同じ形）。**二度押しで POST を 2 回出さない**
@@ -35,10 +35,10 @@ function human() {
   return { 'Content-Type': 'application/json', 'X-Image-Reviewer-Actor': 'human' };
 }
 
-/** 控えの種類の語（利用者の言葉で。`backup.py` の `kind` をそのまま出さない）。
+/** バックアップの種類の語（利用者の言葉で。`backup.py` の `kind` をそのまま出さない）。
  *
- * **（ワーディング監査 W-65）** 動詞を種類の名前にしない（「取り直す」→「取り直し」）。
- * 画面では 1 回分を「バックアップ」、数えるときは「世代」で通す（W-29・G-4）。
+ * **（ワーディング監査 W-65。D-3）** 動詞を種類の名前にしない（「取り直す」→「取り直し」）。
+ * 画面では 1 回分を「バックアップ」、数えるときは「世代」で通す（W-29・G-4）。**「控え」と呼ばない。**
  */
 export const KIND_TEXT = {
   daily: '日次', manual: '取り直し',
@@ -81,7 +81,7 @@ const state = {
 
 // ---- 描く（文字列）----
 
-/** 読み取り専用の案内（DB が壊れている / 版が新しい / 控えが取れない。§3.4・§6）。
+/** 読み取り専用の案内（DB が壊れている / 版が新しい / バックアップが取れない。§3.4・§6）。
  *
  * **語彙は API の物**（`backup.inspect_db` と `app.py` が返す `reason`。D-3）:
  * `malformed` / `unreadable` / `unopenable` / `version_ahead` / `pre_migrate_backup_failed`。
@@ -96,7 +96,7 @@ export function readOnlyHtml() {
     unreadable: 'DB を開けませんでした（ファイルが壊れています）。',
     unopenable: 'DB を開けませんでした。',
     version_ahead: 'DB の版がこのアプリより新しいものです。',
-    pre_migrate_backup_failed: '版を上げる前の控えを取れませんでした。',
+    pre_migrate_backup_failed: '版を上げる前のバックアップを取れませんでした。',
   }[reason] || 'DB に書き込めない状態です。';
   // 案内（`guidance`）は **API の物をそのまま**出す（正しい説明は API が持っている。D-3）
   const guidance = info.guidance || got.guidance || got.detail || '';
@@ -110,7 +110,10 @@ export function readOnlyHtml() {
 /** 直近の一覧（新しい順。**日次と「取り直す」だけ**を「最後に取った時刻」に数える）。 */
 export function snapshotsHtml() {
   const snaps = (state.backup && state.backup.snapshots) || [];
-  if (!snaps.length) return '<div class="st-note">まだバックアップはありません。</div>';
+  // **（C-21）** 空にも次の一手を書く（規則 3「空の状態は『いまの状態』＋『次に押す物』の 2 文」）
+  if (!snaps.length) {
+    return '<div class="st-note">まだバックアップはありません。「取り直す」で今すぐ取れます。</div>';
+  }
   const rows = snaps.map((snap) => `<div class="st-snap">
       <span class="st-snap-when num">${esc(fmtWhen(snap.created_at) || snap.name)}</span>
       <span class="st-snap-kind">${esc(kindText(snap.kind))}</span>
@@ -121,7 +124,7 @@ export function snapshotsHtml() {
   return `<div class="st-snaps">${rows}</div>`;
 }
 
-/** バックアップの欄（最後に取った時刻・置き場・今日の分・**最後の失敗の全文**）。
+/** バックアップの欄（最後に取った時刻・保存先・今日の分・**最後の失敗の全文**）。
  *
  * **読み取り専用なら `readOnlyHtml()` の道へ**（`GET /api/backup` が 200 でも
  * `read_only: true` なら書き込めない。§6・C-3）。
@@ -129,21 +132,23 @@ export function snapshotsHtml() {
 export function backupHtml() {
   const got = state.backup;
   if (state.status === 503 || (got && got.read_only)) return readOnlyHtml();
-  if (!got) return '<div class="st-note">バックアップの状態を読めません。</div>';
+  if (!got) return '<div class="st-note">バックアップの状態を読めませんでした。もう一度試してください。</div>';
   const lastAt = lastTakenAt(got);
   const failed = got.last_error
     ? `<div class="st-failed">最後の失敗（${esc(fmtWhen(got.last_error_at))}）:
         <span class="mono">${esc(got.last_error)}</span></div>
-      <div class="st-note">置き場を作れないときは、書き込める場所に変えてください。</div>`
+      <div class="st-note">保存先を作れないときは、書き込める場所に変えてください。</div>`
     : '';
   // **（ワーディング監査 W-28）** 「黙って失敗しません」は fail silently の直訳で、同じ文が
   // 画面の下にもう 1 回あった（index.html から消した）。**ここ 1 か所だけ**にする
+  // **（D-6）** バックアップの場所は「保存先」（登録したフォルダは「フォルダ」）
+  // **（A-5）** 添え書きは括弧書きにして、文の「。」と区別する
   return `<div class="st-sub">バックアップ<span class="stat">失敗したときは、ここにその全文が出ます。</span></div>
     <div class="st-line">${lastAt
       ? `最後に取ったのは <span class="num">${esc(fmtWhen(lastAt))}</span> です。`
       : 'まだ取っていません。'}</div>
-    <div class="st-line">置き場: <span class="mono">${esc(got.backup_dir || '—')}</span>
-      <span class="stat">${got.backup_dir_source === 'settings' ? '設定の値です' : '既定の場所です'}</span></div>
+    <div class="st-line">保存先: <span class="mono">${esc(got.backup_dir || '—')}</span>
+      <span class="stat">${got.backup_dir_source === 'settings' ? '（設定の値）' : '（既定）'}</span></div>
     <div class="st-line">${got.today_done ? '今日の分は取れています。' : '今日の分はまだです。'}</div>
     <div class="st-line">バックアップが ${got.count} 世代あります（直近 ${esc(got.keep ?? 7)} 世代を残します）。</div>
     ${failed}
@@ -152,33 +157,33 @@ export function backupHtml() {
       <span class="stat">同じ日でも必ず新しく取ります。</span>
     </div>
     <div class="st-actions">
-      <label class="st-dir-label">置き場を変える
+      <label class="st-dir-label">保存先を変える
         <input id="st-dir" class="st-dir" type="text" value="${esc(got.backup_dir || '')}"
-               placeholder="絶対パス" spellcheck="false"></label>
+               placeholder="例: D:\\backups\\image-reviewer" spellcheck="false"></label>
       <button class="st-save"${state.busy ? ' disabled' : ''}>保存する</button>
-      <!-- **（ワーディング監査 W-30）** 「データ置き場」ではなく、利用者の言葉で言う -->
-      <span class="stat">アプリの置き場（.data）の中は指定できません。</span>
+      <!-- **（ワーディング監査 W-30。D-6）** 「データ置き場」ではなく、利用者の言葉で言う -->
+      <span class="stat">保存先はアプリの中（.data）にはできません。</span>
     </div>
-    <div class="st-note">復元はコマンドで戻します（
-      <code>image-reviewer restore &lt;フォルダ&gt;</code>）。画面からは戻しません。</div>
+    <div class="st-note">復元はコマンドで戻します（<code>image-reviewer restore &lt;フォルダ&gt;</code>）。画面からは戻しません。</div>
     ${snapshotsHtml()}`;
 }
 
-/** 置き場ごとの「段 3 の許可」（Q8。**人だけ**）。
+/** フォルダごとの「段 3 の許可」（Q8。**人だけ**）。
  *
  * **読み取り専用のときは押せなくする**（許可も書き込みの口。§6・C-3）。
- * **（ワーディング監査 §4）** 「印」は 6 つの物を指していて分からないので、ここでは「許可」と呼ぶ
- * （`root.allow_stage3`）。
+ * **（ワーディング監査 §4。D-5・D-6）** 「印」は 6 つの物を指していて分からないので、ここでは「許可」と呼ぶ
+ * （`root.allow_stage3`）。**登録したフォルダは「フォルダ」**（バックアップの場所は「保存先」）。
  */
 export function rootsHtml() {
   const readOnly = state.status === 503 || Boolean(state.backup && state.backup.read_only);
   if (!state.rootsOk) {
-    return `<div class="st-sub">置き場ごとの「段 3 の許可」</div>
-      <div class="st-note">このサーバは置き場の一覧を返しません（古い版です）。</div>`;
+    return `<div class="st-sub">フォルダごとの「段 3 の許可」</div>
+      <div class="st-note">このサーバはフォルダの一覧を返しません（古い版です）。</div>`;
   }
   if (!state.roots.length) {
-    return `<div class="st-sub">置き場ごとの「段 3 の許可」</div>
-      <div class="st-note">置き場がまだありません。フォルダを走査すると、ここに出ます。</div>`;
+    // **（C-21）** 空にも次の一手を書く。**フォルダを追加する画面はアプリに無い**ので CLI を出す
+    return `<div class="st-sub">フォルダごとの「段 3 の許可」</div>
+      <div class="st-note">フォルダがまだありません。コマンド <code>image-reviewer scan --root &lt;フォルダ&gt;</code> で登録すると、ここに出ます。</div>`;
   }
   const rows = state.roots.map((root) => `<div class="st-root">
       <span class="st-root-path mono" title="${esc(root.display_path || root.path)}">${
@@ -189,10 +194,10 @@ export function rootsHtml() {
       <button class="st-allow" data-id="${esc(root.id)}" data-allow="${
         root.allow_stage3 ? 'false' : 'true'}"${
         state.busy || readOnly ? ' disabled' : ''}>${
-        root.allow_stage3 ? '許可を外す' : 'この置き場で段 3 を許す'}</button>
+        root.allow_stage3 ? '許可を外す' : 'このフォルダで段 3 を許す'}</button>
     </div>`).join('');
-  return `<div class="st-sub">置き場ごとの「段 3 の許可」
-      <span class="stat">許可の無い置き場では段 3（実体を消す）を選べません。段 1・2 はいつでも使えます。</span></div>
+  return `<div class="st-sub">フォルダごとの「段 3 の許可」
+      <span class="stat">許可の無いフォルダでは段 3（ファイルを消す）を選べません。段 1・2 はいつでも使えます。</span></div>
     ${readOnly ? '<div class="st-note">読み取り専用で開いているので、許可は変えられません。</div>' : ''}
     ${rows}`;
 }
@@ -254,7 +259,8 @@ export async function takeNow() {
   const body = await res.json().catch(() => ({}));
   state.busy = false;
   if (!res.ok) {
-    state.msg = body.detail || `取れません（${res.status}）`;
+    // **（C-7）** 「取れません（409）」では次の一手が無い。2 文にして、番号は括弧の中へ
+    state.msg = body.detail || `取り直せませんでした。もう一度試してください（詳細: ${res.status}）。`;
     state.bad = true;
     await load();
     return null;
@@ -271,7 +277,7 @@ export async function takeNow() {
 export async function saveDir(value) {
   const wanted = wantedDir(value ?? ($('st-dir') ? $('st-dir').value : ''));
   if (!wanted) {
-    state.msg = '置き場のパスを入れてください。';
+    state.msg = '保存先のパスを入れてください。';
     state.bad = true;
     render();
     return null;
@@ -283,12 +289,12 @@ export async function saveDir(value) {
   const body = await res.json().catch(() => ({}));
   state.busy = false;
   if (!res.ok) {
-    state.msg = body.detail || `変えられません（${res.status}）`;
+    state.msg = body.detail || `保存できませんでした。もう一度試してください（詳細: ${res.status}）。`;
     state.bad = true;
     await load();
     return null;
   }
-  state.msg = `置き場を変えました: ${body.backup_dir || wanted}`;
+  state.msg = `保存先を変えました: ${body.backup_dir || wanted}`;
   state.bad = false;
   await load();
   return body;
@@ -306,14 +312,14 @@ export async function setAllow(rootId, allow) {
   const body = await res.json().catch(() => ({}));
   state.busy = false;
   if (!res.ok) {
-    state.msg = body.detail || `変えられません（${res.status}）`;
+    state.msg = body.detail || `変えられませんでした。もう一度試してください（詳細: ${res.status}）。`;
     state.bad = true;
     await load();
     return null;
   }
   state.msg = body.allow_stage3
-    ? 'この置き場で段 3 を許します。'
-    : 'この置き場の許可を外しました。';
+    ? 'このフォルダで段 3 を許します。'
+    : 'このフォルダの許可を外しました。';
   state.bad = false;
   await load();
   return body;

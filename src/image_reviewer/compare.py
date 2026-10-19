@@ -1145,7 +1145,7 @@ def cached_pair_metrics(store: Store, a: dict, b: dict, *,
 
     a_src, b_src = _primary_path(a), _primary_path(b)
     if not a_src or not b_src:
-        raise ReviewError(404, "実体が見つかりません（サムネイルも作れません）",
+        raise ReviewError(404, "ファイルが見つかりません（サムネイルも作れません）",
                           details={"a_id": a_id, "b_id": b_id})
     got = compute_pair_metrics(a_src, b_src, gray=gray)
     with store.transaction() as con:
@@ -1292,13 +1292,15 @@ def _phase_shift(a: np.ndarray, b: np.ndarray, mask_a: np.ndarray | None = None,
     if mask_a is not None and mask_b is not None:
         corr_coef = _aligned_corr(a, b, mask_a, mask_b, dy, dx)
     if abs(dx) > ALIGN_MAX_SHIFT or abs(dy) > ALIGN_MAX_SHIFT:
+        # **（A-9・A-10・B-1）** 常体と全角「＝」をやめ、数字と単位の間は半角空白 1 つにする
+        # （「位置が合いません」は検査が指している語なので残す。`tests/test_p5_3.py`）
         return {"ok": False, "dx": dx, "dy": dy, "peak_ratio": ratio, "corr": corr_coef,
-                "reason": (f"位置が合いません（平行移動が大きすぎます: {abs(dx)}×{abs(dy)}px。"
-                           "回転・拡大は扱いません）")}
+                "reason": (f"位置が合いません。平行移動が大きすぎます（{abs(dx)} × {abs(dy)} px）。"
+                           "回転と拡大は扱いません。")}
     if ratio < ALIGN_MIN_PEAK_RATIO:
         return {"ok": False, "dx": dx, "dy": dy, "peak_ratio": ratio, "corr": corr_coef,
-                "reason": ("位置が合いません（ずれの手がかりが弱い＝別の絵の可能性が高い。"
-                           f"峰の比 {ratio:.1f} < {ALIGN_MIN_PEAK_RATIO}）")}
+                "reason": ("位置が合いません。ずれの手がかりが弱く、別の絵の可能性が高いです"
+                           f"（峰の比 {ratio:.1f}、必要 {ALIGN_MIN_PEAK_RATIO}）。")}
     # **監査 A2**: 峰が立っていても、戻した重なりが一致していなければ「別の絵」。
     # ここが無いと、ノイズの一番高い点が ±64px に入っただけの無関係な組に
     # でたらめな dx/dy と全面が赤の絵を「合わせた」と言って返してしまう。
@@ -1306,8 +1308,8 @@ def _phase_shift(a: np.ndarray, b: np.ndarray, mask_a: np.ndarray | None = None,
             corr_coef is not None and corr_coef >= ALIGN_MIN_CORR):
         shown = "判定できません" if corr_coef is None else f"{corr_coef:.2f}"
         return {"ok": False, "dx": dx, "dy": dy, "peak_ratio": ratio, "corr": corr_coef,
-                "reason": ("位置が合いません（ずらしても画素が一致しない＝別の絵です。"
-                           f"重なりの一致度 {shown} < {ALIGN_MIN_CORR}）")}
+                "reason": ("位置が合いません。ずらしても画素が一致しないので、別の絵です"
+                           f"（重なりの一致度 {shown}、必要 {ALIGN_MIN_CORR}）。")}
     return {"ok": True, "dx": dx, "dy": dy, "peak_ratio": ratio, "corr": corr_coef,
             "reason": None}
 
@@ -1392,7 +1394,7 @@ def pair_report(store: Store, a_id: str, b_id: str, *, force: bool = False) -> d
     if enabled or force:
         a_src, b_src = _primary_path(a), _primary_path(b)
         if not a_src or not b_src:
-            heatmap["reason"] = "実体が見つからないので差分を作れません"
+            heatmap["reason"] = "ファイルが見つからないので差分を作れません。"
         else:
             gray = (reduced_gray(a_src), reduced_gray(b_src))
 

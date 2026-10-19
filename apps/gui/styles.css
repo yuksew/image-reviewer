@@ -50,8 +50,12 @@ html, body {
 
 /* ---- 上部バー ---- */
 .topbar {
-  display: flex; align-items: center; gap: 12px;
-  height: 44px; padding: 0 12px;
+  display: flex; align-items: center; gap: 6px 12px;
+  /* **（規約 6。1024 px の検査で見つけた）** 幅が足りないときは**折り返して 2 段**にする。
+     固定 44px に押し込むと「重複の整理」が 2 行に割れ、**枠から上下にはみ出した**
+     （`gui_layout --screen library --viewport 1024x700` が「入口が上部バーの中にある」で落ちる）。
+     広い窓（1400 以上）では 1 段のままなので、見た目は変わらない */
+  flex-wrap: wrap; min-height: 44px; padding: 4px 12px;
   background: var(--surface); border-bottom: 1px solid var(--line);
   flex: 0 0 auto;
 }
@@ -140,6 +144,12 @@ html, body {
 }
 .detail.hidden { display: none; }
 .detail .preview { width: 100%; background: var(--paper); display: block; }
+/* **（規約 6 の 3 幅。1024×700 の検査で見つけた）** 窓が低いときは絵の高さを抑えて、
+   **削除の入口とタグ欄をスクロール無しで見えるようにする**（P4-3・P8-3 の監査 C-1 の要求）。
+   `object-fit: contain` なので**絵は切らない**（§4.1 と同じ規則）。広い窓では今までどおり */
+@media (max-height: 760px) {
+  .detail .preview { max-height: 34vh; object-fit: contain; }
+}
 .detail h3 { font-size: 13px; margin: 14px 0 6px; }
 .detail table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .detail th {
@@ -276,9 +286,12 @@ body.grouping #group { display: flex; flex-direction: column; flex: 1; min-heigh
 .req-help, .grp-help { color: var(--ink-muted); font-size: 11px; padding: 8px 12px; border-top: 1px solid var(--line); }
 
 /* まとまりレビュー（選択中の 1 枚が大きい。等分にしない） */
-.grp-stage { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; background: var(--seam); padding: 8px; }
-.grp-stage img { max-width: 100%; max-height: 100%; object-fit: contain; background: var(--paper); }
-.grp-cap { position: absolute; left: 12px; color: var(--ink-muted); font-size: 12px; }
+.grp-stage { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--seam); padding: 8px; }
+/* **（F-3）** 絵は縮められるようにして（`min-height: 0`）、1 行の帯はその下に置く */
+.grp-stage img { flex: 0 1 auto; min-height: 0; max-width: 100%; max-height: 100%; object-fit: contain; background: var(--paper); }
+/* **（F-3）** 前は `position: absolute` で**絵に重なって**いた（1400 px の写真で見つかった）。
+   絵の下の帯に置き、状態の語とモデル名の区切りは `group.js` が「、」で入れる */
+.grp-cap { flex: 0 0 auto; margin-top: 6px; color: var(--ink-muted); font-size: 12px; }
 /* 選択中の 1 枚の来歴 1 行（P6-1b の監査 C3。`compare.js` のキャプションと同じ作り） */
 .grp-prov { margin-left: 8px; font-size: 11px; }
 .grp-foot { flex: 0 0 auto; border-top: 1px solid var(--line); background: var(--surface); }
@@ -779,6 +792,23 @@ body.duplicating #duplicates, body.pending #pending {
 }
 .pd-sub .stat { font-weight: 400; font-size: 11px; color: var(--ink-muted); }
 .pd-legend { padding: 4px 12px; }
+/* **（P10）まとめての帯**（「全部選ぶ」＋「まとめて片付ける」「まとめてアプリのゴミ箱へ移す」）。
+   行と同じ幅の器にし、狭い幅では折り返す（横に溢れさせない） */
+.pd-bulk {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 4px 12px; border-bottom: 1px solid var(--line); background: var(--surface);
+}
+.pd-bulk .spacer { flex: 1; }
+.pd-bulk .stat { font-size: 11px; color: var(--ink-muted); }
+.pd-all { font-size: 12px; cursor: pointer; }
+.pd-bulk button {
+  font-size: 11px; padding: 1px 8px; background: transparent; color: var(--ink);
+  border: 1px solid var(--line); border-radius: 2px; cursor: pointer;
+}
+.pd-bulk button:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.pd-bulk button:disabled { color: var(--ink-muted); opacity: .6; cursor: default; }
+/* まとめてのチェック（選べない行は同じ幅の空きで列を揃える） */
+.pd-pick, .pd-nopick { flex: 0 0 auto; width: 13px; height: 13px; margin: 0; }
 .pd-row {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 4px 12px; border-bottom: 1px solid var(--line);
@@ -875,7 +905,8 @@ body.settings #settings { display: flex; flex-direction: column; flex: 1; min-he
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 2px 12px; font-size: 11px; border-bottom: 1px solid var(--line);
 }
-.st-snap-when { flex: 0 0 9em; }
+/* **（F-1）** 日付と時刻を 2 行に割らない（1024 px の設定の一覧で割れていた。§6.1 の規約 6） */
+.st-snap-when { flex: 0 0 9em; white-space: nowrap; }
 .st-snap-kind { flex: 0 0 8em; color: var(--ink-muted); }
 .st-snap-size { flex: 0 0 5em; color: var(--ink-muted); }
 .st-snap-name {

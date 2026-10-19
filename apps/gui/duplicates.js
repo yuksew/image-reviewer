@@ -6,11 +6,12 @@
 // - **`GET` は計算しない**（pHash は `POST /api/duplicates/compute` の背景ジョブだけが計算する。§0.5）
 // - **おすすめは推薦するだけ**（自動で外さない・自動でまとめない。Q4）
 // - **（監査の注意）開いた直後は 1 枚も選ばない。** 全部を選ぶのは人が押したときだけ
-//   （この画面の「削除へ回す」は壊す操作への入口なので、既定で選ばれた状態にしない）
+//   （この画面の「削除する…」は壊す操作への入口なので、既定で選ばれた状態にしない）
 // - **ここでは消さない**。選んだ枚を `#/pending-deletes` へ**渡すだけ**（段の選択と確認はあちら）
-// - **（利用者の要望。P8-3 の追い足し）群ごとに「残す 1 枚以外を削除へ回す」**を置く
+// - **（利用者の要望。P8-3 の追い足し）群ごとに「残す 1 枚以外を削除する…」**を置く
 //   （1 枚しかない群では押せない）。**「残す」に付けた 1 枚は、チェックが付いていても渡さない**
 //   （渡す直前に除く＝**二重の守り**。誤って残す物を消さない。`frontend-design.md` §4.6・§6）
+// - **（C-5・G-9）** 「削除へ回す」は使わない（「回す」は社内語）。**「削除する…」**にする
 // - 除外（別物として確定）は**人だけ**の口（`403 human_only` が返る）
 // - `esc()` を必ず通す
 
@@ -22,7 +23,7 @@ const REMOVE = '/api/duplicates/exclude/remove';
 const EXCLUSIONS = '/api/duplicates/exclusions';
 const GROUPS = '/api/groups';
 
-// **削除へ回す行き先は 1 か所で組む**（`pending.js`。監査 C-1。入口が 4 つあるので散らさない）
+// **削除の確認へ渡す行き先は 1 か所で組む**（`pending.js`。監査 C-1。入口が 4 つあるので散らさない）
 import { toDelete as toDeleteHash } from './pending.js';
 
 /** しきい値の切り替え（Q3。**既定は 6**）。 */
@@ -119,7 +120,7 @@ export function allPicked() {
   return all.length > 0 && pickedIds().length === all.length;
 }
 
-/** その群の**残す 1 枚以外**の枚（群ごとの「残す 1 枚以外を削除へ回す」が渡す物）。
+/** その群の**残す 1 枚以外**の枚（群ごとの「残す 1 枚以外を削除する…」が渡す物）。
  *
  * 残す 1 枚（`view.keep`）が決まっていない・その群に無いときは**空**を返す
  * （**何も残さずに全部を渡さない**）。1 枚だけの群も空になる（押せない。§4.6）。
@@ -138,8 +139,8 @@ export function keepOutTitle(i) {
   if (!keep || !items.some((item) => item.id === keep)) {
     return '残す 1 枚が決まっていません。先に 1 枚を「残す」にしてください。';
   }
-  if (items.length < 2) return 'この群は 1 枚だけです。削除へ回す枚がありません。';
-  return 'この群の「残す」以外を削除の確認へ回します。ここでは消しません。';
+  if (items.length < 2) return 'この群は 1 枚だけです。削除する枚がありません。';
+  return 'この群の「残す」以外を削除の確認へ渡します。ここでは消しません。';
 }
 
 /** **残す 1 枚を落とす**（**二重の守り**。チェックの経路からも「残す」を渡さない）。
@@ -197,7 +198,7 @@ export function computeHtml() {
         + `（${done} / ${total}）`;
     return '<div class="dup-compute">'
       + `<span class="dup-cmsg">${esc(line)}</span>`
-      + (active ? `<button class="dup-cancel" data-id="${esc(job.id)}">中断</button>` : '')
+      + (active ? `<button class="dup-cancel" data-id="${esc(job.id)}">中断する</button>` : '')
       + `<a class="back" href="#/jobs">ジョブへ</a></div>`;
   }
   if (!state.unhashed) return '';
@@ -250,7 +251,7 @@ export function groupHtml(group, i) {
       <button class="dup-make" data-g="${i}"${picked < 2 ? ' disabled' : ''}>まとまりにする</button>
       <button class="dup-exclude" data-g="${i}"${picked !== 2 ? ' disabled' : ''}>別物として確定</button>
       <button class="dup-keep-out" data-g="${i}"${out.length ? '' : ' disabled'}`
-      + ` title="${esc(keepOutTitle(i))}">残す 1 枚以外を削除へ回す</button>
+      + ` title="${esc(keepOutTitle(i))}">残す 1 枚以外を削除する…</button>
     </div>
     <div class="dup-items">${rows}</div>
   </div>`;
@@ -264,10 +265,10 @@ export function exclusionsHtml() {
         <img loading="lazy" src="/api/assets/${esc(row.a_id)}/thumb?size=256" alt="">
         <img loading="lazy" src="/api/assets/${esc(row.b_id)}/thumb?size=256" alt="">
         <span class="dup-ex-ids mono">${esc(row.a_id.slice(0, 8))} / ${esc(row.b_id.slice(0, 8))}</span>
-        <span class="dup-ex-reason">${esc(row.reason || '理由なし')}</span>
+        <span class="dup-ex-reason">${esc(row.reason || '（なし）')}</span>
         <span class="stat">${esc(row.actor === 'agent' ? 'エージェント' : '人')}、${esc(fmtDay(row.at))}</span>
         <span class="spacer"></span>
-        <button class="dup-unexclude" data-a="${esc(row.a_id)}" data-b="${esc(row.b_id)}">解除</button>
+        <button class="dup-unexclude" data-a="${esc(row.a_id)}" data-b="${esc(row.b_id)}">解除する</button>
       </div>`).join('')
     : '<div class="note">別物として確定した組はありません。</div>';
   return `<div class="dup-exclusions"><div class="dup-exhead">別物として確定した組`
@@ -275,7 +276,8 @@ export function exclusionsHtml() {
 }
 
 export function listHtml() {
-  if (state.busy && !state.groups.length) return '<div class="note">読み込んでいます。</div>';
+  // **（C-9）** 進行の形は「〜中…」に揃える（「読み込んでいます。」だけ形が違っていた）
+  if (state.busy && !state.groups.length) return '<div class="note">読み込み中…</div>';
   const groups = state.groups.length
     ? state.groups.map((group, i) => groupHtml(group, i)).join('')
     : '<div class="note">この距離の候補はありません。'
@@ -287,18 +289,18 @@ export function listHtml() {
 export function barHtml() {
   const picked = pickedIds();
   // **（利用者の要望）「残す」に付けた 1 枚はチェックが付いていても渡さない**ので、
-  // ボタンは**渡す枚**で数える（「何が起きるか」を言う。§6.1 の規則 4）
+  // ボタンは**渡す枚**で数える（「何が起きるか」を言う。§6.1 の規則 3）
   const send = withoutKept(picked);
   const held = picked.length - send.length;
   const all = allPicked();
-  return `<span class="dup-picked">選択 ${picked.length} 枚</span>`
+  return `<span class="dup-picked">選択 ${Number(picked.length).toLocaleString('ja-JP')} 枚</span>`
     + (held ? '<span class="dup-held">残す 1 枚は渡しません。</span>' : '')
     + '<span class="spacer"></span>'
     // **（監査の注意）既定では 1 枚も選ばない。** 全部を選ぶのは**人が押したときだけ**
     // （「全部選ぶ」は残す。危ないのは「既定で選ばれている」こと）
     + `<button class="dup-all">${all ? '全部外す' : '全部選ぶ'}</button>`
     + `<button class="dup-delete"${send.length ? '' : ' disabled'}>`
-    + `選んだ ${send.length} 枚を削除へ回す</button>`
+    + `${send.length ? `選んだ ${send.length} 枚を削除する…` : '選んだ画像を削除する…'}</button>`
     + `<button class="dup-show-ex">別物として確定した組</button>`;
 }
 
@@ -368,9 +370,9 @@ async function makeGroup(i) {
     }),
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) { state.msg = body.detail || `まとまりを作れません（${res.status}）`; state.bad = true; render(); return; }
+  if (!res.ok) { state.msg = body.detail || `まとまりを作れませんでした。もう一度試してください（詳細: ${res.status}）。`; state.bad = true; render(); return; }
   state.made = body.id;
-  state.msg = 'まとまりを作りました。代表はまとまりレビューで選びます。';
+  state.msg = 'まとまりを作りました。残す 1 枚はまとまりレビューで決めます。';
   state.bad = false;
   render();
 }
@@ -385,7 +387,7 @@ async function excludePair(i) {
     body: JSON.stringify({ a_id: ids[0], b_id: ids[1] }),
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) { state.msg = body.detail || `確定できません（${res.status}）`; state.bad = true; render(); return; }
+  if (!res.ok) { state.msg = body.detail || `確定できませんでした。もう一度試してください（詳細: ${res.status}）。`; state.bad = true; render(); return; }
   state.msg = 'この 2 枚は別物として覚えました。解除できます。';
   state.bad = false;
   await loadExclusions();
@@ -397,7 +399,7 @@ async function removeExclusion(a, b) {
     method: 'POST', headers: human(), body: JSON.stringify({ a_id: a, b_id: b }),
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) { state.msg = body.detail || `解除できません（${res.status}）`; state.bad = true; render(); return; }
+  if (!res.ok) { state.msg = body.detail || `解除できませんでした。もう一度試してください（詳細: ${res.status}）。`; state.bad = true; render(); return; }
   state.msg = '解除しました。もう一度候補に出ます。';
   state.bad = false;
   await loadExclusions();
@@ -410,7 +412,7 @@ async function compute() {
   });
   const body = await res.json().catch(() => ({}));
   if (res.status !== 202) {
-    state.msg = body.detail || `計算を始められません（${res.status}）`;
+    state.msg = body.detail || `計算を始められませんでした。もう一度試してください（詳細: ${res.status}）。`;
     state.bad = true;
     render();
     return;
@@ -454,7 +456,7 @@ async function cancelJob(id) {
   await pollJob();
 }
 
-/** 削除へ回す（**渡す直前に「残す 1 枚」を除く**。段の選択と確認は `#/pending-deletes`）。
+/** 削除の確認へ渡す（**渡す直前に「残す 1 枚」を除く**。段の選択と確認は `#/pending-deletes`）。
  *
  * **二重の守り**: 群ごとのボタンは `keep` を外して組んであるが、**チェックの経路
  * （下部バー）からも混ざらない**ように、**渡す直前のここで 1 回**除く（§4.6）。
@@ -488,7 +490,7 @@ export async function onClick(event) {
   if (makeBtn) { await makeGroup(Number(makeBtn.dataset.g)); return; }
   const exBtn = hit('.dup-exclude');
   if (exBtn) { await excludePair(Number(exBtn.dataset.g)); return; }
-  // **（利用者の要望）群ごとの「残す 1 枚以外を削除へ回す」**（その群の `keep` 以外の全部）
+  // **（利用者の要望）群ごとの「残す 1 枚以外を削除する…」**（その群の `keep` 以外の全部）
   const outBtn = hit('.dup-keep-out');
   if (outBtn) { toDelete(keepOutIds(Number(outBtn.dataset.g))); return; }
   const unexBtn = hit('.dup-unexclude');

@@ -312,7 +312,7 @@ class JobService:
             return "skipped"
         path = _primary_path(asset)
         if not path:
-            raise ReviewError(409, "画像の実体が見つかりません", details={"asset_id": asset_id})
+            raise ReviewError(409, "画像のファイルが見つかりません", details={"asset_id": asset_id})
         # --- **模型（ここが秒単位で待つ。錠の外）** ---
         words = engine_obj.tag(path, name=self._copy_name(asset))
         # --- 書く（短い 1 取引）---

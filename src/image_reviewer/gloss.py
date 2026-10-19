@@ -397,12 +397,13 @@ class GlossService:
         work: list[dict] = []
         skipped: list[dict] = []
         for row in rows:
+            # **（D-2）** 画面の語は「日本語訳」（この `reason` は画面に出うる）
             if row["ja"] is not None and row["edited"]:
                 skipped.append({"tag_id": row["id"], "name": row["name"],
-                                "reason": "人が直した語釈は上書きしません"})
+                                "reason": "人が直した日本語訳は上書きしません"})
             elif row["ja"] is not None and not force:
                 skipped.append({"tag_id": row["id"], "name": row["name"],
-                                "reason": "既に語釈があります"})
+                                "reason": "既に日本語訳があります"})
             else:
                 work.append(row)
         empty = {"translated": [], "skipped": skipped, "untranslated": [], "calls": 0,
@@ -414,7 +415,7 @@ class GlossService:
         # --- ② 模型（錠の外）---
         engine = self.engine()
         if not engine.ping():
-            raise ReviewError(409, "語釈のモデル（ComfyUI）につながりません。ComfyUI を起動すると訳が使えます",
+            raise ReviewError(409, "日本語訳のモデル（ComfyUI）につながりません。ComfyUI を起動すると訳が使えます",
                               code="gloss_engine_unavailable",
                               details={"url": getattr(engine, "base", None)})
         calls = 0
@@ -508,4 +509,4 @@ class GlossService:
 
 def describe(settings: dict) -> str:
     """起動時のログに出す 1 行。"""
-    return f"語釈: {settings['llm']}（{settings['url']}）"
+    return f"日本語訳: {settings['llm']}（{settings['url']}）"

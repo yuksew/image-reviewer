@@ -16,10 +16,10 @@ import { hideJobs, showJobs, wireJobs } from './jobs.js';
 import { hideDuplicates, showDuplicates, wireDuplicates } from './duplicates.js';
 import { hidePending, renderDeleteEntry, showPending, toDelete, wireDeleteEntry,
          wirePending } from './pending.js';
-// P8-5: 設定（`#/settings`。バックアップの詳細と置き場の段 3 の印）
+// P8-5: 設定（`#/settings`。バックアップの詳細とフォルダの段 3 の許可）
 import { hideSettings, showSettings, wireSettings } from './settings.js';
 // P9 の監査 C-2: 画面に出す「枚」の規則は 1 か所（`counts.js`）
-import { briefText, liveTotal, provenanceCounts } from './counts.js';
+import { briefText, fmtCount, liveTotal, provenanceCounts } from './counts.js';
 // ワーディング監査 G-12 / W-3: 絞り込みの軸と 0 枚のときの文は 1 か所（`filters.js`）
 import { emptyText, isFiltering, railSelection, visibleAssets as filterAssets } from './filters.js';
 
@@ -42,23 +42,27 @@ const state = {
 };
 
 const DENSITY = { dense: 140, normal: 200, sparse: 300 };
-const DENSITY_LABEL = { dense: '密', normal: '普', sparse: '疎' };
+// **（C-13）密度の語**: 1 字の「普」は日本語の語として立たないので「標準」にする（§6.1 の規約 4）。
+const DENSITY_LABEL = { dense: '密', normal: '標準', sparse: '疎' };
+// **（C-12）テーマの語**: 題材（ベタ焼き）の名前「暗幕 / 表」は初見で分からないので「暗い / 明るい」にする。
+const THEME_LABEL = { dark: '暗い', light: '明るい' };
 
 // **（ワーディング監査 G-3）英語の内部値をそのまま画面に出さない。**
 // 値は日本語のラベルの地図を通す（`jobs.js` の `STATE_LABEL` と同じ形）。
 // 地図に無い値は「その他（値）」の形で出す。**技術用語（pHash・sha256・seed など）は残す。**
-const KIND_LABEL = { generated: '生成物', reference: '参考資料', photo: '写真・スクショ' };
+const KIND_LABEL = { generated: '生成物', reference: '参考資料', photo: '写真・スクリーンショット' };
 //: `ja_source` / `en_source` / `final_prompt_source` の値（`png_meta.py`・`export.py` の語彙）
+// **（D-3・D-4）**「控え」→「バックアップ」、「捕獲した値」→「取り込んだ値」（§17 の画面の語）
 const SOURCE_LABEL = {
   png_primitive: 'PNG の文字列ノード',
   png_literal: 'PNG に書かれた値',
   workflow_node: 'ワークフローのノード',
-  sidecar: '控えのファイル（sidecar）',
+  sidecar: 'バックアップのファイル（sidecar）',
   comfyui_history: 'ComfyUI の /history',
   textgenerate: '生成に使ったノード',
   ollama: 'Ollama の訳',
   manual: '手で入れた値',
-  reconstructed: '捕獲した値から組み直し',
+  reconstructed: '取り込んだ値から組み直し',
 };
 
 function labelText(map, value) {
@@ -118,7 +122,7 @@ async function load() {
 async function capture() {
   const btn = $('btn-capture');
   btn.disabled = true;
-  btn.textContent = '捕獲中…';
+  btn.textContent = '取り込み中…';
   try {
     const s = await api('/api/capture', {
       method: 'POST',
@@ -126,14 +130,16 @@ async function capture() {
       body: JSON.stringify({}),
     });
     // **（ワーディング監査 W-46）** 「N 件を走査。」は体言止めで切れていた。敬体の 1 文にする
-    alert(`/history を ${s.history_entries} 件見ました。\n訳が未取得の ${s.checked} 枚のうち ${s.captured} 枚で訳を捕獲しました。`);
+    // **（D-4）** 「捕獲」→「取り込み」（C-2 と同じく、存在する語だけを案内する）
+    alert(`/history を ${s.history_entries} 件見ました。\n訳が未取得の ${s.checked} 枚のうち ${s.captured} 枚で訳を取り込みました。`);
     await load();
     if (state.selected) await select(state.selected);
   } catch (e) {
-    alert(`捕獲できません: ${e.message}`);
+    // **（C-8）** 英語の例外文は本文に出さず、次の一手を 1 文足す（§6.1 の規約 3）
+    alert(`訳を取り込めませんでした。もう一度試してください（詳細: ${e.message}）。`);
   } finally {
     btn.disabled = false;
-    btn.textContent = '訳を捕獲';
+    btn.textContent = '訳を取り込む';
   }
 }
 
@@ -149,7 +155,7 @@ async function rescan() {
     });
   } finally {
     $('btn-scan').disabled = false;
-    $('btn-scan').textContent = '再走査';
+    $('btn-scan').textContent = '再走査する';
   }
   await load();
 }
@@ -164,18 +170,19 @@ function renderStats() {
   // 実データで「262 枚」と「455」が同じ画面に並んだ。
   const total = liveTotal(s, state.total);
   const counts = provenanceCounts(state.assets, total, s);
+  // **（A-3）件数は 4 桁以上に「,」**（`toLocaleString('ja-JP')`。ID・seed・年には付けない）
   $('stat-brief').textContent = briefText(total, state.listed);
-  $('c-all').textContent = total;
-  $('c-with').textContent = counts.with;
-  $('c-without').textContent = counts.without;
+  $('c-all').textContent = fmtCount(total);
+  $('c-with').textContent = fmtCount(counts.with);
+  $('c-without').textContent = fmtCount(counts.without);
   const byKind = {};
   for (const a of state.assets) byKind[a.kind] = (byKind[a.kind] || 0) + 1;
-  // **（ワーディング監査 W-6）** 種別は §17 の 3 語（生成物 / 参考資料 / 写真・スクショ）で分ける。
+  // **（ワーディング監査 W-6。D-9）** 種別は §17 の 3 語（生成物 / 参考資料 / 写真・スクリーンショット）で分ける。
   // 前は「写真・その他」の 1 行に photo と reference を足した数を出していたので、
   // **押したときに絞られる枚（photo だけ）と見えている数が違っていた**
-  $('c-gen').textContent = byKind.generated || 0;
-  $('c-ref').textContent = byKind.reference || 0;
-  $('c-photo').textContent = byKind.photo || 0;
+  $('c-gen').textContent = fmtCount(byKind.generated || 0);
+  $('c-ref').textContent = fmtCount(byKind.reference || 0);
+  $('c-photo').textContent = fmtCount(byKind.photo || 0);
 
   const models = $('models');
   models.innerHTML = '';
@@ -183,15 +190,16 @@ function renderStats() {
     const el = document.createElement('div');
     el.className = 'item';
     el.dataset.filter = `model:${name}`;
-    el.innerHTML = `<span>${esc(name)}</span><span class="n">${n}</span>`;
+    el.innerHTML = `<span>${esc(name)}</span><span class="n">${fmtCount(n)}</span>`;
     el.addEventListener('click', () => setFilter(`model:${name}`));
     models.appendChild(el);
   }
 
   // **（ワーディング監査 W-61）** 区切りが空白だけだと 4 つの数が繋がって読めない。括弧と読点で組む
+  // **（A-3）** 4 桁以上は「,」を付ける（`fmtCount`）
   $('bar-count').textContent =
-    `${total} 枚（来歴あり ${counts.with}、来歴なし ${counts.without}` +
-    (s.missing ? `、参照切れ ${s.missing}` : '') + '）';
+    `${fmtCount(total)} 枚（来歴あり ${fmtCount(counts.with)}、来歴なし ${fmtCount(counts.without)}` +
+    (s.missing ? `、参照切れ ${fmtCount(s.missing)}` : '') + '）';
 }
 
 // ---- フィルタ ----
@@ -237,8 +245,10 @@ function renderSheet() {
   // （走査は済んでいる。§6 の「空（検索）」の文を出す。§5-5。文は `filters.js` の 1 か所）
   const filtering = isFiltering(state.filter, state.provenance);
   $('sheet-empty').hidden = items.length > 0;
-  $('sheet-empty').textContent = emptyText(filtering);
-  $('bar-shown').textContent = `表示 ${items.length} 枚`;
+  // **（C-1）空の案内はコマンドを `<code>` で出す**ので `innerHTML`（文字列は `filters.js` の定数）。
+  // **利用者の値を入れない**（XSS の経路を作らない）
+  $('sheet-empty').innerHTML = emptyText(filtering);
+  $('bar-shown').textContent = `表示 ${fmtCount(items.length)} 枚`;
 
   const frag = document.createDocumentFragment();
   const H = DENSITY[state.density];
@@ -289,7 +299,8 @@ async function select(id) {
     rows.push(`<tr><th>${esc(k)}</th><td class="${cls}">${v}</td></tr>`);
   };
   row('モデル', esc(meta.model));
-  row('テクストエンコーダ', esc(meta.clip));
+  // **（D-16）** 一般の表記は「テキストエンコーダ」（「テクスト」は人文系の表記）
+  row('テキストエンコーダ', esc(meta.clip));
   row('VAE', esc(meta.vae));
   row('LoRA', (meta.loras || []).map((lora) => esc(loraText(lora))).join('<br>'));
   row('seed', esc(meta.seed), 'num');
@@ -299,8 +310,9 @@ async function select(id) {
   row('sampler', esc(meta.sampler));
   row('scheduler', esc(meta.scheduler));
   row('大きさ', `${esc(asset.width)} × ${esc(asset.height)}`);
-  row('実体', fmtBytes(asset.size), 'num');
-  // **（ワーディング監査 W-6）** `generated` ではなく §17 の語（生成物 / 参考資料 / 写真・スクショ）で出す
+  // **（D-5）** 画面の語は「ファイル」（§17 の「実体」は内部の語）
+  row('ファイル', fmtBytes(asset.size), 'num');
+  // **（ワーディング監査 W-6。D-9）** `generated` ではなく §17 の語（生成物 / 参考資料 / 写真・スクリーンショット）で出す
   row('種別', esc(labelText(KIND_LABEL, asset.kind)));
   const nodes = meta.node_types ? Object.entries(meta.node_types).map(([k, v]) => `${k}×${v}`).join(', ') : '';
   row('ノード', `<span class="mono">${esc(nodes)}</span>`);
@@ -314,7 +326,7 @@ async function select(id) {
          **画像のすぐ下**＝スクロール無しで見える位置（P4-3 のタグ欄・P7-4 の条件と同じ教訓）。
          **ここでは消さない**: 段 1〜3 を選ぶのは「最近の削除」（#/pending-deletes?ids=）で行う -->
     <div class="del-entry" id="del-entry">
-      <button class="del-go" id="del-one" data-id="${esc(id)}">この 1 枚を削除へ回す</button>
+      <button class="del-go" id="del-one" data-id="${esc(id)}">この 1 枚を削除する…</button>
       <span class="stat">段 1〜3 を選ぶのは「最近の削除」で行います。</span>
     </div>
 
@@ -329,7 +341,7 @@ async function select(id) {
       <div class="stat">出所: ${esc(labelText(SOURCE_LABEL, meta.ja_source))}</div>` : ''}
 
     ${meta.en_text ? `
-      <h3>当時の英訳<span class="src">（生成の瞬間に捕獲）</span></h3>
+      <h3>当時の英訳<span class="src">（生成の瞬間に取り込み）</span></h3>
       <textarea readonly>${esc(meta.en_text)}</textarea>
       <div class="stat">出所: ${esc(labelText(SOURCE_LABEL, meta.en_source))}
         ${meta.prompt_id ? `、prompt_id ${esc(meta.prompt_id.slice(0, 8))}…` : ''}
@@ -337,13 +349,11 @@ async function select(id) {
       ${meta.final_prompt ? `
         <h3>実際に渡った最終プロンプト<span class="src">（再構成）</span></h3>
         <textarea readonly>${esc(meta.final_prompt)}</textarea>
-        <div class="stat">捕獲値に前置語を足して組み直したものです
+        <div class="stat">取り込んだ値に前置語を足して組み直したものです
           （出所: ${esc(labelText(SOURCE_LABEL, meta.final_prompt_source))}）。</div>` : ''}
     ` : (meta.has_textgen ? `
       <h3>当時の英訳</h3>
-      <div class="note">この画像は日本語から英語への翻訳を通していますが、訳がまだ捕獲できていません。
-      ComfyUI を起動した状態で「訳を捕獲」を押すと、<code>/history</code> に残っていれば取れます
-      （残っていなければ訳し直しになります）。</div>
+      <div class="note">この画像は日本語から英語への翻訳を通していますが、訳がまだ取り込めていません。ComfyUI を起動して「訳を取り込む」を押すと取れます。残っていなければ訳し直しになります。</div>
       <table>${Object.entries(meta.textgen_params || {}).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(String(v))}</td></tr>`).join('')}</table>
     ` : '')}
 
@@ -354,7 +364,7 @@ async function select(id) {
       <a href="/api/assets/${id}/file" target="_blank">原本を開く</a>
     </div>
     <div class="stat" style="margin-top:6px">
-      API 形式のまま ComfyUI のキャンバスへドラッグ&ドロップすると開けます。
+      API 形式のまま ComfyUI のキャンバスへドラッグ＆ドロップすると開けます。
       URL で直接開く方法は ComfyUI にありません。
     </div>
     <div class="stat mono" style="margin-top:6px">sha256 ${esc(asset.sha256)}</div>
@@ -402,7 +412,7 @@ function togglePick(id) {
 }
 
 function renderPickBar() {
-  $('bar-pick').textContent = `選択 ${state.picked.length} 枚`;
+  $('bar-pick').textContent = `選択 ${fmtCount(state.picked.length)} 枚`;
   $('btn-compare').disabled = state.picked.length < 2;
   // P8-3: **削除の入口**（下部バー。監査 C-1）。1 枚も選んでいなければ押せない
   renderDeleteEntry($('btn-delete'), state.picked.length);
@@ -435,7 +445,7 @@ function route() {
   // P8-3: 重複の整理と最近の削除（`frontend-design.md` §3 の 6 と 11）
   const duplicating = hash.startsWith('#/duplicates');
   const deleting = hash.startsWith('#/pending-deletes');
-  // P8-5: 設定（`frontend-design.md` §3 の 10。バックアップと段 3 の印）
+  // P8-5: 設定（`frontend-design.md` §3 の 10。バックアップと段 3 の許可）
   const setting = hash.startsWith('#/settings');
   document.body.classList.toggle('comparing', comparing);
   document.body.classList.toggle('requests', requesting);
@@ -514,7 +524,7 @@ function route() {
     showPending(queryOf(hash)).catch(() => {});
     return;
   }
-  // P8-5: 設定（`#/settings`。バックアップの詳細と段 3 の印）
+  // P8-5: 設定（`#/settings`。バックアップの詳細と段 3 の許可）
   if (setting) {
     hideRequests();
     hideGroup();
@@ -565,7 +575,8 @@ function cycleDensity() {
 function cycleTheme() {
   state.theme = state.theme === 'dark' ? 'light' : 'dark';
   document.documentElement.dataset.theme = state.theme;
-  $('btn-theme').textContent = `テーマ: ${state.theme === 'dark' ? '暗幕' : '表'}`;
+  // **（C-12）** 題材の名前（暗幕 / 表）ではなく「暗い / 明るい」を出す
+  $('btn-theme').textContent = `テーマ: ${THEME_LABEL[state.theme]}`;
 }
 
 // ---- 起動 ----
@@ -579,7 +590,7 @@ $('btn-theme').addEventListener('click', cycleTheme);
 $('btn-scan').addEventListener('click', rescan);
 $('btn-capture').addEventListener('click', capture);
 $('btn-compare').addEventListener('click', openCompare);
-// P8-3: 下部バーの「選んだ N 枚を削除へ回す」（**渡すだけ**。監査 C-1）
+// P8-3: 下部バーの「選んだ N 枚を削除する…」（**渡すだけ**。監査 C-1。C-5 で「回す」をやめた）
 wireDeleteEntry($('btn-delete'), () => state.picked);
 window.addEventListener('hashchange', route);
 
@@ -592,7 +603,7 @@ wireJobs();
 // P8-3: 重複の整理と最近の削除
 wireDuplicates();
 wirePending();
-// P8-5: 設定（バックアップの詳細と段 3 の印）
+// P8-5: 設定（バックアップの詳細と段 3 の許可）
 wireSettings();
 // 戻る（`← 一覧`）はハッシュを消すだけ（`#/duplicates` / `#/pending-deletes` から）
 for (const [id, back] of [['dup-back', ''], ['pd-back', '']]) {
@@ -607,5 +618,6 @@ route();
 
 load().catch((e) => {
   $('sheet-empty').hidden = false;
-  $('sheet-empty').textContent = `読み込めません: ${e.message}`;
+  // **（C-8）** 「読み込めません: Failed to fetch」では次の一手が無い。2 文にして、英語は括弧の中へ
+  $('sheet-empty').textContent = `読み込めませんでした。もう一度試してください（詳細: ${e.message}）。`;
 });

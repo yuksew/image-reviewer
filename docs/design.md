@@ -219,8 +219,9 @@ CREATE TABLE asset (
   phash         TEXT,                    -- 64bit 知覚ハッシュを **16 進 16 文字**で持つ（理由は下）
   dhash         TEXT,                    -- 同上
   kind          TEXT NOT NULL DEFAULT 'generated',  -- 'generated'（自分の生成物）| 'reference'（参考資料）| 'photo'（写真・スクショ）
-  source        TEXT NOT NULL,           -- 'scan' | 'drop' | 'clipboard' | 'url' | 'watch'
-  source_url    TEXT,                    -- kind='url' のときの出所（reference でも使う）
+  source        TEXT NOT NULL DEFAULT 'scan'        -- 取り込みの出所（P2-0。**既定は `scan`**＝`ALTER` のため。E-3）
+                CHECK (source IN ('scan', 'drop', 'clipboard', 'url', 'watch')),  -- 語彙は表でも守る
+  source_url    TEXT,                    -- source='url' のときの出所（reference でも使う。E-4）
   ref_tags      TEXT,                    -- 参考資料の「何の参考か」の自由記述（JSON 配列）
   review_state  TEXT NOT NULL DEFAULT 'unreviewed',  -- マテリアライズ: unreviewed|kept|rejected（画面は キープ/ボツ）
   review_reason_id TEXT,
@@ -371,12 +372,13 @@ CREATE TABLE folder (
   id TEXT PRIMARY KEY,
   parent_id TEXT REFERENCES folder(id) ON DELETE CASCADE,  -- NULL = 根
   name TEXT NOT NULL,
-  kind TEXT NOT NULL,       -- 'manual' | 'smart'
+  kind TEXT NOT NULL CHECK (kind IN ('manual', 'smart')),  -- 'manual' | 'smart'（語彙は表でも守る。E-2）
   smart_query TEXT,         -- kind='smart' のときの条件（JSON。§10.2）
   position INTEGER NOT NULL DEFAULT 0,
   count_cache INTEGER,      -- 中の枚数（概算のキャッシュ。§10.2）
   count_cached_at TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  deleted_at TEXT           -- §6.1 の論理削除（P2-0 の監査 E-1 で §5.3 に足した。NULL = 生きている）
 );
 CREATE INDEX ix_folder_parent ON folder(parent_id, position);
 
@@ -390,6 +392,16 @@ CREATE TABLE folder_member (
 );
 CREATE INDEX ix_folder_member_asset ON folder_member(asset_id);
 ```
+
+**v7 の形は、移行のあとに `db._check_v7_shape()` が「名前」ではなく「形」で見る**（P2-0 の監査 B-1）。
+`PRAGMA table_info` の**型・`NOT NULL`・既定・主キー**、`PRAGMA foreign_key_list` の **`ON DELETE CASCADE`**、
+`PRAGMA index_info` の**列の並び**、`sqlite_master.sql` の **`CHECK`**、そして **`SAVEPOINT` で不正な
+`kind` を入れて拒否されるか**（必ず `ROLLBACK TO` で戻す）。落ちる文には**何が違うか**を書く
+（「索引 ix_folder_parent の列が parent_id,position でない（いま name）」）。**名前だけで見ると、
+同じ列名で CASCADE も CHECK も無い `folder` を先に置かれたときに通る**（監査の `squat2`）。
+
+**形の試験は期待値を実装から取らない**（監査 B-2）。`tests/test_p2_0.py` に**表・列の形・索引の
+名前と列・外部キーをリテラルで**書く。`db.V7_*` から作ると、**索引を DDL と定数の両方から消す変異**が通る。
 
 ### 5.4 レビュー（まとまり・台帳・理由）
 
@@ -2232,6 +2244,27 @@ P8-5 で「**常駐の実装が無いので作らない**」と決め（§16.6�
     **トレイのプロセスの現在地**、子の `app.data_dir()` は **`-WorkingDirectory <リポジトリ>`**。
     `-DataDir .data` を現在地 `C:\` から渡すと、比べる所は `C:\.data`・子が開くのは `<リポジトリ>\.data`
     だった（実測 `real=False`）。**リポジトリ基準で絶対パスに直してから比べ、子にも絶対パスで渡す**。
+
+---
+
+### 16.9 P2-0（スキーマ v7）で確定したこと（2026-10-20）
+
+**正は [`p2-0-implementation.md`](p2-0-implementation.md)（実装の記録）と
+[`p2-0-audit-triage.md`](p2-0-audit-triage.md)（監査の指摘の仕分け）**。監査（[`p2-0-audit-report.md`](p2-0-audit-report.md)）の
+判定は**「条件つきで使える」**で、条件は **B-1（形のガード）**と **B-2（期待値が実装の側にある）**だった。
+**どちらも直した**（下の 1・2）。**推奨はすべて採用**（この小段で直す物と、P2-1 / v8 へ送る物は行き先を書いた）。
+
+| # | 決めたこと | 中身 | 根拠 |
+| --- | --- | --- | --- |
+| 1 | **（B-1）v7 の形は「名前」ではなく「形」で見る** | `db._check_v7_shape()` が `PRAGMA table_info` の**型・`NOT NULL`・既定・主キー**、`PRAGMA foreign_key_list` の **`ON DELETE CASCADE`**、`PRAGMA index_info` の**列の並び**、`sqlite_master.sql` の **`CHECK`** を見る。語彙は **`SAVEPOINT` で不正な `kind` を入れて拒否されるか**でも試す（必ず `ROLLBACK TO`）。落ちる文に**何が違うか**を書く。**名前だけのガードは `squat2`（同じ列名・CASCADE / CHECK 無し）を通していた**（実データの複製で再現 → いまは止まる） | `db.py`, `tests/test_p2_0.py`（3 本）, §5.3, `p2-0-audit-triage.md` §3-2 |
+| 2 | **（B-2）形の試験の期待値はリテラル** | 表・列の形（型, NOT NULL, 既定, 主キー）・索引の（名前, 表, **列の並び**）・外部キーの `(from, table, to, ON DELETE)` を `tests/test_p2_0.py` に**直に書く**。`db.V7_*` から作ると**索引を DDL と定数の両方から消す変異（X20）**が通る。監査が生かした 6 通りは **DDL だけ／ガードも騙す の 2 変種とも落ちる**（生き残り 0） | `tests/test_p2_0.py`, `p2-0-audit-triage.md` §3-3 |
+| 3 | **（C-1）`-shm` は書いた証拠に数えない** | `tests/test_p2_0.py` の `_files()` が `db.sqlite3-shm` を外す（WAL の索引で、**読み手が読み手の印を書き換える**）。`-wal` は残す | `tests/test_p2_0.py`, `tests/test_data_dir_guard.py` |
+| 4 | **§5.1・§5.3 を実装に合わせた** | `asset.source` は `NOT NULL DEFAULT 'scan'` ＋ 5 語の `CHECK`（E-3）。`source_url` の注記は `source='url'`（E-4）。`folder.deleted_at` を §5.3 に足し（E-1）、`kind` の `CHECK` を書いた（E-2） | §5.1, §5.3, `p2-0-audit-triage.md` §1 |
+| 5 | **同じ親の中の名前の一意は P2-1 で表の部分一意索引**（G-2 (b)） | `CREATE UNIQUE INDEX ux_folder_name ON folder(coalesce(parent_id, ''), name) WHERE deleted_at IS NULL`。**P2-0 の v7 の形はここでは変えない**——B-1 のガードと B-2 の試験が形を固定したので、**索引を足すときは DDL・ガード・試験・§5.3 を同じ回に**直す。**実データはまだ v6** なので、利用者の再起動の前なら v7 の形として足せる（後なら top-up か v8） | `p2-0-audit-report.md` G-2, `p2-0-audit-triage.md` §5-4 |
+| 6 | **名前の取り合いで起動する形（C-2）は P2-1 の頭** | `inspect_db`（`mode=ro`）に `ix_folder_*` の取り合いを見る検査を足し、`mode=read_only` / `reason=schema_conflict` で起動して案内する。**いまは例外で止まる**（版 6 のまま・v7 の物が半分残る）。実データと控え 14 個には `ix_folder_*` が無いので起きない | `p2-0-audit-report.md` C-2, `p2-0-audit-triage.md` §5-1 |
+| 7 | **P7 の控えの `preset` / `watcher_state` は v8 で見る** | その版で足すときに **B-1 と同じ形の検査**を通す。`current == 6` の道で **0 行なら落としてよい**（失う物が無い） | `p2-0-audit-report.md` C-3・G-5 |
+| 8 | **`smart_query` のフィールドと列の対応表は P2-1** | §10.2 の `added_at` / `seen_at` / `reason_code` / `source` は、列では `first_seen_at` / `last_seen_at` / `review_reason_code_id` / `asset.source`。名前が違うので**対応表を P2-1 で書く** | `p2-0-audit-report.md` E-6 |
+| 9 | **実データは v6 のまま** | 利用者が 8790 を立ち上げ直したときに **`.backup/daily/pre-migrate-<日時>/`（v6・463 枚）を取ってから** v7 になる。控えが取れなければ**読み取り専用で起動して版を上げない**（既存の P8-4 の道）。**その控えを掃除しない** | `docs/p2-0-implementation.md` §2.2・§7-7, `p2-0-audit-report.md` 判定 |
 
 ---
 

@@ -16,11 +16,11 @@
 - **`docs/design.md` §12.1 の性能の目標は全部実測で埋めた**（未計測 0）。届かなかったのは一覧 API の
   1 行だけで、理由と必要な条件は [`docs/design.md`](docs/design.md) §12.1 と
   [`docs/p9-implementation.md`](docs/p9-implementation.md) にある。
-- **テスト 591 件**（`uv run --no-sync pytest -q` を自分で回して実測。**591 passed・0 failed**。
-  **P2-0（スキーマ v7）で 14 件足した**。**トレイの契約 15 件＋振る舞い 1 件**も入っている）。
+- **テスト 597 件**（`uv run --no-sync pytest -q` を自分で回して実測。**597 passed・0 failed**。
+  **P2-0（スキーマ v7）で 17 件**。**トレイの契約 15 件＋振る舞い 1 件**も入っている）。
   **並行して誰かが実データを `mode=ro` で読んでいると `test_data_dir_guard.py` の 1 件が落ちうる**
   （署名に使う `db.sqlite3-shm` の `mtime_ns` が動くため。**中身は変わっていない**。`docs/handoff.md` §6）。
-- **`gui_smoke` 406 検査**（ok / NG 0。**自分で回して実測**）。
+- **`gui_smoke` 415 検査**（ok / NG 0。**自分で回して実測**）。
 - **`gui_layout` 10 画面 × 4 幅**（`VIEWPORTS` は 1400・1024・1200・1920。＋`pending --ids` の 11 本目）を
   **複製で回して実測**（2026-10-19）。**`--screen tags` は語が 0 件だと必ず NG** なので
   `gui_layout_seed.py --tags` を当てた複製で回す。
@@ -32,6 +32,9 @@
   直しは**等号**にした（監査 F-8）: `チェックの数 ＝ 段 1 の行 ＋ 段 1 以外で「片付ける」がある行 ＋
   ゴミ箱の「片付ける」`。**前の形（`picks < rows` と「0 でない」）は、194 行のうち 1 行にしかチェックが
   出なくても通った。**
+  **2026-10-20（前の監査 B-2 / G-4(b)）に期待値を画面のボタンから API に変えた**——前の形は
+  `pickable` を**画面のボタンの数**から作り、**段 1 の行のボタンを消しても 4 幅 ok** だった
+  （`docs/p2-0-audit-triage.md` §3-4。G2・G4 の写しで 4 幅とも NG を実測）。
 - **P8 の小段（P8-0〜P8-5）は全部通り、監査はどれも「合格（条件つき）」**（P8-3 の再確認は「合格（条件なし）」）。
   **P8-5 の条件 3 件も 2026-10-18 に直した**（[`docs/p8-5-audit-triage.md`](docs/p8-5-audit-triage.md)——
   印のボタンの二度押し・`gui_layout --screen asset` の段の期待値を API から組む形・読み取り専用の DB で
@@ -74,8 +77,8 @@ uv sync
 uv sync --extra tagger                      # 内蔵タガー（onnxruntime。任意。入れると `auto` が内蔵を選ぶ）
 uv run image-reviewer scan --root 'C:\work\illust-authoring\.store\anima-dev'
 uv run image-reviewer serve --port 8790     # → http://127.0.0.1:8790
-uv run --no-sync pytest -q                  # 591 件（2026-10-20 に実測。P2-0 の 14 件を含む）
-node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。406 検査）
+uv run --no-sync pytest -q                  # 597 件（2026-10-20 に実測。P2-0 の 17 件を含む）
+node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。415 検査）
 # **トレイの検査**（別のポートと、合成した複製だけで回す。**8790 は使わない**。
 # 使う 4 ポート（-Port〜+3）の 1 つでも埋まっていれば、1 つも起動せずに exit 2 で止まる）
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\tray_selftest.ps1 -Port 8795   # 133 検査
@@ -259,6 +262,7 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/move-failed-message.md`](docs/move-failed-message.md) | **移動できなかったときの案内**（利用者の依頼。**パスで判定しない**・2 文＋詳細・`code` は `move_failed` のまま。段 2・後から進める・まとめての 4 経路が**同じ 1 か所**。壊すと落ちる 6 本・三点セット 576 / 406 / 11 本） | §6.1 |
 | [`docs/move-failed-message-2.md`](docs/move-failed-message-2.md) | **その 2 回目**（`docs/small-changes-audit-report.md` の **A-1・A-2・B-1** を直した記録。**画面の主な道に文を出す**（段 2 の結果・まとめて進める。固定文をやめて API の理由と `message`）・**移せなかった行を残す**（`1_row_for_p1: []` → 1 行・「ファイルが無いので片付ける」が押せる）・**取り消しは専用の文**（従うと戻すファイルが消えた）・文言の正は §6 を先に・**壊すと落ちる 9 通り**・三点セット 594 / 415 / 52） | §6.1 |
 | [`docs/p2-0-implementation.md`](docs/p2-0-implementation.md) | **P2-0 の実装の記録**（**スキーマ v7**。`folder` / `folder_member`・`asset` の取り込み元 3 列・控えを取ってから上げる道・**指示書のスケッチと設計が食い違った 4 点**・設計の穴 5 件・壊し試験 10 通り・実データは v6 のまま） | — |
+| [`docs/p2-0-audit-report.md`](docs/p2-0-audit-report.md)、[`docs/p2-0-audit-triage.md`](docs/p2-0-audit-triage.md) | **P2-0 の監査報告**（**実行込み**。判定は**「条件つきで使える」**。条件は **B-1（ガードが名前しか見ない）**・**B-2（期待値が実装の側にある・6 通りが生き残る）**、ほかに C・D・E・G）と、その**仕分け**（**指摘ごとに 1 行**。B-1 は形（NOT NULL・CASCADE・索引の列・CHECK）まで見るガードに、B-2 は期待値をリテラルにして **6 通り × 2 変種＝12 通りが全部落ちる**ことを実測。`gui_layout` の `pickable` も API から期待する形に） | §5.1, §5.3, §16.9 |
 
 - P5 の点検・監査の**生ログ（`docs/p5-review-run.jsonl` / `p5-audit-run.jsonl` / `p5-2-audit-run.jsonl` /
   `p5-3-audit-run.jsonl`。計 約 11.7 MB）は文書表に数えない**。本文は各 `*-report.md` と `*-run-note.md`

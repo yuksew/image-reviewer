@@ -38,7 +38,10 @@
 //   - 最近の削除（`--screen pending`。P8-3 / P8-5）: 横に溢れない／**残り時間と段の印が出る**／
 //     **上部バーの入口が見える**（保留があるとき。**0 件なら出ないのが正**＝監査 D-6）／
 //     **押すと POST が 1 回だけ**／**（P8-5）印の無い置き場では段 3 のラジオを出さない**（Q8）／
-//     **走査中の 1 行**（`GET /api/scan` の応答は差し替える。本物の走査は速すぎて捕まらない）
+//     **走査中の 1 行**（`GET /api/scan` の応答は差し替える。本物の走査は速すぎて捕まらない）／
+//     **（P10）段 1 の行の「アプリのゴミ箱へ移す」・「片付ける」・まとめてのチェックの数は
+//     API の `stage` と `closeable` から期待する**（画面のボタンの数から作らない。監査 B-2 で
+//     **段 1 の行のボタンを消しても 4 幅 ok** だった）
 //     （`--ids a,b` を渡すと削除の確認も押す。POST は差し替えた `fetch` が飲む）
 //   - 設定（`--screen settings`。P8-5）: 横に溢れない／**最後の失敗（`last_error`）の全文が
 //     スクロール無しで見える**／置き場ごとの「段 3 を許す」印／**押すと POST が 1 回だけ**
@@ -1318,6 +1321,27 @@ try {
         console.log(`注意: 置き場か枚のパスを取れませんでした（段 3 は見ない）: ${error.message}`);
       }
     }
+    // **（監査 B-2・G-4(b)）「選べる行」の期待値は API から作る。**
+    // 前の版は `pickable = got.advances + got.closeRowsNotStage1 + got.trashCloses` と、
+    // **画面のボタンの数**から期待値を作っていた。そのため**段 1 の行のボタンが消えても
+    // `pickable` が 0 になり、帯・チェックの等号・ボタンの検査が丸ごと飛ばれて 4 幅 ok** だった
+    // （監査の変異 G2・G4 が生き残った）。ここは `apps/gui/pending.js` の `canPick()` と同じ規則
+    // （`stage === 1 || closeable`。段 2 は下の「アプリのゴミ箱」の欄）を **API の値**で数える。
+    // `requests` の画面（枚数を API と突き合わせる）と同じ形。
+    const expectedPicksOf = async () => {
+      const pending = await (await fetch(`${BASE}/api/pending-deletes`)).json();
+      const trash = await (await fetch(`${BASE}/api/trash`)).json();
+      // 一覧（`#pd-running`）は段 2 を出さない（ゴミ箱の欄に出す。`runningHtml` と同じ絞り込み）
+      const running = (pending.items || []).filter((it) => it.state !== 'trashed');
+      const trashItems = (trash.days || []).flatMap((day) => day.items || []);
+      const advances = running.filter((it) => Number(it.stage) === 1).length;
+      const closeRowsNotStage1 = running.filter(
+        (it) => Number(it.stage) !== 1 && Boolean(it.closeable)).length;
+      const trashCloses = trashItems.filter((it) => Boolean(it.closeable)).length;
+      const closes = running.filter((it) => Boolean(it.closeable)).length;
+      return { advances, closeRowsNotStage1, trashCloses, closes,
+        picks: advances + closeRowsNotStage1 + trashCloses };
+    };
     for (const [width, height] of VIEWPORTS) {
       if (ONLY && ONLY !== `${width}x${height}`) continue;
       await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
@@ -1339,6 +1363,15 @@ try {
         failures++;
         console.log(`NG   ${width}x${height} 最近の削除: 計測できません`);
         continue;
+      }
+      // **（監査 B-2）期待値を API から取る**（`got` を測った直後＝押す前の状態と揃える）。
+      // 取れなければ**門を開けない**（画面のボタンから期待値を作らない。理由は上の注記）
+      let expectPicks = null;
+      try {
+        expectPicks = await expectedPicksOf();
+      } catch (error) {
+        console.log('注意: API から選べる行の数を取れませんでした（まとめての帯は見ない）: '
+          + error.message);
       }
       // **（ワーディングの修正 2）段ごとに押す。** 実行すると確認の段は結果の 1 行に置き換わり、
       // **段を選び直せない**ので、段ごとに画面を開き直してから押す（`--ids` が無ければ取り消しだけ）
@@ -1384,9 +1417,16 @@ try {
       // **（tray の再確認で判明）「選べる行が 0」のときは、まとめての帯を出さないのが正しい**。
       // 利用者の実データが全部片付け済み（194 件・開いている行 0）になり、行はあるが**選べる行が無い**
       // 状態で 4 幅とも NG になった。**「行がある」ではなく「選べる行がある」で帯を期待する**。
-      const pickable = got.advances + got.closeRowsNotStage1 + got.trashCloses;
-      if (pickable > 0) {
+      // **（監査 B-2・G-4(b)）その「選べる行がある」を画面のボタンで判定しない。** 期待値は API
+      // から来る（`expectPicks`）。前の版は**期待値と門の両方を画面のボタンの数**から作っていたので、
+      // **段 1 の行のボタンが消えると期待値も 0 になって全部飛ばれた**（G2・G4 が通った）。
+      if (expectPicks && expectPicks.picks > 0) {
+        const picked = expectPicks;
+        // **（監査 B-2）段 1 の行の数を画面の「段 1」の印からも数える**（API と DOM の突き合わせ）
         const stage1 = got.strips.filter((t) => /^段 1 /.test(t)).length;
+        if (stage1 !== picked.advances) {
+          bad.push(`段 1 の行の数（画面の印 ${stage1}／API の段 1 ${picked.advances}）`);
+        }
         if (!got.bulkText.includes('全部選ぶ')) bad.push(`まとめての帯（${got.bulkText}）`);
         if (!/選んだ(行|[0-9,]+ 件)をまとめて片付ける/.test(got.bulkText)) {
           bad.push(`まとめて片付けるの語（${got.bulkText}）`);
@@ -1401,18 +1441,27 @@ try {
         // **（P10 の仕様。F-8）選べるのは段 1 の行と「片付けられる行」だけ**。段 3 の窓がある行
         // （取り消すだけ）は選べないのが正しい。**「チェックの数」と「選べる行の数」を等号で見る**
         // ——「行数より多くない」「0 でない」だけでは、1 行にしかチェックが出なくても通ってしまう。
-        // 期待値 = 段 1 の行 + 段 1 以外で「片付ける」がある行 + ゴミ箱の行の「片付ける」
-        const expectedPicks = pickable;
-        if (got.picks !== expectedPicks) {
-          bad.push(`チェックの数が選べる行と合わない（${got.picks}／期待 ${expectedPicks}`
-            + `＝段 1 ${got.advances}＋段 1 以外の片付け ${got.closeRowsNotStage1}＋ゴミ箱 ${got.trashCloses}）`);
+        // 期待値 = 段 1 の行 + 段 1 以外で「片付ける」がある行 + ゴミ箱の行の「片付ける」（**API の値**）
+        if (got.picks !== picked.picks) {
+          bad.push(`チェックの数が選べる行と合わない（${got.picks}／期待 ${picked.picks}`
+            + `＝段 1 ${picked.advances}＋段 1 以外の片付け ${picked.closeRowsNotStage1}`
+            + `＋ゴミ箱 ${picked.trashCloses}。API の値）`);
         }
-        if (stage1 && got.advances !== stage1) {
-          bad.push(`段 1 の行に「アプリのゴミ箱へ移す」（${got.advances}/${stage1}）`);
+        // **（監査 B-2）各ボタンの数も API の期待値と比べる**（前の版はここが等号でなく、
+        // **0 になると比較ごと消えた**）
+        if (got.advances !== picked.advances) {
+          bad.push(`段 1 の行に「アプリのゴミ箱へ移す」（${got.advances}/${picked.advances}。API の段 1）`);
         }
-        if (stage1 && got.closes < stage1) bad.push(`段 1 の行に「片付ける」（${got.closes}）`);
-        if (got.trash && got.trashCloses !== got.trash) {
-          bad.push(`ゴミ箱の段 2 の行に「片付ける」（${got.trashCloses}/${got.trash}）`);
+        if (got.closeRowsNotStage1 !== picked.closeRowsNotStage1) {
+          bad.push('段 1 以外の「片付ける」（'
+            + `${got.closeRowsNotStage1}/${picked.closeRowsNotStage1}。API の closeable）`);
+        }
+        if (got.trashCloses !== picked.trashCloses) {
+          bad.push(`ゴミ箱の段 2 の行に「片付ける」（${got.trashCloses}/${picked.trashCloses}。API の closeable）`);
+        }
+        // 一覧の行の「片付ける」は **closeable の行の数**（段 1 の行も含む。API から数える）
+        if (got.closes !== picked.closes) {
+          bad.push(`一覧の行に「片付ける」（${got.closes}/${picked.closes}。API の closeable）`);
         }
         if (/実体/.test(got.bulkText)) bad.push('「実体」を画面に出さない（規約 4）');
         if (/用意/.test(got.bulkText)) bad.push('「用意」を画面に出さない（規約 3）');
@@ -1538,7 +1587,11 @@ try {
         + `POST 取り消し=${undoPosts.length} 確かめる=${pvPosts.length} 実行=${bulkPosts.length} `
         // **（P10）後から段 2 へ進める・片付ける口**の計測（押す検査は `gui_smoke` と `pytest`）
         + `移す=${got.advances} 片付け=${got.closes}(${got.trashCloses}) `
-        + `チェック=${got.picks}(期待 ${got.advances + got.closeRowsNotStage1 + got.trashCloses}) `
+        + `チェック=${got.picks}(期待 ${expectPicks ? expectPicks.picks : '—（API を取れず）'}) `
+        + `選べる(API)=${expectPicks
+          ? `移す ${expectPicks.advances}／片付け ${expectPicks.closeRowsNotStage1}`
+            + `／ゴミ箱 ${expectPicks.trashCloses}`
+          : '—'} `
         + `帯=${JSON.stringify(String(got.bulkText).replace(/\s+/g, ' ').trim().slice(0, 52))} `
         + `段ごとのボタン=${stageRuns.filter((r) => r.stage > 0)
           .map((r) => `${r.stage}:${r.offered ? r.execText : '—'}`).join(' / ') || '—'} `

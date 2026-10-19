@@ -167,7 +167,45 @@ def _user_version(path: Path) -> int:
 
 
 def test_v7_adds_the_catalog_tables_columns_and_indexes(tmp_path: Path):
-    """v7 で `folder` / `folder_member` と `asset` の取り込み元の 3 列が入る（設計 §5.3・§5.1）。"""
+    """v7 で `folder` / `folder_member` と `asset` の取り込み元の 3 列が入る（設計 §5.3・§5.1）。
+
+    **期待値はこの試験にリテラルで書く**（`db.V7_TABLE_SHAPE` / `db.V7_INDEXES` から作らない）。
+    検査対象（`db.py`）と期待値が同じ所から来ると、**索引を DDL と定数の両方から消す変異（X20）が
+    通る**（P2-0 の監査 B-2）。列も**名前だけでなく形**（型・`NOT NULL`・既定・主キー）を見る
+    （監査 B-1・X12・X16・X18）。索引も**名前と表だけでなく列の並び**を見る（X5・X11）。
+
+    壊すと落ちる: 列の `NOT NULL` を外す／索引を 1 列にする・別の列に向ける／索引を消す。
+    """
+    # **`PRAGMA table_info` の (型, NOT NULL, 既定値, 主キーの位置)**（リテラル）
+    want_shape = {
+        "folder": {
+            "id": ("TEXT", 0, None, 1),
+            "parent_id": ("TEXT", 0, None, 0),
+            "name": ("TEXT", 1, None, 0),
+            "kind": ("TEXT", 1, None, 0),
+            "smart_query": ("TEXT", 0, None, 0),
+            "position": ("INTEGER", 1, "0", 0),
+            "count_cache": ("INTEGER", 0, None, 0),
+            "count_cached_at": ("TEXT", 0, None, 0),
+            "created_at": ("TEXT", 1, None, 0),
+            "deleted_at": ("TEXT", 0, None, 0),
+        },
+        "folder_member": {
+            "folder_id": ("TEXT", 1, None, 1),
+            "asset_id": ("TEXT", 1, None, 2),
+            "position": ("INTEGER", 1, "0", 0),
+            "added_at": ("TEXT", 1, None, 0),
+        },
+        # `asset` は既存の表なので、**v7 で足した `source` の形だけ**を見る
+        "asset": {
+            "source": ("TEXT", 1, "'scan'", 0),
+        },
+    }
+    # **索引 → (表, 列の並び)**（リテラル。`tbl_name` だけでは X5 が通る）
+    want_indexes = {
+        "ix_folder_parent": ("folder", ("parent_id", "position")),
+        "ix_folder_member_asset": ("folder_member", ("asset_id",)),
+    }
     con = db.open_db(tmp_path)
     try:
         assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
@@ -176,21 +214,24 @@ def test_v7_adds_the_catalog_tables_columns_and_indexes(tmp_path: Path):
             "SELECT name FROM sqlite_master WHERE type = 'table'")}
         for table in CATALOG_TABLES:
             assert table in names, f"{table} が無い"
-        folder_columns = {row[1] for row in con.execute("PRAGMA table_info(folder)")}
-        for column in ("id", "parent_id", "name", "kind", "smart_query", "position",
-                       "count_cache", "count_cached_at", "created_at", "deleted_at"):
-            assert column in folder_columns, f"folder.{column} が無い"
-        member_columns = {row[1] for row in con.execute("PRAGMA table_info(folder_member)")}
-        assert member_columns == {"folder_id", "asset_id", "position", "added_at"}
-        asset_columns = {row[1] for row in con.execute("PRAGMA table_info(asset)")}
-        for column in ("source", "source_url", "ref_tags"):
-            assert column in asset_columns, f"asset.{column} が無い"
-        # 索引は**名前だけでなく、どの表の物か**まで見る（`IF NOT EXISTS` は同名で黙る）
-        for name, table in db.V7_INDEXES:
+        for table, columns in want_shape.items():
+            got = {row[1]: (str(row[2] or "").upper(), int(row[3]), row[4], int(row[5]))
+                   for row in con.execute(f"PRAGMA table_info({table})")}
+            for column, shape in columns.items():
+                assert column in got, f"{table}.{column} が無い"
+                assert got[column] == shape, (
+                    f"{table}.{column} の形が違う（型, NOT NULL, 既定, 主キー）: "
+                    f"{got[column]} != {shape}")
+        for name, (table, columns) in want_indexes.items():
+            # **索引名は DB 全体で一意**（`IF NOT EXISTS` は同名で黙る）ので、表まで見る
             row = con.execute("SELECT tbl_name FROM sqlite_master WHERE type = 'index'"
                               " AND name = ?", (name,)).fetchone()
-            assert row is not None, f"{name} が無い（索引を外すと気づかない）"
+            assert row is not None, f"{name} が無い（索引を DDL から外すと気づかない）"
             assert row[0] == table, f"{name} が {table} の索引ではない: {row[0]}"
+            got_columns = tuple(info[2] for info in con.execute(f"PRAGMA index_info({name})"))
+            assert got_columns == columns, (
+                f"{name} の列が {','.join(got_columns) or 'なし'} でない"
+                f"（期待 {','.join(columns)}）")
     finally:
         con.close()
 
@@ -251,15 +292,20 @@ def test_v7_check_constraints_reject_the_wrong_vocabulary(tmp_path: Path):
 
 
 def test_the_catalog_foreign_keys_are_declared_as_cascades(tmp_path: Path):
-    """`folder_member` の 2 つの外部キーは**両方 CASCADE**、`folder.parent_id` も CASCADE。"""
+    """`folder_member` の 2 つの外部キーは**両方 CASCADE**、`folder.parent_id` も CASCADE。
+
+    期待値は**この試験にリテラルで書く**（`db.V7_FOREIGN_KEYS` から作らない。監査 B-2 と同じ型）。
+    **`ON DELETE SET NULL` や `REFERENCES` の欠落**はここで落ちる（どちらも親を消しても子が残る）。
+    """
     con = db.open_db(tmp_path)
     try:
-        got = {row[2]: (row[3], row[6]) for row in con.execute(
-            "PRAGMA foreign_key_list(folder_member)")}
-        assert got["folder"] == ("folder_id", "CASCADE")
-        assert got["asset"] == ("asset_id", "CASCADE")
-        parent = {row[2]: row[6] for row in con.execute("PRAGMA foreign_key_list(folder)")}
-        assert parent["folder"] == "CASCADE"
+        member = {row[3]: (row[2], row[4], row[6])
+                  for row in con.execute("PRAGMA foreign_key_list(folder_member)")}
+        assert member == {"folder_id": ("folder", "id", "CASCADE"),
+                          "asset_id": ("asset", "id", "CASCADE")}
+        parent = {row[3]: (row[2], row[4], row[6])
+                  for row in con.execute("PRAGMA foreign_key_list(folder)")}
+        assert parent == {"parent_id": ("folder", "id", "CASCADE")}
         assert con.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     finally:
         con.close()
@@ -442,6 +488,89 @@ def test_a_squatted_catalog_table_is_refused_loudly(tmp_path: Path):
         con.close()
 
 
+def test_a_catalog_table_without_cascades_is_refused_loudly(tmp_path: Path):
+    """**列の名前が同じでも、`CASCADE` の無い `folder` は v7 にしない**（P2-0 の監査 B-1）。
+
+    監査の `squat2` は「同じ列名で `NOT NULL` も `CASCADE` も `CHECK` も無い `folder`」を
+    先に置くと**ガードを通って v7 になった**。`CREATE TABLE IF NOT EXISTS` は既存の表を
+    変えないので、**形（`PRAGMA foreign_key_list` の `ON DELETE`）まで見ないと止まらない**。
+
+    壊すと落ちる: `_check_v7_shape` が列の名前だけを見る（外部キーを見ない）。
+    """
+    data = tmp_path / "data"
+    con = _make_v6(data)
+    try:
+        con.execute("CREATE TABLE folder (id TEXT PRIMARY KEY, parent_id TEXT,"
+                    " name TEXT NOT NULL, kind TEXT NOT NULL, smart_query TEXT,"
+                    " position INTEGER NOT NULL DEFAULT 0, count_cache INTEGER,"
+                    " count_cached_at TEXT, created_at TEXT NOT NULL, deleted_at TEXT)")
+        con.execute("CREATE INDEX ix_folder_parent ON folder(parent_id, position)")
+        with pytest.raises(RuntimeError) as got:
+            db.migrate(con)
+        message = str(got.value)
+        assert "folder.parent_id" in message and "CASCADE" in message, message
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 6
+    finally:
+        con.close()
+
+
+def test_a_catalog_table_with_the_wrong_index_columns_is_refused_loudly(tmp_path: Path):
+    """**同じ表・同じ名前でも、列が違う索引は落とす**（監査 B-1 の `ix_folder_parent ON folder(name)`）。
+
+    監査の実測では `ix_folder_parent ON folder(name)` を先に置くと、`IF NOT EXISTS` が黙って
+    何もしないままガードを通った。**`tbl_name` だけでは足りない**（`PRAGMA index_info` の列を見る）。
+
+    壊すと落ちる: ガードが索引の表だけを見る（列を見ない）。
+    """
+    data = tmp_path / "data"
+    con = _make_v6(data)
+    try:
+        # **正しい形の `folder`**（`deleted_at`・`NOT NULL`・`CASCADE`・`CHECK` まで）を先に置き、
+        # **索引だけ**列を間違える（DDL の `CREATE INDEX IF NOT EXISTS` は名前が同じで黙る）
+        con.execute("CREATE TABLE folder (id TEXT PRIMARY KEY,"
+                    " parent_id TEXT REFERENCES folder(id) ON DELETE CASCADE,"
+                    " name TEXT NOT NULL,"
+                    " kind TEXT NOT NULL CHECK (kind IN ('manual', 'smart')),"
+                    " smart_query TEXT, position INTEGER NOT NULL DEFAULT 0,"
+                    " count_cache INTEGER, count_cached_at TEXT,"
+                    " created_at TEXT NOT NULL, deleted_at TEXT)")
+        con.execute("CREATE INDEX ix_folder_parent ON folder(name)")
+        with pytest.raises(RuntimeError) as got:
+            db.migrate(con)
+        message = str(got.value)
+        assert "ix_folder_parent" in message, message
+        assert "parent_id,position" in message, message
+        assert "name" in message, message
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 6
+    finally:
+        con.close()
+
+
+def test_a_catalog_table_without_the_kind_check_is_refused_loudly(tmp_path: Path):
+    """**`folder.kind` の語彙の `CHECK` が無い表は落とす**（監査 B-1 の「`kind` に何でも入る v7」）。
+
+    列の形と外部キーと索引が正しくても、`CHECK` が無ければ `kind='robot'` が入る。
+    **語彙は表でも守る**（家風）。
+
+    壊すと落ちる: ガードが `sqlite_master.sql` の `CHECK` を見ない。
+    """
+    data = tmp_path / "data"
+    con = _make_v6(data)
+    try:
+        con.execute("CREATE TABLE folder (id TEXT PRIMARY KEY,"
+                    " parent_id TEXT REFERENCES folder(id) ON DELETE CASCADE,"
+                    " name TEXT NOT NULL, kind TEXT NOT NULL, smart_query TEXT,"
+                    " position INTEGER NOT NULL DEFAULT 0, count_cache INTEGER,"
+                    " count_cached_at TEXT, created_at TEXT NOT NULL, deleted_at TEXT)")
+        with pytest.raises(RuntimeError) as got:
+            db.migrate(con)
+        message = str(got.value)
+        assert "CHECK" in message and "kind" in message, message
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 6
+    finally:
+        con.close()
+
+
 # ---- 5. 控えを取ってから版を上げる（既存の P8-4 の道が v7 でも効く）----
 
 
@@ -540,10 +669,16 @@ def _register(store: Store, path: Path) -> str:
 
 
 def _files(root: Path) -> dict:
-    """ファイルの**中身まで**（`GET` が 1 バイトも書かないことの検査）。"""
+    """ファイルの**中身まで**（`GET` が 1 バイトも書かないことの検査）。
+
+    **`db.sqlite3-shm` は数えない**（P2-0 の監査 C-1）。`-shm` は WAL の索引で、
+    **読み手が読み手の印を書き換える**——`GET` が DB を書いた証拠にはならない
+    （`tests/test_data_dir_guard.py` も同じ理由で外している。実測: 40 回に 1 回、
+    大きさも mtime も同じで中身だけ違って落ちた）。`-wal` は残す（中身が変われば書いた証拠）。
+    """
     out = {}
     for path in sorted(Path(root).rglob("*")):
-        if path.is_file():
+        if path.is_file() and path.name != "db.sqlite3-shm":
             got = path.stat()
             out[str(path.relative_to(root))] = (
                 got.st_size, got.st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest())

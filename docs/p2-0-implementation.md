@@ -337,3 +337,41 @@ node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen library
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen settings
 # 終わったら 8791 の PID（health の pid）だけを止める。8790 は止めない
 ```
+
+---
+
+## 9. 監査（`p2-0-audit-report.md`）の指摘を直した（2026-10-20）
+
+**正は [`p2-0-audit-triage.md`](p2-0-audit-triage.md)**（指摘ごとの 1 行・実測・見送った物の行き先・
+設計への反映）。監査の判定は**「条件つきで使える」**で、条件は **B-1（形のガード）**と
+**B-2（期待値が実装の側にある）**だった。**どちらも直した。**
+
+- **B-1**: `_check_v7_shape` を**名前ではなく形で見る**ように書き直した。`V7_TABLE_SHAPE`（型・
+  `NOT NULL`・既定・主キーの位置）・`V7_FOREIGN_KEYS`（`ON DELETE`）・`V7_INDEXES`（**列の並び**まで）・
+  `V7_CHECK_SQL`（`sqlite_master.sql` の `CHECK`）・**`SAVEPOINT` で不正な `kind` を入れて拒否されるか**
+  （必ず `ROLLBACK TO`）。**実データの複製**に監査の `squat2`（同じ列名・CASCADE / CHECK 無しの `folder`
+  ＋ `ix_folder_parent ON folder(name)`）を置いて `create_app()` を呼ぶと、
+  **`RuntimeError: v7 の外部キー folder.parent_id → folder(id) がありません…`** で止まり、**版は 6 のまま**。
+  索引だけ列が違う形は **`v7 の索引 ix_folder_parent の列が parent_id,position でない（いま name）`**。
+- **B-2**: `tests/test_p2_0.py` の期待値を**リテラル**にした（`db.V7_*` を読まない）。監査が生かした
+  6 通り（X5・X11・X12・X16・X18・X20）は、**DDL だけ／ガードも騙す の 2 変種とも落ちる**（生き残り 0）。
+  形の試験は 14 → **17 件**（B-1 の 3 本を足した）。
+- **C-1**: `_files()` が `db.sqlite3-shm` を数えない（`-wal` は残す。書いた証拠になる）。
+- 三点セット: **594 → 597 passed**・`gui_smoke` **415 ok / NG 0**・`gui_layout` **52 ok / NG 0**
+  （11 本 × 4 幅。複製サーバ 8791）。**実データは前後で署名が全部同じ**（v6・463 枚・片付け済み 194・
+  `.backup` の 12 個）。
+
+**この記録の 2 つの誤りを訂正する**（監査 B-2・D-2）:
+
+1. §1 の表「`INDEXED BY` で引けることを試験で固定」——**`tests/test_p2_0.py` に `INDEXED BY` は
+   1 つも無い**（監査の grep）。いまは `PRAGMA index_info` で**列の並び**を見る（期待値はリテラル）。
+2. §1 の「既存の 27 本」は **26 本**（実データ v6 の明示の索引。v7 の新規で 28 本。衝突は無い）。
+
+**D-1 の読み替え**: §2.1 の「`deletion_log` を一生持たない」は強すぎる。`elif current == 6` を外すと
+**最初の 1 回の起動**が壊れ、**次の起動の早期 return 側の `_top_up_v6` が補う**（`elif` はその 1 回を
+壊さないために残す。監査 D-1 の実測）。
+
+**残っている物（監査 D-6）**: `.tmp-p2-0/` の実データの複製（`gui-data`・`data-real-v7`・
+`data-real-fail`・`backups-real`・`gui-backups`）は**この修正では消していない**（他の担当の一時物。
+`p2-0-audit-triage.md` §5-2）。**消すのを勧める**（実データの写しなので）。
+

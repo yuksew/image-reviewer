@@ -896,21 +896,64 @@ V7_ASSET_COLUMNS: tuple[tuple[str, str], ...] = (
     ("ref_tags", "ALTER TABLE asset ADD COLUMN ref_tags TEXT"),   # 「何の参考か」の JSON 配列（§5.1）
 )
 
-#: v7 で作る表 → 必ずある列。**`CREATE TABLE IF NOT EXISTS` は同じ名前の別の表を変えない**ので、
-#: 移行の後に見て、違う形なら落とす（「版は 7 なのに表が違う」という静かな穴を作らない）
-V7_COLUMNS: dict[str, tuple[str, ...]] = {
-    "folder": ("id", "parent_id", "name", "kind", "smart_query", "position",
-               "count_cache", "count_cached_at", "created_at", "deleted_at"),
-    "folder_member": ("folder_id", "asset_id", "position", "added_at"),
+#: v7 の表 → **列の形**。`PRAGMA table_info` の `(型, NOT NULL, 既定値, 主キーの位置)`。
+#:
+#: **名前だけでは足りない**（P2-0 の監査 B-1）。`CREATE TABLE IF NOT EXISTS` は同じ名前の別の表を
+#: 変えないので、**同じ列名で `NOT NULL` も `CHECK` も無い `folder`** を先に置かれると、
+#: 版だけ 7 の「中身の違う v7」ができる（実測: 監査の `squat2`。`folder.name` に NULL が入り、
+#: `kind` に何でも入った）。ここは**列の名前ではなく形**を見る。
+#: `asset` は既存の表なので、**v7 で足した `source` の形だけ**を見る。
+V7_TABLE_SHAPE: dict[str, dict[str, tuple[str, int, str | None, int]]] = {
+    "folder": {
+        "id": ("TEXT", 0, None, 1),
+        "parent_id": ("TEXT", 0, None, 0),
+        "name": ("TEXT", 1, None, 0),
+        "kind": ("TEXT", 1, None, 0),
+        "smart_query": ("TEXT", 0, None, 0),
+        "position": ("INTEGER", 1, "0", 0),
+        "count_cache": ("INTEGER", 0, None, 0),
+        "count_cached_at": ("TEXT", 0, None, 0),
+        "created_at": ("TEXT", 1, None, 0),
+        "deleted_at": ("TEXT", 0, None, 0),
+    },
+    "folder_member": {
+        "folder_id": ("TEXT", 1, None, 1),
+        "asset_id": ("TEXT", 1, None, 2),
+        "position": ("INTEGER", 1, "0", 0),
+        "added_at": ("TEXT", 1, None, 0),
+    },
+    "asset": {
+        "source": ("TEXT", 1, "'scan'", 0),
+    },
 }
 
-#: v7 で作る索引 → **その索引があるべき表**。**索引名は DB 全体で一意**なので、
+#: v7 の外部キー → `(この表の列, 参照する表, 参照する列, ON DELETE)`。
+#: **`folder.parent_id` と `folder_member` の 2 本は `CASCADE`**（設計 §5.3）。
+#: `REFERENCES` が無い・`ON DELETE SET NULL` になっていると、**親を消しても子が残る**。
+V7_FOREIGN_KEYS: dict[str, tuple[tuple[str, str, str, str], ...]] = {
+    "folder": (("parent_id", "folder", "id", "CASCADE"),),
+    "folder_member": (
+        ("folder_id", "folder", "id", "CASCADE"),
+        ("asset_id", "asset", "id", "CASCADE"),
+    ),
+}
+
+#: v7 の索引 → `(索引の名前, 表, 列の並び)`。**索引名は DB 全体で一意**なので、
 #: 同じ名前が他の表にあると `CREATE INDEX IF NOT EXISTS` は**黙って何もしない**
-#: （P8-0 の監査 C-0 で `ux_request_token` が実際に踏んだ）。移行の後にここで確かめる
-V7_INDEXES: tuple[tuple[str, str], ...] = (
-    ("ix_folder_parent", "folder"),
-    ("ix_folder_member_asset", "folder_member"),
+#: （P8-0 の監査 C-0 で `ux_request_token` が実際に踏んだ）。**同じ表の同じ名前でも
+#: 列が違えば使えない**（P2-0 の監査 B-1: `ix_folder_parent ON folder(name)`）ので、列まで見る。
+#: **期待値は `tests/test_p2_0.py` にリテラルで書く**（ここから作ると、索引を消す変異が通る＝B-2）。
+V7_INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("ix_folder_parent", "folder", ("parent_id", "position")),
+    ("ix_folder_member_asset", "folder_member", ("asset_id",)),
 )
+
+#: v7 で **`CHECK` で守る語彙**（`sqlite_master.sql` を空白を詰めて比べる）。
+#: `CHECK` が無いと `kind` に 'robot'、`source` に 'ftp' が入る（P2-0 の監査 B-1）。
+V7_CHECK_SQL: dict[str, tuple[str, str]] = {
+    "folder": ("kind", "check(kindin('manual','smart'))"),
+    "asset": ("source", "check(sourcein('scan','drop','clipboard','url','watch'))"),
+}
 
 
 def _migrate_v7(con: sqlite3.Connection) -> None:
@@ -934,36 +977,117 @@ def _migrate_v7(con: sqlite3.Connection) -> None:
     _check_v7_shape(con)
 
 
-def _check_v7_shape(con: sqlite3.Connection) -> None:
-    """v7 の表・列・索引が**狙った形で**在ることを確かめる（黙って無効にならないように）。
+def _schema_sql(con: sqlite3.Connection, name: str) -> str:
+    """`sqlite_master` の `sql` を**空白を詰めて小文字に**した物（`CHECK` の比較用）。
 
-    なぜ要るか（2 つとも実際に踏んだ型）:
+    `ALTER TABLE ADD COLUMN` で足した列も `sqlite_master.sql` に載る（実測: v6 から上げた
+    `asset` の `sql` に `CHECK (source IN (…))` が入る）。空白の入れ方は SQLite が文を
+    そのまま覚えるので、**空白だけ落として比べれば**書き方の違いに強い。
+    """
+    row = con.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                      (name,)).fetchone()
+    return "".join(str(row[0] or "").split()).lower() if row is not None else ""
+
+
+def _check_v7_shape(con: sqlite3.Connection) -> None:
+    """v7 の表・列・索引・外部キーが**狙った形で**在ることを確かめる（黙って無効にならないように）。
+
+    なぜ要るか（3 つとも実際に踏んだ型）:
 
     - `CREATE TABLE IF NOT EXISTS` は**同じ名前の別の表**があると黙って何もしない
     - `CREATE INDEX IF NOT EXISTS` は**索引名が DB 全体で一意**なので、同じ名前が他の表にあると
       黙って何もしない（P8-0 の監査 C-0。`ux_request_token` が `review_request` に在ったため
       `delete_request` の一意索引が作られず、**再送の二重削除**が通った）
+    - **名前だけを見るガードは「同じ列名で中身が違う表」を通す**（P2-0 の監査 B-1）。
+      同じ列名で `NOT NULL` も `CASCADE` も `CHECK` も無い `folder` と、列の違う
+      `ix_folder_parent` を v6 に先に置くと、**版は 7・`kind` に何でも入る・親を消しても子が残る**
+      という v7 ができた（実測）。ここは**形**（`NOT NULL`・既定・主キー・外部キーの
+      `ON DELETE`・索引の列・`CHECK`）まで見る。
 
-    どちらも「版は 7・名前は在るのに中身が違う」という**静かな穴**になるので、ここで落とす
+    どれも「版は 7・名前は在るのに中身が違う」という**静かな穴**になるので、ここで落とす
     （`sqlite3.DatabaseError` ではなく `RuntimeError`。呼び手は起動を止めるので、人はログで気づく）。
-    **何度呼んでも同じ**（読むだけ）。
+    **落ちる時の文には何が違うかを書く**（「索引 ix_folder_parent の列が parent_id,position でない
+    （いま name）」）。
+
+    **何度呼んでも同じ**（表・索引・外部キーは読むだけ。**語彙の `CHECK` だけは `SAVEPOINT` で
+    1 行入れて拒否されるかを見て、必ず `ROLLBACK TO` で戻す**）。
     """
-    for table, columns in V7_COLUMNS.items():
-        have = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
-        if not have:
+    for table, shape in V7_TABLE_SHAPE.items():
+        got = {row[1]: (str(row[2] or "").upper(), int(row[3]), row[4], int(row[5]))
+               for row in con.execute(f"PRAGMA table_info({table})")}
+        if not got:
             raise RuntimeError(
                 f"v7 の表 {table} がありません（同じ名前の別の物が使っています）")
-        missing = [column for column in columns if column not in have]
+        missing = [column for column in shape if column not in got]
         if missing:
             raise RuntimeError(
                 f"v7 の表 {table} の列が足りません: {', '.join(missing)}")
-    for name, table in V7_INDEXES:
+        for column, (want_type, want_notnull, want_default, want_pk) in shape.items():
+            got_type, got_notnull, got_default, got_pk = got[column]
+            different = []
+            if got_type != want_type:
+                different.append(f"型が {got_type or '空'}（期待 {want_type}）")
+            if got_notnull != want_notnull:
+                different.append("`NOT NULL` がありません" if want_notnull
+                                 else "`NOT NULL` が余計にあります")
+            if got_default != want_default:
+                different.append(f"既定が {got_default!r}（期待 {want_default!r}）")
+            if got_pk != want_pk:
+                different.append(f"主キーの位置が {got_pk}（期待 {want_pk}）")
+            if different:
+                raise RuntimeError(
+                    f"v7 の表 {table}.{column} の形が違います: " + "、".join(different))
+    for table, wanted in V7_FOREIGN_KEYS.items():
+        got_fks = [(row[3], row[2], row[4], row[6])
+                   for row in con.execute(f"PRAGMA foreign_key_list({table})")]
+        for source, target, target_column, on_delete in wanted:
+            matches = [fk for fk in got_fks if fk[0] == source]
+            if not matches:
+                raise RuntimeError(
+                    f"v7 の外部キー {table}.{source} → {target}({target_column}) がありません"
+                    "（設計 §5.3 の `ON DELETE CASCADE` が効きません）")
+            fk = matches[0]
+            if fk[1:] != (target, target_column, on_delete):
+                raise RuntimeError(
+                    f"v7 の外部キー {table}.{source} が {target}({target_column}) の"
+                    f" `ON DELETE {on_delete}` ではありません"
+                    f"（いま {fk[1]}({fk[2]}) の `ON DELETE {fk[3]}`）")
+    for name, table, columns in V7_INDEXES:
         row = con.execute("SELECT tbl_name FROM sqlite_master WHERE type = 'index'"
                           " AND name = ?", (name,)).fetchone()
         if row is None or row[0] != table:
             where = row[0] if row is not None else "どこにも無い"
             raise RuntimeError(
                 f"v7 の索引 {name} を {table} に作れませんでした（同じ名前が {where} にあります）")
+        got_columns = tuple(info[2] for info in con.execute(f"PRAGMA index_info({name})"))
+        if got_columns != tuple(columns):
+            raise RuntimeError(
+                f"v7 の索引 {name} の列が {','.join(columns)} でない"
+                f"（いま {','.join(got_columns) or 'なし'}）")
+    # **語彙は `CHECK` の文と、実際に拒むかの両方で見る**（P2-0 の監査 B-1）。
+    # 文だけだと、同じ語彙を**別の列**に書いた表を通す。振る舞いだけだと、`asset` の
+    # `source` を試すのに 1 行要る（空の DB では `UPDATE` が 0 行に当たって何も分からない）。
+    for table, (column, clause) in V7_CHECK_SQL.items():
+        if clause not in _schema_sql(con, table):
+            raise RuntimeError(
+                f"v7 の表 {table}.{column} に語彙の `CHECK` がありません"
+                f"（`{clause}`。設計の語彙を表でも守る）")
+    # **不正な kind を入れて拒否されるか**（SAVEPOINT で必ず戻す）
+    probe = f"__v7_shape_probe_{os.getpid()}__"
+    con.execute("SAVEPOINT v7_shape")
+    try:
+        try:
+            con.execute("INSERT INTO folder(id, parent_id, name, kind, position, created_at)"
+                        " VALUES (?, NULL, ?, 'robot', 0, 'probe')", (probe, probe))
+        except sqlite3.IntegrityError:
+            pass                                  # 期待どおり（CHECK が拒んだ）
+        else:
+            raise RuntimeError(
+                "v7 の表 folder.kind の `CHECK` が効いていません（'robot' を受け付けました。"
+                "設計 §5.3 は 'manual' / 'smart' だけ）")
+    finally:
+        con.execute("ROLLBACK TO v7_shape")
+        con.execute("RELEASE v7_shape")
 
 
 def _seed_settings(con: sqlite3.Connection) -> None:

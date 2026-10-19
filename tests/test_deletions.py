@@ -489,6 +489,14 @@ def test_the_stuck_reason_says_why_it_could_not_go_back(svc, store, library, clo
     「保留していたファイルが見つかりません」と出て、**利用者が次に何をすればよいか分からない**。
     4 通り（`target_exists` / `move_failed` / `different` / `missing`）を台帳に残す。
     語彙はサービス層でも守る（`CHECK` に当てて 500 にしない。家風）。
+
+    **（3）の前提は「登録と `(size, mtime_ns)` が違う」こと**（`os.utime` で決定的にする）。
+    `_original_state` は `(size, mtime_ns)` で見る（P8-2 の監査 D-2）ので、**同じ大きさの
+    差し替えが同じ `mtime_ns` に落ちると `same` と読む**——それは §8.4 F4 の「規則の限界」
+    （`test_the_limit_of_the_rule_a_same_size_swap_is_not_detected`）。**書き直しは登録の
+    0.3 ms 後**（実測 15 回で 290,000〜375,000 ns）で、この機械のファイル時刻の刻み
+    （0.5〜1 ms 程度）より短いので、**20 回中 15 回で `mtime_ns` が同じになった**
+    （時計の刻みに頼るとこのテストが揺れる）。
     """
     # (1) 元の場所が埋まっている（`target_exists`）
     blocked = make_png(library / "r1.png", seed=51)
@@ -517,11 +525,22 @@ def test_the_stuck_reason_says_why_it_could_not_go_back(svc, store, library, clo
     # (3) 保留の実体が無く、元の場所には**別のファイル**（`different`。窓切れの後始末の道）
     clock.advance(sec=1)
     swapped = make_png(library / "r3.png", seed=53)
+    registered = swapped.stat()                            # 登録される値（`add_asset` が見る物）
     a3 = add_asset(store, swapped)
     three = svc.delete(asset_id=a3, path=str(swapped), stage=3, actor="human",
                        confirm_last_copy=True)
     Path(three["hold_path"]).unlink()
-    make_png(swapped, seed=54)                             # 登録した物とは違う中身
+    make_png(swapped, seed=54)                             # 登録した物とは違う中身（同じ大きさ）
+    # **`mtime_ns` を明示して登録の値と違える。** 書き直しは登録の 0.3 ms 後（実測）で、
+    # この機械のファイル時刻の刻み（0.5〜1 ms 程度）より短いため、**20 回中 15 回で
+    # 登録と同じ `mtime_ns` に落ちた**。その形は §8.4 F4 の「規則の限界」
+    # （`test_the_limit_of_the_rule_a_same_size_swap_is_not_detected`）そのもので、
+    # **`same` と読むのが設計どおり**（`_original_state` は `(size, mtime_ns)` で見る。
+    # P8-2 の監査 D-2）。ここで見たいのは `different` の道なので、前提を決定的にする。
+    os.utime(swapped, ns=(registered.st_atime_ns, registered.st_mtime_ns + 1_000_000))
+    now = swapped.stat()
+    assert (now.st_size, now.st_mtime_ns) != (registered.st_size, registered.st_mtime_ns), \
+        "試験の前提（登録と違う (size, mtime_ns)）が崩れている"
     with store.transaction() as con:
         con.execute("UPDATE deletion_log SET remaining_sec = 0 WHERE id = ?",
                     (three["deletion_id"],))

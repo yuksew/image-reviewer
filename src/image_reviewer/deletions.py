@@ -20,9 +20,14 @@
    **エージェントは自分の分だけ**（他人の分は **403 `not_yours`**。§3.4）。**`as_copy` は人だけ**
    （403 `human_only`）。**別名は `<名前>.<連番>.<拡張子>`**（専門 §3.3）。
 9. **ファイル操作は取引の外**（家風）。取引は台帳の 1 行だけを短く。
-10. **台帳の行を先に書いてから動かす**（B-1）。**動かせなければ行を消す。** 逆順だと、取引が
-    失敗したときにファイルだけが移り、台帳にも要求にも残らず、一覧には「在る」と出続ける
-    （`pending` / `trash` / `ledger` のどこにも出ない迷子になる）。**起動時に、台帳に無い
+10. **台帳の行を先に書いてから動かす**（B-1）。**逆順だと**、取引が失敗したときにファイルだけが
+    移り、台帳にも要求にも残らず、一覧には「在る」と出続ける（`pending` / `trash` / `ledger` の
+    どこにも出ない迷子になる）。**（P11 の監査 A-2）OS に断られたときは行を消さない**——
+    案内（`MOVE_FAILED_MESSAGE`）が名指しする「ファイルが無いので片付ける」を押す行が
+    無くなるため（実測 `1_row_for_p1: []`）。**ファイルは動かさず、カタログからも外さない**
+    （断ったら何も起きない）ので、行は「手で消した後の後始末」の受け皿になる。
+    **他の断り（`target_exists` など）は今までどおり行を消す**（移動先に在るのは**別の物**なので、
+    残すと「戻す」が他人のファイルを動かしかねない）。**起動時に、台帳に無い
     `pending-delete/` の中身は「拾い物」として出す**（黙って残さない。消しはしない）。
 11. **保留領域を消す前に読み取り専用の属性を外す**（C-2。付いたままだと `WinError 5` で
     30 秒ごとにやり直し続ける）。
@@ -43,8 +48,12 @@
 16. **（利用者の依頼 2026-10-19）移動を OS が断ったら、通る道を案内する**（`move_failed`）。
     **この環境ではアプリのプロセスがワークスペースの外に書けない**（`os.rename` が
     `PermissionError` / WinError 5。`design.md` §16.7 の末尾）。通る道は**利用者が
-    エクスプローラで消してから「ファイルが無いので片付ける」**なので、**パスで判定せず**、
+    エクスプローラーで消してから「ファイルが無いので片付ける」**なので、**パスで判定せず**、
     断られたら同じ案内を出す（**`move_no_clobber` の 1 か所**で作る。`code` は `move_failed` のまま）。
+    **（P11 の監査 B-1）取り消し（`undo` / `trash_restore`）は別の文**にする——取り消しで
+    「エクスプローラーで消してから片付ける」を守ると、**戻したかったファイルが消える**
+    （実測。`docs/move-failed-message-2.md`）。取り消しは**元へ移す**道を案内する
+    （段 3 は**一時置き場**から）。
 """
 
 from __future__ import annotations
@@ -117,9 +126,26 @@ CLOSE_REASONS = ("missing",)
 #: **パスで判定しない**——この環境ではアプリのプロセスが `C:\work\image-reviwer` の外に書けず
 #: （`design.md` §16.7 の末尾）、**ワークスペースの中でも権限で断られる**ことがある。
 #: **どちらも同じ案内が正しい**ので、OS が断ったら（`move_no_clobber` の 1 か所で）これを出す。
+#: **「エクスプローラー」に揃える**（`file_found` と同じ語。**P11 の監査 D-3** の語のゆれ）。
 MOVE_FAILED_MESSAGE = ("このファイルは移動できませんでした。"
-                       "ほかのフォルダにあるファイルは、エクスプローラで消してから"
+                       "ほかのフォルダにあるファイルは、エクスプローラーで消してから"
                        "「ファイルが無いので片付ける」を押してください。")
+#: **（P11 の監査 B-1）取り消し専用の案内**。取り消しに削除の案内を出すと、**従った利用者が
+#: 戻したかったファイルを消す**（実測: ゴミ箱の中の 1 枚を消して「片付ける」を押すと 200 で閉じ、
+#: `p5.png` がどこにも無くなった）。**戻せなかったこと**と、**元へ移す**という次の一手を書く。
+#: 場所は**画面の語**（段 2 は「アプリのゴミ箱」・段 3 は「一時置き場」。`frontend-design.md` §6.1 の 4）。
+RESTORE_FAILED_MESSAGE = ("このファイルは元の場所へ戻せませんでした。"
+                          "エクスプローラーで、アプリのゴミ箱から元の場所へ移してください。")
+RESTORE_FAILED_MESSAGE_HOLD = ("このファイルは元の場所へ戻せませんでした。"
+                               "エクスプローラーで、一時置き場から元の場所へ移してください。")
+#: 断りの種類（`move_no_clobber` の `why`）。**削除と進めるは同じ文**（行が残るので案内が通る。
+#: A-2）、**取り消しは専用の文**（B-1）。
+MOVE_FAILED_WHY = ("move", "restore_trash", "restore_hold")
+_MOVE_FAILED_MESSAGES = {
+    "move": MOVE_FAILED_MESSAGE,
+    "restore_trash": RESTORE_FAILED_MESSAGE,
+    "restore_hold": RESTORE_FAILED_MESSAGE_HOLD,
+}
 #: **（P10）後から段を進める・片付ける 1 回の上限**。**エージェントの一括と同じ 200** に揃える
 #: （`AGENT_MAX_BATCH` と同じ規則＝超えたら **422 `too_many` で 1 件も進めない**）。
 #: 画面は 200 件ずつに分けて送る（実データの 194 行は 1 回で収まる）。
@@ -178,7 +204,7 @@ def free_name(directory: Path, name: str) -> Path:
                       details={"name": name, "dir": str(directory)})
 
 
-def move_failed_detail(exc: OSError) -> str:
+def move_failed_detail(exc: OSError, *, why: str = "move") -> str:
     """移動を断られたときの 1 行（**何が起きたか。＋どうすればよいか。**の 2 文＋詳細）。
 
     **パスを本文に出さない**（利用者の依頼。`docs/move-failed-message.md`）: `str(OSError)` は
@@ -188,6 +214,10 @@ def move_failed_detail(exc: OSError) -> str:
 
     `PermissionError`（WinError 5）だけでなく**どの `OSError` でも同じ案内**にする
     （**1 か所 1 文言**。断られた理由ごとに文を散らかさない）。
+
+    **（P11 の監査 B-1）`why` で経路を分ける**（`MOVE_FAILED_WHY`）。削除と「進める」は
+    `move`（同じ文。**行が残るので案内が通る**＝A-2）、**取り消しは `restore_trash` /
+    `restore_hold`**（**元へ移す**道を案内する。削除の案内を出すと**戻すファイルを消させる**）。
     """
     text = getattr(exc, "strerror", None)
     winerror = getattr(exc, "winerror", None)
@@ -195,10 +225,10 @@ def move_failed_detail(exc: OSError) -> str:
         reason = f"[WinError {winerror}] {text}"
     else:
         reason = text or str(exc)
-    return f"{MOVE_FAILED_MESSAGE}（詳細: {reason}）"
+    return f"{_MOVE_FAILED_MESSAGES[why]}（詳細: {reason}）"
 
 
-def move_no_clobber(src, dst) -> str:
+def move_no_clobber(src, dst, *, why: str = "move") -> str:
     """**`os.rename` で移す**（`os.replace` は**在ると黙って上書きする**＝P7 の実測）。
 
     Windows の `os.rename` は `MoveFileExW` を `MOVEFILE_REPLACE_EXISTING` **無し**で呼ぶので、
@@ -207,10 +237,16 @@ def move_no_clobber(src, dst) -> str:
 
     失敗は**動かさないまま**返す（元のファイルは 1 バイトも変わらない）。
     **（利用者の依頼 2026-10-19）移動を断られたとき（`PermissionError` / WinError 5 など）は、
-    通る道（エクスプローラで消してから「ファイルが無いので片付ける」）を案内する**——
+    通る道（エクスプローラーで消してから「ファイルが無いので片付ける」）を案内する**——
     **この環境ではアプリのプロセスがワークスペースの外に書けない**ため、外のファイルは
     **必ずここで断られる**（`design.md` §16.7 の末尾）。
+
+    **（P11 の監査 B-1）`why` で案内を分ける**（`MOVE_FAILED_WHY`）。**取り消しの呼び出しは
+    `restore_trash` / `restore_hold` を渡す**——削除の案内を返すと、利用者がそれに従って
+    **戻したかったファイルを消す**（実測）。
     """
+    if why not in MOVE_FAILED_WHY:
+        raise ValueError(f"why は {MOVE_FAILED_WHY} のいずれかです: {why!r}")
     try:
         os.rename(str(src), str(dst))
     except FileExistsError as exc:                                 # WinError 183
@@ -218,7 +254,7 @@ def move_no_clobber(src, dst) -> str:
                           code="target_exists",
                           details={"from": str(src), "to": str(dst)}) from exc
     except OSError as exc:
-        raise ReviewError(409, move_failed_detail(exc), code="move_failed",
+        raise ReviewError(409, move_failed_detail(exc, why=why), code="move_failed",
                           details={"from": str(src), "to": str(dst)}) from exc
     return str(dst)
 
@@ -906,7 +942,8 @@ class DeletionService:
         （**凍結した値とも比べる**。C-5）、段 3 は**最後の 1 つ**と**置き場の印**を確かめる
         （足りなければ `ReviewError`）。
 
-        **（B-1）台帳の行を先に書いてから動かす。** 動かせなければ行を消す（`_drop_log`）。
+        **（B-1）台帳の行を先に書いてから動かす。** 動かせなければ行を消す——**ただし
+        OS に断られた（`move_failed`）ときは残す**（P11 の監査 A-2。`_keep_failed_log`）。
         逆順だと、取引が失敗したときに**ファイルだけが移り、台帳にも要求にも残らない**——
         一覧には「在る」と出続け、`pending` / `trash` / `ledger` のどこにも出ない迷子になる。
         """
@@ -946,6 +983,20 @@ class DeletionService:
                             remaining_sec=window if stage == 3 else None, purge_at=purge_at)
         try:
             move_no_clobber(target["display_path"], dest)           # **取引の外**
+        except ReviewError as exc:
+            if exc.code == "move_failed":
+                # **（P11 の監査 A-2）OS が断ったときは行を消さない**（利用者の依頼）。
+                # 行を消すと、案内（`MOVE_FAILED_MESSAGE`）が名指しする「ファイルが無いので
+                # 片付ける」を押す行が無くなる（実測 `1_row_for_p1: []`）。**ファイルは 1 つも
+                # 動かず、カタログからも外さない**（断ったら何も起きない）ので、行は
+                # 「手で消した後の後始末」の受け皿になる。
+                self._keep_failed_log(deletion_id, stage=stage)
+                self._prune_empty(dest_dir)                         # **空の入れ物だけ片づける**
+                raise
+            # **他の断り（`target_exists` など）は今までどおり行を消す。** 移動先に在るのは
+            # **別の物**なので、行を残すと「戻す」が他人のファイルを動かしかねない
+            self._drop_log(deletion_id, dest_dir)
+            raise
         except BaseException:
             self._drop_log(deletion_id, dest_dir)                   # **動かせなければ行を消す**
             raise
@@ -995,6 +1046,11 @@ class DeletionService:
     def _drop_log(self, deletion_id: str, dest_dir: Path | None = None) -> None:
         """**動かせなかった台帳の行**を消す（B-1。`_drop_request` と同じ形）。
 
+        **（P11 の監査 A-2）OS に断られた（`move_failed`）ときは呼ばない**——案内が名指しする
+        「ファイルが無いので片付ける」の行が無くなるため（`_keep_failed_log` を使う）。
+        呼ぶのは**他の断り**（`target_exists`＝移動先に**別の物**が在る）と、
+        **途中で落ちた**（`BaseException`）ときだけ。
+
         **`restored_at` が立っている行は消さない**（取り消しの記録を消さない）。
         作った移動先のフォルダが空なら片づける（`cross_volume` のときと同じ後始末）。
         """
@@ -1005,10 +1061,39 @@ class DeletionService:
         if dest_dir is not None:
             self._prune_empty(dest_dir)
 
+    def _keep_failed_log(self, deletion_id: str, *, stage: int) -> None:
+        """**移せなかった台帳の行を残す**（P11 の監査 A-2。利用者の依頼）。
+
+        案内（`MOVE_FAILED_MESSAGE`）は「エクスプローラーで消してから**「ファイルが無いので
+        片付ける」**」と言う。**行を消すとそのボタンが無い**（実測 `1_row_for_p1: []`）ので、
+        行を残して**利用者がファイルを手で消した後に行を終わりにできる**ようにする。
+        **ファイルは動かさない・カタログからも外さない**（断ったら何も起きない）。
+
+        **段 3 の行は段 2 に落とす**——移せていないので **5 分の窓は無い**（`remaining_sec` /
+        `purge_at` を NULL に）。段 3 の行は画面に「ファイルが無いので片付ける」を出さない
+        （`closeable` は段 1・2 だけ）ので、**押せる段**へ落とす。**移そうとした先**
+        （段 3 は一時置き場）を `to_path` にする——`undo` は「元の場所に同じ物が在る」道
+        （`_original_state` が `same`）で**削除は起きていなかった**と正直に返せる。
+
+        **要求（`delete_request`）の行は `delete()` が消す**（断った要求は残さない）ので、
+        **外部キーを外す**（`deletion_log.request_id` は `delete_request` を参照している。
+        残すと `_drop_request` が `FOREIGN KEY` で落ちる）。
+        """
+        with self.store.transaction() as con:
+            if stage == 3:
+                con.execute(
+                    "UPDATE deletion_log SET stage = 2, to_path = hold_path, hold_path = NULL,"
+                    " remaining_sec = NULL, purge_at = NULL, request_id = NULL WHERE id = ?",
+                    (deletion_id,))
+            else:
+                con.execute("UPDATE deletion_log SET request_id = NULL WHERE id = ?",
+                            (deletion_id,))
+        self._born.pop(deletion_id, None)
+
     def _prune_empty(self, path: Path) -> None:
         """**空になった入れ物を `<data>` の手前まで片づける**（`<data>` は消さない）。
 
-        `_drop_log` と `cross_volume` の後始末に使う（**断ったのに空の
+        `_drop_log` / `_keep_failed_log` と `cross_volume` の後始末に使う（**断ったのに空の
         `pending-delete/<id>/` や `trash/<日付>/` が残る**のを防ぐ。D-7）。
         中身が在ればそこで止まる（他の保留を消さない）。
         """
@@ -1803,7 +1888,10 @@ class DeletionService:
             destination = self._free_db_name(destination)
         if stage != 1:
             try:
-                move_no_clobber(source, destination)                # **取引の外**・上書きしない
+                # **（P11 の監査 B-1）取り消しは専用の案内**（削除の案内を出すと、それに従った
+                # 利用者が**戻したかったファイルを消す**）。段 3 は**一時置き場**から戻す
+                move_no_clobber(source, destination,                   # **取引の外**・上書きしない
+                                why="restore_hold" if stage == 3 else "restore_trash")
             except ReviewError as exc:
                 if exc.code in ("target_exists", "move_failed"):
                     # **止めて尋ねる**（`as_copy` で送り直す）／**動かせなかった**。

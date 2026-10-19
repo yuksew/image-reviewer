@@ -257,6 +257,7 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/japanese-ui-audit-report.md`](docs/japanese-ui-audit-report.md)、[`docs/japanese-ui-fix.md`](docs/japanese-ui-fix.md) | **日本語 UI の監査**（「日本語のシステムとして自然か」の軸。判定は**「一部に不揃い」**で、規約 A〜F・違反 A16/B11/C30/D17/E11/F9・用語 27 語の判定・質問 G-1〜G-10）と、その**修正の記録**（**§6.1 を規約 A〜F＝通し番号 1〜6 に振り直した**・分類ごとの件数・直す前→後・残した物と理由・1024×700 の検査を足した話） | §6.1, §17 |
 | [`schemas/backup-manifest.schema.json`](schemas/backup-manifest.schema.json) | **日次スナップショットの `manifest.json` の契約**（`restore` が復元の前に読む。`abi: 0.1`） | — |
 | [`docs/move-failed-message.md`](docs/move-failed-message.md) | **移動できなかったときの案内**（利用者の依頼。**パスで判定しない**・2 文＋詳細・`code` は `move_failed` のまま。段 2・後から進める・まとめての 4 経路が**同じ 1 か所**。壊すと落ちる 6 本・三点セット 576 / 406 / 11 本） | §6.1 |
+| [`docs/move-failed-message-2.md`](docs/move-failed-message-2.md) | **その 2 回目**（`docs/small-changes-audit-report.md` の **A-1・A-2・B-1** を直した記録。**画面の主な道に文を出す**（段 2 の結果・まとめて進める。固定文をやめて API の理由と `message`）・**移せなかった行を残す**（`1_row_for_p1: []` → 1 行・「ファイルが無いので片付ける」が押せる）・**取り消しは専用の文**（従うと戻すファイルが消えた）・文言の正は §6 を先に・**壊すと落ちる 9 通り**・三点セット 594 / 415 / 52） | §6.1 |
 | [`docs/p2-0-implementation.md`](docs/p2-0-implementation.md) | **P2-0 の実装の記録**（**スキーマ v7**。`folder` / `folder_member`・`asset` の取り込み元 3 列・控えを取ってから上げる道・**指示書のスケッチと設計が食い違った 4 点**・設計の穴 5 件・壊し試験 10 通り・実データは v6 のまま） | — |
 
 - P5 の点検・監査の**生ログ（`docs/p5-review-run.jsonl` / `p5-audit-run.jsonl` / `p5-2-audit-run.jsonl` /

@@ -125,6 +125,9 @@ export const SKIP_TEXT = {
   already_closed: '既に片付けています',
   already_restored: '既に戻しています',
   changed: '中身が変わっています',
+  // **（P11 の監査 A-1）** OS が移動を断った（`move_failed`）。**段 2 の結果にもまとめてにも出る**。
+  // 前は理由を見ずに「中身が変わっていたので消しませんでした」と固定で書いていた（嘘の理由）。
+  move_failed: '移動できませんでした',
   // **（P10 の監査 A-1）** 消した画像はもうその場所に無く、**別の画像**が登録されている
   // （台帳の枚・大きさと合わない）。**そのまま「片付ける」へ案内する**（本文が案内する）
   different_file: '別の画像があります',
@@ -137,14 +140,32 @@ export function skipText(reason) {
   return SKIP_TEXT[reason] || 'できませんでした';
 }
 
+/** **断られた数を、その操作の動詞で言う**（§6.1 の規約 3。段 2 は「移し」・段 3 は「消し」）。
+ *
+ * **（P11 の監査 A-1）** 前は段 2 の結果だけ「中身が変わっていたので**消し**ませんでした」と
+ * **理由も動詞も固定**だった。**理由は API が返した `skipped[].reason` から**作る。
+ */
+export const SKIP_VERB = { move: '移し', advance: '移し', delete: '消し', close: '片付け' };
+
 /** 断られた数と理由（**数を黙って捨てない**。理由は 2 つまで出し、残りは「ほか」）。 */
 export function skippedText(kind, skipped) {
   const list = skipped || [];
   if (!list.length) return '';
   const seen = [...new Set(list.map((s) => skipText(s.reason)))];
   const why = (seen.length > 2 ? seen.slice(0, 2).concat('ほか') : seen).join('、');
-  const verb = kind === 'advance' ? '移し' : '片付け';
+  const verb = SKIP_VERB[kind] || SKIP_VERB.close;
   return `${list.length.toLocaleString('ja-JP')} 件は${verb}ませんでした（${why}）。`;
+}
+
+/** **次に何をすればよいか**（API が返した `skipped[].message` を**そのまま**出す。P11 の監査 A-1）。
+ *
+ * `move_failed` の文は「エクスプローラーで消してから「ファイルが無いので片付ける」を押してください」
+ * まで含む（利用者の次の一手）。**理由の語だけでは何もできない**ので、**1 件目**の本文を続けて出す
+ * （同じ文が並ぶので、数は `skippedText` が言う）。
+ */
+export function moveFailedText(skipped) {
+  const hit = (skipped || []).find((s) => s.reason === 'move_failed' && s.message);
+  return hit ? String(hit.message) : '';
 }
 
 /** まとめてのボタンの語（**枚はその操作が効く行で数える**。0 のときは枚数を書かない）。 */
@@ -442,10 +463,18 @@ export function rowHtml(item) {
     : '<span class="pd-remain num">—</span>';
   // **（P8-3 の再確認 D-1）** 元の場所が埋まっているだけの行は「別名で戻す」を勧める。
   // 「いま消す」は**ボタンだけ**にして、文では勧めない（取り返しのつかない側を大きく言わない）
+  // **（P11 の監査 B-1）`move_failed` は「元へ移す」道を言う**——「別名で戻す」も「いま消す」も
+  // 通らない（元のフォルダに書けない）。**消す側を案内しない**（戻したかった物が消える）
+  const stuckHow = item.stuck_reason === 'target_exists' && item.needs_as_copy
+    ? '「別名で戻す」で戻せます。'
+    : (item.stuck_reason === 'move_failed'
+      ? (stage === 3
+        ? 'エクスプローラーで、一時置き場から元の場所へ移してください。'
+        : 'エクスプローラーで、アプリのゴミ箱から元の場所へ移してください。')
+      : '「別名で戻す」か「いま消す」を選べます。');
   const stuck = item.state === 'stuck'
     ? `<div class="pd-reason">戻せませんでした。${esc(stuckText(item.stuck_reason))}`
-      + (item.stuck_reason === 'target_exists' && item.needs_as_copy
-        ? '「別名で戻す」で戻せます。' : '「別名で戻す」か「いま消す」を選べます。')
+      + stuckHow
       + '</div>'
     : '';
   const buttons = [];
@@ -564,12 +593,19 @@ export function backupHintHtml(stage) {
 export function confirmHtml() {
   if (!state.ids.length) return '';
   if (state.exec) {
-    const skipped = (state.exec.skipped || []).length;
+    const skipped = state.exec.skipped || [];
+    const stage = Number(state.exec.stage ?? state.stage);
+    // **（P11 の監査 A-1）理由を固定で書かない。** API が返した `skipped[].reason` を日本語の
+    // 地図（`SKIP_TEXT`）に通し、**`move_failed` は本文（次の一手）もそのまま出す**。
+    // 前は `1 件は中身が変わっていたので消しませんでした。` と、**中身が変わっていない**ときにも
+    // そう書いていた（本物の Chrome で見つかった）。
+    const kind = stage === 2 ? 'move' : 'delete';
     return `<div class="pd-confirm"><div class="pd-sub">削除の確認</div>
-      <div class="pd-done">${esc(doneText(state.exec.count, state.exec.stage ?? state.stage,
+      <div class="pd-done">${esc(doneText(state.exec.count, stage,
         state.exec.window_sec ?? state.windowSec))}</div>`
-      + (skipped ? `<div class="stat">${skipped} 件は中身が変わっていたので消しませんでした。</div>` : '')
-      + backupHintHtml(state.exec.stage ?? state.stage)
+      + (skipped.length ? `<div class="stat">${esc(skippedText(kind, skipped))}</div>` : '')
+      + (moveFailedText(skipped) ? `<div class="stat">${esc(moveFailedText(skipped))}</div>` : '')
+      + backupHintHtml(stage)
       + '<div class="pd-confirm-actions">'
       + '<a class="back" href="#/pending-deletes">最近の削除で確かめる</a></div></div>';
   }
@@ -1005,7 +1041,10 @@ export async function runBatch(kind, confirmed = false) {
     }
     state.msg = (kind === 'advance'
       ? advanceDoneText(done.length) : closeDoneText(done.length, replayed))
-      + skippedText(kind, skipped);
+      + skippedText(kind, skipped)
+      // **（P11 の監査 A-1）** 断った理由だけでは**次の一手が分からない**。
+      // `move_failed` は API の本文（どこを手で消すか）をそのまま続ける
+      + moveFailedText(skipped);
     state.bad = skipped.length > 0;
     const left = new Set(skipped.map((s) => s.deletion_id));
     state.selected = new Set([...state.selected].filter((id) => left.has(id)));

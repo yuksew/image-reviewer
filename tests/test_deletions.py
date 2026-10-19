@@ -36,10 +36,20 @@ AGENT = {"X-Image-Reviewer-Actor": "agent"}
 
 #: **移動を断られたときの案内**（利用者の依頼 2026-10-19。`docs/move-failed-message.md`）。
 #: **`deletions.py` の定数を読まずに文をそのまま書く**——文言を戻したらここで落ちるようにする
-#: （「壊すと落ちる」の証拠。家風）。
+#: （「壊すと落ちる」の証拠。家風）。**（P11 の監査 D-3）「エクスプローラー」に揃えた**。
 MOVE_FAILED_TEXT = (
     "このファイルは移動できませんでした。ほかのフォルダにあるファイルは、"
-    "エクスプローラで消してから「ファイルが無いので片付ける」を押してください。"
+    "エクスプローラーで消してから「ファイルが無いので片付ける」を押してください。"
+    "（詳細: [WinError 5] アクセスが拒否されました。）")
+#: **（P11 の監査 B-1）取り消しは専用の文**。削除の案内（「消してから片付ける」）を出すと、
+#: それに従った利用者が**戻したかったファイルを消す**。段 2 はアプリのゴミ箱、段 3 は一時置き場。
+RESTORE_FAILED_TEXT = (
+    "このファイルは元の場所へ戻せませんでした。"
+    "エクスプローラーで、アプリのゴミ箱から元の場所へ移してください。"
+    "（詳細: [WinError 5] アクセスが拒否されました。）")
+RESTORE_FAILED_HOLD_TEXT = (
+    "このファイルは元の場所へ戻せませんでした。"
+    "エクスプローラーで、一時置き場から元の場所へ移してください。"
     "（詳細: [WinError 5] アクセスが拒否されました。）")
 
 
@@ -1339,15 +1349,20 @@ def test_the_ledger_row_is_written_before_the_file_moves(svc, store, library, mo
     assert seen["row"]["to_path"] is None and seen["src_exists"] is True
 
 
-def test_a_failed_move_leaves_no_ledger_row_and_no_moved_file(svc, store, library, monkeypatch):
-    """壊すと落ちる: 動かせなかったのに**台帳の行を残す**（B-1。「保留に在る」ことになる）。
+def test_a_failed_move_keeps_the_row_so_the_close_button_exists(svc, store, library, monkeypatch):
+    """壊すと落ちる: **移せなかったのに台帳の行を消す**（P11 の監査 A-2。利用者の依頼）。
 
-    動かせなければ行を消し、作った移動先も片づける。ファイルは元の場所のまま・登録も無傷。
+    段 2 で消そうとして OS に断られたら、**行を残す**——案内（`MOVE_FAILED_MESSAGE`）が
+    名指しする「ファイルが無いので片付ける」を押す行が要る（実測 `1_row_for_p1: []`）。
+    **段 3 で断られたときは段 2 の行に落とす**（移せていないので 5 分の窓は無い。段 3 の行は
+    「片付ける」を出さないので、押せる段へ落とす）。
+
+    **ファイルは動かさない・登録も無傷**（断ったら何も起きない）。空の入れ物も残さない。
     """
     path = make_png(library / "b1b.png", seed=201)
     asset_id = add_asset(store, path)
 
-    def boom(src, dst):
+    def boom(src, dst, **_kw):
         # **この試験の関心は「断られた後の後始末」**なので、本文は偽物でよい
         # （本物の文は `move_no_clobber` の 1 か所。利用者の依頼で 2026-10-19 に変えた）
         raise ReviewError(409, "移動できませんでした（試験）", code="move_failed")
@@ -1359,14 +1374,51 @@ def test_a_failed_move_leaves_no_ledger_row_and_no_moved_file(svc, store, librar
                        confirm_last_copy=True)
         assert err.value.code == "move_failed", err.value.code
     assert path.exists(), "動かせないのにファイルが消えた"
-    assert store.con.execute("SELECT count(*) AS n FROM deletion_log").fetchone()["n"] == 0, \
-        "動かせなかったのに台帳の行が残っている（迷子の元。B-1）"
+    rows = [dict(r) for r in store.con.execute(
+        "SELECT * FROM deletion_log ORDER BY at, id").fetchall()]
+    assert len(rows) == 2, f"動かせなかった行が残っていない（案内の「片付ける」が押せない）: {rows}"
+    assert {int(r["stage"]) for r in rows} == {2}, f"段 3 の失敗を押せる段に落としていない: {rows}"
+    assert all(r["restored_at"] is None and r["closed_at"] is None for r in rows)
+    assert all(r["to_path"] for r in rows), "移そうとした先が残っていない（戻す道が無くなる）"
+    assert all(r["hold_path"] is None and r["purge_at"] is None and r["remaining_sec"] is None
+               for r in rows), "移せていないのに 5 分の窓が残っている"
+    assert all(r["request_id"] is None for r in rows), \
+        "断った要求の行を指したまま（`_drop_request` が外部キーで落ちる）"
     assert store.con.execute("SELECT count(*) AS n FROM delete_request").fetchone()["n"] == 0, \
         "断った要求の行が残っている"
     assert where(store, asset_id)["missing_at"] is None, "動いていないのに参照切れにした"
     for folder in (HOLD_DIR, TRASH_DIR):
         got = store.data_dir / folder
         assert not got.exists() or not any(got.rglob("*")), f"{folder} に空の入れ物が残った"
+    # **画面が押せる形になっている**（「ファイルが無いので片付ける」は `closeable` の行にだけ出る）
+    items = svc.pending(actor="human")["items"]
+    assert len(items) == 2 and all(i["closeable"] for i in items), items
+
+
+def test_the_row_that_could_not_be_moved_is_closed_after_the_file_is_gone(svc, store, library,
+                                                                          monkeypatch):
+    """壊すと落ちる: **案内どおりに進んだ後始末ができない**（P11 の監査 A-2 の通る道）。
+
+    段 2 で断られる → **行が残る** → ファイルがまだ在るので「片付ける」は 409 `file_found`
+    → 利用者がエクスプローラーで消す（ここでは `unlink`）→ 「片付ける」が 200。
+    **ファイルはアプリが消さない**（利用者が消す。`files_touched: 0`）。
+    """
+    path = make_png(library / "hand-close.png", seed=205)
+    asset_id = add_asset(store, path)
+    deny_moves(monkeypatch)
+    with pytest.raises(ReviewError) as err:
+        svc.delete(asset_id=asset_id, path=str(path), stage=2, actor="human")
+    assert err.value.code == "move_failed", err.value.code
+    monkeypatch.undo()                                      # 断りを外す（OS の権限が直った形）
+    deletion_id = svc.pending(actor="human")["items"][0]["id"]
+    with pytest.raises(ReviewError) as found:
+        svc.close(deletion_id, reason="missing", actor="human")
+    assert found.value.status == 409 and found.value.code == "file_found", found.value.code
+    path.unlink()                                           # **利用者がエクスプローラーで消した**
+    got = svc.close(deletion_id, reason="missing", actor="human")
+    assert got["closed"] is True and got["files_touched"] == 0, got
+    assert svc.pending(actor="human")["count"] == 0, "片付けた行が一覧に残っている"
+    assert where(store, asset_id)["missing_at"] is None, "片付けは登録もカタログも触らない"
 
 
 # ---- 移動を断られたときの案内（利用者の依頼 2026-10-19。`docs/move-failed-message.md`）----
@@ -1380,7 +1432,8 @@ def test_a_permission_error_names_the_way_that_works(svc, store, library, monkey
     （`docs/design.md` §16.7 の末尾）ので、外のファイルは**必ず断られる**——通る道
     （エクスプローラで消してから「ファイルが無いので片付ける」）を**2 文**で案内する。
     **パスは本文に出さない**（読めない 1 行になる）。**`code` は `move_failed` のまま**
-    （呼び出し側と検査を壊さない）。**動かさない・台帳を残さない**（B-1）。
+    （呼び出し側と検査を壊さない）。**動かさない。台帳の行は残す**（P11 の監査 A-2。
+    案内の「ファイルが無いので片付ける」を押す行が要る）。
     """
     path = make_png(library / "denied.png", seed=210)
     asset_id = add_asset(store, path)
@@ -1393,8 +1446,8 @@ def test_a_permission_error_names_the_way_that_works(svc, store, library, monkey
     assert str(store.data_dir) not in err.value.detail, "移動先のパスを本文に出している"
     assert err.value.details["from"] == str(path), "詳細（`details`）からパスを消した"
     assert path.exists(), "断られたのにファイルが動いた"
-    assert store.con.execute("SELECT count(*) AS n FROM deletion_log").fetchone()["n"] == 0, \
-        "断られたのに台帳の行が残っている（迷子の元。B-1）"
+    items = svc.pending(actor="human")["items"]
+    assert len(items) == 1 and items[0]["stage"] == 2 and items[0]["closeable"], items
     assert where(store, asset_id)["missing_at"] is None, "動いていないのに参照切れにした"
 
 
@@ -1432,8 +1485,62 @@ def test_a_permission_error_over_http_names_the_way_that_works(client, tmp_path,
     assert body["detail"] == MOVE_FAILED_TEXT, body["detail"]
     assert body["details"]["from"] == str(path) and body["details"]["to"], body["details"]
     assert path.exists(), "断られたのにファイルが動いた"
-    assert store.con.execute("SELECT count(*) AS n FROM deletion_log").fetchone()["n"] == 0
+    # **（P11 の監査 A-2）画面が次の一手を押せる行が残る**
+    listed = client.get("/api/pending-deletes", headers=HUMAN).json()["items"]
+    assert len(listed) == 1 and listed[0]["closeable"], listed
 
+
+def test_a_failed_undo_names_the_way_back_not_the_way_to_delete(svc, store, library, monkeypatch):
+    """壊すと落ちる: 取り消しに**削除の案内**を返す（P11 の監査 B-1。従うとファイルが消える）。
+
+    段 2 で消したファイルを戻そうとして元のフォルダに書けないとき、案内が
+    「エクスプローラーで消してから片付ける」だと、**戻したかったファイルを消させる**
+    （監査の実測: ゴミ箱の中の `p5.png` を消して「片付ける」が 200 で通り、ファイルは
+    どこにも無くなった）。取り消しは**元へ移す**道を案内する。**ファイルは動かない**。
+    """
+    path = make_png(library / "undo-denied.png", seed=214)
+    asset_id = add_asset(store, path)
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=2, actor="human")
+    trash_path = Path(got["to_path"])
+    monkeypatch.setattr(deletions.os, "rename",                     # 戻す移動だけを断る
+                        lambda src, dst: (_ for _ in ()).throw(
+                            PermissionError(13, "アクセスが拒否されました。", str(src), 5)))
+    with pytest.raises(ReviewError) as err:
+        svc.undo(got["deletion_id"], actor="human")
+    assert err.value.status == 409 and err.value.code == "move_failed", err.value.code
+    assert err.value.detail == RESTORE_FAILED_TEXT, err.value.detail
+    assert "ファイルが無いので片付ける" not in err.value.detail, \
+        "取り消しで削除の案内（片付ける）を出している（従うと戻すファイルが消える）"
+    assert "消してから" not in err.value.detail, "取り消しで「消す」を勧めている（B-1）"
+    assert str(trash_path) in err.value.details["from"], "詳細から場所を消した"
+    assert trash_path.exists(), "戻せなかったのにゴミ箱のファイルが消えた"
+    assert store.con.execute("SELECT purge_at FROM deletion_log WHERE id = ?",
+                             (got["deletion_id"],)).fetchone()["purge_at"] is None, \
+        "取り消しに失敗した行が自動削除の対象に残っている"
+
+
+def test_a_failed_restore_from_the_hold_area_names_the_hold_area(svc, store, library,
+                                                                  monkeypatch):
+    """壊すと落ちる: 段 3 の取り消しで**アプリのゴミ箱**を案内する（P11 の監査 B-1）。
+
+    段 3 のファイルは一時置き場（`pending-delete/<id>/`）に在る。取り消しが断られたら
+    **一時置き場から元へ移す**道を案内する（ゴミ箱には無いので、そこを探させない）。
+    """
+    path = make_png(library / "hold-denied.png", seed=215)
+    asset_id = add_asset(store, path)
+    got = svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                     confirm_last_copy=True)
+    hold_path = Path(got["hold_path"])
+    assert hold_path.exists(), "段 3 の移動ができていない（試験の前提）"
+    deny_moves(monkeypatch)
+    with pytest.raises(ReviewError) as err:
+        svc.undo(got["deletion_id"], actor="human")
+    assert err.value.status == 409 and err.value.code == "move_failed", err.value.code
+    assert err.value.detail == RESTORE_FAILED_HOLD_TEXT, err.value.detail
+    assert "一時置き場" in err.value.detail and "ファイルが無いので片付ける" not in err.value.detail
+    assert hold_path.exists(), "戻せなかったのに一時置き場のファイルが消えた"
+    assert store.con.execute("SELECT purge_at FROM deletion_log WHERE id = ?",
+                             (got["deletion_id"],)).fetchone()["purge_at"] is None
 
 def test_a_row_whose_move_never_happened_is_recovered_not_purged(svc, store, library, clock):
     """壊すと落ちる: 「移動の前に落ちた行」を、窓切れで**黙って消す**（B-1 の後始末）。

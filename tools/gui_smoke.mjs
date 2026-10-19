@@ -1011,6 +1011,8 @@ let DUP_BODY = DUP_NEAR;
 let PREVIEW_NOW = PREVIEW_BODY;
 let BULK_FAILS = null;                       // 409 の本文を入れると失敗の道を見られる
 let BULK_STAGE = 1;                          // 実行の応答の `stage`（P9 の監査 G-5 の検査用）
+// **（P11 の監査 A-1）** まとめて削除の `skipped`（理由と本文）。画面が**そのまま出す**かを見る
+let BULK_SKIPPED = [];
 let UNDO_FAILS = null;                       // **（監査 C-3）** 取り消しの失敗の道
 // **（P10）** まとめての応答（1 件の口の失敗の道は `ADVANCE_FAILS` / `CLOSE_FAILS`）
 let ADVANCE_NOW = { advanced: [], skipped: [], count: 0, skipped_count: 0, replayed: false };
@@ -1051,7 +1053,7 @@ globalThis.fetch = async (url, options) => {
   }
   if (u.startsWith('/api/locations/bulk-delete')) {
     if (BULK_FAILS) return res(BULK_FAILS, 409);
-    return res({ preview_id: 'pv1', stage: BULK_STAGE, deleted: [], skipped: [], count: 2,
+    return res({ preview_id: 'pv1', stage: BULK_STAGE, deleted: [], skipped: BULK_SKIPPED, count: 2,
                  bytes: 2_900_000, requested: 2, replayed: false });
   }
   if (u.startsWith('/api/pending-deletes') && u.endsWith('/undo')) {
@@ -1868,6 +1870,62 @@ stageHtml = String(el('pd-confirm').innerHTML || '');
 check(stageHtml.includes('2 枚をアプリのゴミ箱へ移しました。いつでも戻せます。'),
   `段 2 の結果は「ゴミ箱へ移しました」＋「いつでも戻せます」: ${(stageHtml.match(/pd-done[^>]*>[^<]*/) || [])[0]}`);
 check(!/あと \d+:\d\d/.test(stageHtml), '段 2 も窓の残り時間を出さない');
+
+// 13b. **（P11 の監査 A-1）断られた理由は API の `skipped[].reason` をそのまま出す**。
+//   前は段 2 の結果に「1 件は中身が変わっていたので消しませんでした。」と**固定で**書いていた
+//   （`move_failed` でも中身は変わっていない＝嘘。本物の Chrome で見つかった）。
+//   **`skipped[].message`（次の一手）もそのまま出す**（理由の語だけでは何もできない）。
+const MOVE_FAILED_NOW = 'このファイルは移動できませんでした。ほかのフォルダにあるファイルは、'
+  + 'エクスプローラーで消してから「ファイルが無いので片付ける」を押してください。'
+  + '（詳細: [WinError 5] アクセスが拒否されました。）';
+BULK_SKIPPED = [{ asset_id: 'a1', reason: 'move_failed', message: MOVE_FAILED_NOW }];
+await pdUi.showPending('?ids=a1,a2');
+pdUi.askStage(2);
+await pdUi.preview();
+el('pd-confirm').dispatch('click', { target: hitOf('.pd-exec', {}) });
+await tick();
+await tick();
+stageHtml = String(el('pd-confirm').innerHTML || '');
+check(stageHtml.includes('1 件は移しませんでした（移動できませんでした）。'),
+  `段 2 の断りの理由は API から（P11 の監査 A-1）: ${(stageHtml.match(/pd-confirm[\s\S]{0,300}/) || [])[0]?.slice(0, 90)}`);
+check(!stageHtml.includes('中身が変わっていたので消しませんでした'), '嘘の理由を固定で書かない');
+check(stageHtml.includes(MOVE_FAILED_NOW), '次の一手（`skipped[].message`）をそのまま出す');
+// 段 3 は動詞が「消し」（選んだ段の動詞。§6.1 の規約 3）
+BULK_STAGE = 3;
+BULK_SKIPPED = [{ asset_id: 'a1', reason: 'move_failed', message: MOVE_FAILED_NOW }];
+PREVIEW_NOW = { ...PREVIEW_BODY, stage: 3 };
+await pdUi.showPending('?ids=a1,a2');
+pdUi.askStage(3);
+await pdUi.preview();
+el('pd-confirm').dispatch('click', { target: hitOf('.pd-exec', {}) });
+await tick();
+await tick();
+stageHtml = String(el('pd-confirm').innerHTML || '');
+check(stageHtml.includes('1 件は消しませんでした（移動できませんでした）。'),
+  `段 3 の断りは「消しませんでした」（段 2 は「移しませんでした」）: ${(stageHtml.match(/1 件は[^<]*/) || [])[0]}`);
+BULK_STAGE = 1;
+BULK_SKIPPED = [];
+PREVIEW_NOW = PREVIEW_BODY;
+pdUi.askStage(1);
+
+// 13c. **（P11 の監査 A-1）まとめての結果も `skipped[].message` を出す**。
+//   前は「2 件は移しませんでした（できませんでした）。」で終わり、**次の一手が画面に 1 度も出なかった**。
+ADVANCE_NOW = { advanced: [], skipped: [
+  { deletion_id: 'd4', reason: 'move_failed', message: MOVE_FAILED_NOW },
+  { deletion_id: 'd5', reason: 'move_failed', message: MOVE_FAILED_NOW }],
+  count: 0, skipped_count: 2, replayed: false };
+await pdUi.showPending('?ids=');
+pdUi.pickAll(true);
+el('pd-bulk').dispatch('click', { target: hitOf('.pd-advance-many', {}) });
+await tick();
+await tick();
+const manyHtml = String(el('pd-msg').innerHTML || '');
+check(manyHtml.includes('2 件は移しませんでした（移動できませんでした）。')
+  && manyHtml.includes(MOVE_FAILED_NOW),
+  `まとめての断りに次の一手を続ける（P11 の監査 A-1）: ${manyHtml.slice(0, 120)}`);
+check(!manyHtml.includes('できませんでした）。') || manyHtml.includes('移動できませんでした）。'),
+  '「できませんでした」で終わらせない');
+ADVANCE_NOW = { advanced: [], skipped: [], count: 0, skipped_count: 0, replayed: false };
 BULK_STAGE = 1;
 PREVIEW_NOW = PREVIEW_BODY;
 pdUi.askStage(1);
@@ -2313,9 +2371,20 @@ check(teRow.includes('戻せませんでした。元の場所に既にファイ�
   `target_exists の文を直した（P8-3 の再確認 D-1）: ${(teRow.match(/戻せませんでした[\s\S]{0,60}/) || [])[0]}`);
 check(!teRow.includes('いま消す」を選べます'), '「いま消す」を文で勧めない');
 check(teRow.includes('>いま消す<') && teRow.includes('>別名で戻す<'), 'ボタンは両方残す');
-const otherRow = pdUi.rowHtml({ ...PENDING_BODY.items[1], stuck_reason: 'move_failed' });
+const otherRow = pdUi.rowHtml({ ...PENDING_BODY.items[1], stuck_reason: 'different' });
 check(otherRow.includes('「別名で戻す」か「いま消す」を選べます。'),
   '他の理由では今までどおり両方を案内する');
+// **（P11 の監査 B-1）取り消しで移せなかった行は「元へ移す」道を言う**——「別名で戻す」も
+// 「いま消す」も通らない（元のフォルダに書けない）。**消す側を案内しない**（戻したかった物が消える）
+const moveFailedRow = pdUi.rowHtml({ ...PENDING_BODY.items[1], stage: 2, state: 'stuck',
+  stuck_reason: 'move_failed' });
+check(moveFailedRow.includes('エクスプローラーで、アプリのゴミ箱から元の場所へ移してください。'),
+  `move_failed の行は元へ移す道を言う（P11 の監査 B-1）: ${(moveFailedRow.match(/戻せませんでした[\s\S]{0,80}/) || [])[0]}`);
+check(!moveFailedRow.includes('「いま消す」を選べます'), 'move_failed で消す側を文で勧めない');
+const moveFailedHoldRow = pdUi.rowHtml({ ...PENDING_BODY.items[1], stage: 3, state: 'stuck',
+  stuck_reason: 'move_failed' });
+check(moveFailedHoldRow.includes('エクスプローラーで、一時置き場から元の場所へ移してください。'),
+  `段 3 の取り消しは一時置き場を案内する: ${(moveFailedHoldRow.match(/戻せませんでした[\s\S]{0,80}/) || [])[0]}`);
 
 // 31. **（P9 の監査 C-2）画面に出す「枚」は 1 つの規則**（生きた枚）。
 //     実データ: `/api/stats` の `assets` = 455（段 1〜3 で外した 193 枚を含む）、

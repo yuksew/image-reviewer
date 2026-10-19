@@ -15,12 +15,16 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import os
 import uuid
 from pathlib import Path
 
 import pytest
 
-BASE = Path(__file__).resolve().parent / ".tmp"
+# **プロセスごとに分ける**（`os.getpid()`）: 監査の担当と開発の担当が**同時に pytest を回す**ことが
+# あり、base を共有すると**片方の後始末がもう片方の作ったフォルダを拾って**「残っています」で
+# 落ちる（実測: 2026-10-19。失敗そのものは無関係でも**連鎖して赤くなる**）。
+BASE = Path(__file__).resolve().parent / ".tmp" / str(os.getpid())
 
 # この実行で作ったフォルダ（最後に 1 つも残っていないことを確かめる）
 _CREATED: list[Path] = []

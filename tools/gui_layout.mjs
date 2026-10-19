@@ -1381,7 +1381,11 @@ try {
       if (got.rows > 0 && !got.entryVisible) bad.push('入口が見える（先頭の行）');
       // **（P10）後から段 2 へ進める・片付ける口**（段 1 の行に 2 つ、段 2 の行に「片付ける」）。
       // **語は §6.1 の規約**（「実体」を使わない・「用意」を使わない・段の名前をそのまま動詞にする）
-      if (got.rows > 0) {
+      // **（tray の再確認で判明）「選べる行が 0」のときは、まとめての帯を出さないのが正しい**。
+      // 利用者の実データが全部片付け済み（194 件・開いている行 0）になり、行はあるが**選べる行が無い**
+      // 状態で 4 幅とも NG になった。**「行がある」ではなく「選べる行がある」で帯を期待する**。
+      const pickable = got.advances + got.closeRowsNotStage1 + got.trashCloses;
+      if (pickable > 0) {
         const stage1 = got.strips.filter((t) => /^段 1 /.test(t)).length;
         if (!got.bulkText.includes('全部選ぶ')) bad.push(`まとめての帯（${got.bulkText}）`);
         if (!/選んだ(行|[0-9,]+ 件)をまとめて片付ける/.test(got.bulkText)) {
@@ -1398,7 +1402,7 @@ try {
         // （取り消すだけ）は選べないのが正しい。**「チェックの数」と「選べる行の数」を等号で見る**
         // ——「行数より多くない」「0 でない」だけでは、1 行にしかチェックが出なくても通ってしまう。
         // 期待値 = 段 1 の行 + 段 1 以外で「片付ける」がある行 + ゴミ箱の行の「片付ける」
-        const expectedPicks = got.advances + got.closeRowsNotStage1 + got.trashCloses;
+        const expectedPicks = pickable;
         if (got.picks !== expectedPicks) {
           bad.push(`チェックの数が選べる行と合わない（${got.picks}／期待 ${expectedPicks}`
             + `＝段 1 ${got.advances}＋段 1 以外の片付け ${got.closeRowsNotStage1}＋ゴミ箱 ${got.trashCloses}）`);

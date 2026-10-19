@@ -1386,7 +1386,14 @@ try {
         if (/選んだ 0 件/.test(got.bulkText)) {
           bad.push(`選んだ 0 件と書かない（${got.bulkText}）`);
         }
-        if (got.picks < got.rows) bad.push(`まとめてのチェック（${got.picks}/${got.rows}）`);
+        // **（P10 の仕様）選べるのは段 1 と片付けられる行だけ**。段 3 の窓がある行（取り消すだけ）は
+        // 選べないのが正しいので、**行数と一致しなくてよい**（2026-10-19 の監査で判明）。
+        // **選べる行があるのに 1 つも選べない**ときと、**行数より多く選ばれる**ときだけ NG。
+        if (got.picks > got.rows) bad.push(`チェックが行数より多い（${got.picks}/${got.rows}）`);
+        const pickable = got.advances + got.trash;
+        if (pickable > 0 && got.picks === 0) {
+          bad.push(`選べる行があるのにチェックが 0（選べる ${pickable} 行）`);
+        }
         if (stage1 && got.advances !== stage1) {
           bad.push(`段 1 の行に「アプリのゴミ箱へ移す」（${got.advances}/${stage1}）`);
         }

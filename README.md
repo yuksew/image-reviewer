@@ -11,19 +11,27 @@
 > 手順は [`docs/design.md`](docs/design.md) §16.2 の 1 を参照。文書内の名前は既に `image-reviewer` にしてある。
 
 - 状態: **P5（判断と比較）・P6（要求と注記）・P4（タグと語釈）・P8（重複・削除・バックアップ）・
-  P8-6（参照切れの再リンク）・P9（仕上げ）・P10（段 1 の行を後から進める・実体が無い行を片付ける）まで動く。**
+  P8-6（参照切れの再リンク）・P9（仕上げ）・P10（段 1 の行を後から進める・実体が無い行を片付ける）まで動く。
+  入口は 3 つ**（画面・上部バー・**タスクトレイ常駐**＝[`docs/tray.md`](docs/tray.md)。2026-10-19 に作った）。
 - **`docs/design.md` §12.1 の性能の目標は全部実測で埋めた**（未計測 0）。届かなかったのは一覧 API の
   1 行だけで、理由と必要な条件は [`docs/design.md`](docs/design.md) §12.1 と
   [`docs/p9-implementation.md`](docs/p9-implementation.md) にある。
-- **テスト 547 件**（`uv run --no-sync pytest -q` を自分で回して実測。**547 passed・0 failed**、40.3 秒）。
+- **テスト 565 件**（`uv run --no-sync pytest -q` を自分で回して実測。**565 passed・0 failed**、39.6 秒。
+  **トレイの契約 11 件**が入った数）。
   **並行して誰かが実データを `mode=ro` で読んでいると `test_data_dir_guard.py` の 1 件が落ちうる**
   （署名に使う `db.sqlite3-shm` の `mtime_ns` が動くため。**中身は変わっていない**。`docs/handoff.md` §6）。
-- **`gui_smoke` 395 検査**（ok / NG 0。**自分で回して実測**）。
+- **`gui_smoke` 406 検査**（ok / NG 0。**自分で回して実測**）。
 - **`gui_layout` 10 画面 × 4 幅**（`VIEWPORTS` は 1400・1024・1200・1920。＋`pending --ids` の 11 本目）を
   **複製で回して実測**（2026-10-19）。**`--screen tags` は語が 0 件だと必ず NG** なので
-  `gui_layout_seed.py --tags` を当てた複製で回す。**`--screen pending --ids` の「段 2 の結果の 1 行」だけは
-  4 幅とも NG**——`gui_layout.mjs` の `WANT_STAGE[2]` が「2 枚をゴミ箱へ移しました。」のままで、画面は
-  「2 枚をアプリのゴミ箱へ移しました。」（`frontend-design.md` §6 が正）。**検査の 1 行を直せば通る**。
+  `gui_layout_seed.py --tags` を当てた複製で回す。
+  **2026-10-19 の実測（トレイの段）**: **9 本は 4 幅とも ok**（36 検査）。**`--screen pending` と
+  `--screen pending --ids` の 2 本だけが 4 幅とも NG**（**理由はどちらも同じ 1 つ**）。
+  `tools/gui_layout.mjs:1389` の「**まとめてのチェック**」は「全部選ぶ」で**一覧の全部の行**が
+  選ばれることを期待するが、`apps/gui/pending.js:387` の `canPick()` は**段 1 と `closeable` の行だけ**を
+  選べる形にしてある（P10。**段 3 の窓の行は「取り消す」だけ**＝選べないのが正しい）。
+  複製に段 3 の行が 1 つでも混ざると 4 幅とも落ちる（実測: `チェック=194` / `rows=195`）。
+  **この 2 ファイルはトレイの段で触っていない**（`git status` で無変更）ので、**複製の形が同じなら
+  前から同じ**。直すなら検査の側（`got.picks < got.rows` を `canPick` に合わせる）。
 - **P8 の小段（P8-0〜P8-5）は全部通り、監査はどれも「合格（条件つき）」**（P8-3 の再確認は「合格（条件なし）」）。
   **P8-5 の条件 3 件も 2026-10-18 に直した**（[`docs/p8-5-audit-triage.md`](docs/p8-5-audit-triage.md)——
   印のボタンの二度押し・`gui_layout --screen asset` の段の期待値を API から組む形・読み取り専用の DB で
@@ -39,16 +47,37 @@
 
 ## 動かす（プロトタイプ）
 
+**起動は 3 つ**（どれも `UV_CACHE_DIR` を自分で設定する。**先に `uv sync` を 1 回**）。
+
+| 起動 | 何が起きるか |
+| --- | --- |
+| **デスクトップの `image-reviewer.lnk`**（中身は `start-image-reviewer.cmd`） | **トレイ（タスクトレイ常駐）**で立ち上がる。右下にアイコンが出て、ブラウザが開く |
+| `image-reviewer-tray.cmd` をダブルクリック | 上と同じ（**トレイの実体**はこれ） |
+| `start-image-reviewer-console.cmd` | **いままでどおりコンソール付き**。黒い窓にログが出て、窓を閉じるとサーバも止まる |
+
+**トレイの使い方**（詳しくは [`docs/tray.md`](docs/tray.md)）: アイコンを**ダブルクリックするとブラウザが開く**。
+右クリックのメニューは **「ブラウザで開く」「最近の削除を開く」「状態を見る」「再起動する」
+「終了する（サーバも止める）」**。**終了すると、トレイが起動したサーバも止まる**（**既に動いていた
+サーバに繋いだときは止めない**——メニューの語が「トレイを閉じる（サーバは止めない）」に変わる）。
+ツールチップに状態が出る（`image-reviewer（稼働中）、要求 3、最近の削除 12`）。要求が来たときと
+**バックアップに失敗したとき**はバルーンで知らせる。記録は `<リポジトリ>\.tray\tray.log`。
+
+- **ショートカットの向き先を変える手順**（任意。**既定はもうトレイなので、そのままでよい**）:
+  デスクトップの `image-reviewer.lnk` を右クリック → プロパティ → **リンク先を
+  `<リポジトリ>\start-image-reviewer.cmd` にする**（古いショートカットが `uv run … serve` を
+  直接呼んでいる場合だけ効く）。
+
 ```powershell
-# 起動: デスクトップの `image-reviewer.lnk`（または `start-image-reviewer.cmd`）をダブルクリック
-#      （UV_CACHE_DIR を設定し、3 秒後に http://127.0.0.1:8790 を開く。トレイは無い）
+# 手で起動するとき（開発。トレイを使わない）
 $env:UV_CACHE_DIR = "$PWD\.uv-cache"
 uv sync
 uv sync --extra tagger                      # 内蔵タガー（onnxruntime。任意。入れると `auto` が内蔵を選ぶ）
 uv run image-reviewer scan --root 'C:\work\illust-authoring\.store\anima-dev'
 uv run image-reviewer serve --port 8790     # → http://127.0.0.1:8790
-uv run --no-sync pytest -q                  # 547 件（P10 の 27 件が入った数。2026-10-19 に実測）
-node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。395 検査）
+uv run --no-sync pytest -q                  # 565 件（2026-10-19 に実測）
+node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。406 検査）
+# **トレイの検査**（別のポートと、合成した複製だけで回す。**8790 は使わない**）
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\tray_selftest.ps1 -Port 8795   # 55 検査
 # 画面の計測（本物の Chrome）は**複製で立てたサーバ**へ。実データの 8790 では回さない（§「gui_layout は…」）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --count 8          # 比較（3 窓）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen requests  # 要求の一覧
@@ -121,6 +150,13 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
   **片付けた後は戻せない**＝`docs/deletions-advance.md`）。
 - **バックアップと復元**（`#/settings` と上部バーの 1 行。日次バックアップ・7 世代・
   `backup` / `restore` / `rebuild-metadata`）。
+- **タスクトレイ常駐**（`image-reviewer-tray.cmd` → `tools/tray.ps1`。**2026-10-19 に作った**。
+  **新しい依存を足していない**＝Windows の PowerShell と .NET の `NotifyIcon` だけ）。
+  **アイコンのダブルクリックで開く**。右クリックのメニューは「ブラウザで開く」「最近の削除を開く」
+  「状態を見る」「再起動する」「終了する（サーバも止める）」。**既に動いているサーバがあれば
+  二重に起動せずそれに繋ぐ**（そのときは止めない）。アイコンの形は**要求あり / 取り消せる削除あり /
+  両方 / なし**の 4 通りで、**バックアップに失敗している間は枠が赤**。詳しくは
+  [`docs/tray.md`](docs/tray.md)。
 - **参照切れの再リンク**（**口だけ**。`POST /api/locations/relink` は**人だけ**で、
   **中身の `sha256` が一致したときだけ繋ぐ**。`GET /api/locations/missing` で一覧が引ける）。
 
@@ -132,7 +168,6 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
   `<data>` ごと消しても、そこから戻せる（`image-reviewer restore <dir>`。`<data>` の中は保存先にできない）。
   取れなかったときは**上部バーと `#/settings` に失敗の全文**が出る（黙って失敗しない）。
 - **未実装**:
-  - **トレイ（タスクトレイ常駐）**——常駐の実装がリポジトリに無い。
   - **P2（カタログ。仮想フォルダ・スマートフォルダ・ドラッグ&ドロップ / クリップボード / URL の取込）**。
   - **P3 の残り**（`userdata` への設置・タグの統合と改名・本格的な検索・グラフの ComfyUI への設置）。
   - **プリセットの画面**。
@@ -164,6 +199,7 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/comparison.md`](docs/comparison.md) | 比較の設計（見た目・来歴・機械の指標、位置合わせ） | — |
 | [`docs/workflow-reproduction.md`](docs/workflow-reproduction.md) | 生成の条件の記録と再利用（**実行はしない**）、印による結果の紐付け | — |
 | [`docs/duplicates-deletion-backup.md`](docs/duplicates-deletion-backup.md) | 重複・削除（**5 分の取り消し**）・バックアップ | — |
+| [`docs/tray.md`](docs/tray.md) | **タスクトレイ常駐**（作った物・使い方・自動で確かめた結果・手で確かめた結果・設計の穴） | — |
 | [`docs/metadata-findings.md`](docs/metadata-findings.md) | 実機で確認した前提（PNG / JPEG・タガー）＋ 実測した性能 | — |
 | [`docs/comfyui-reproduction-findings.md`](docs/comfyui-reproduction-findings.md) | ComfyUI の再現経路の詳細調査（ソース引用つき・836 行） | — |
 | [`schemas/review-export.schema.json`](schemas/review-export.schema.json) | 他ツールが読む外部契約（draft 2020-12、`abi: 0.1`） | — |
@@ -281,8 +317,9 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 前面は**素の JavaScript**（`apps/gui/*.js`。フレームワークなし）。
 既定ポート **8790**。アプリの置き場は `<リポジトリ>/.data`。
 
-**目標（未着手）**: `onnxruntime-gpu`（内蔵タガー）、`pystray` と**タスクトレイ常駐**、
-ショートカット起動、前面の **TypeScript + Vite**（開発サーバは **5273**）。
+**目標（未着手）**: `onnxruntime-gpu`（内蔵タガー）、前面の **TypeScript + Vite**（開発サーバは **5273**）。
+（**タスクトレイ常駐は 2026-10-19 に作った**＝[`docs/tray.md`](docs/tray.md)。**`pystray` は使っていない**
+——PowerShell と .NET の `NotifyIcon` で足りた。）
 
 ## 開発メモ
 
@@ -290,7 +327,7 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 
 ```powershell
 # 起動: デスクトップの `image-reviewer.lnk`（または `start-image-reviewer.cmd`）をダブルクリック
-#      （UV_CACHE_DIR を設定し、3 秒後に http://127.0.0.1:8790 を開く。トレイは無い）
+#      （**トレイ（タスクトレイ常駐）**で立ち上がり、ブラウザが開く。止めるときはトレイの「終了する」）
 $env:UV_CACHE_DIR = "$PWD\.uv-cache"
 uv sync
 uv run image-reviewer serve --port 8790
@@ -332,7 +369,9 @@ uv run image-reviewer serve --port 8790
 **届かなかったのは一覧 API の 1 行だけ**（p95 244.7 ms / 目標 20 ms。**目標は下げていない**）。
 
 1. **次にやるなら**（**どれも利用者の判断**）:
-   - **トレイ（タスクトレイ常駐）**と**ショートカット起動の仕上げ**（常駐の実装がリポジトリに無い）。
+   - **「ファイルが無いので片付ける」をトレイからも使えるようにするか**（**トレイそのものは
+     2026-10-19 に作った**＝[`docs/tray.md`](docs/tray.md)。いまトレイにあるのは「ブラウザで開く」
+     「最近の削除を開く」「状態を見る」「再起動する」「終了する」の 5 つで、片付けは**画面だけ**）。
    - **参照切れの再リンクの画面**（**口は P8-6 で作った**＝`POST /api/locations/relink` は**人だけ**、
      `GET /api/locations/missing` は**読むだけ**。**中身の `sha256` が一致したときだけ繋ぐ**。
      **画面は無い**ので `GET /api/locations/missing` の `hint` に従って口で使う。

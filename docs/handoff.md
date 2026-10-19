@@ -115,8 +115,8 @@
 >   **`--no-hash` の走査**（実装に無い）。
 > - **実データは無傷**: **455 枚・段 1 の 193 行・判断 3 件・`missing_at` 0 件**のまま
 >   （画像の署名 `d9604560e494c510` と `.data` の署名 `ae60041b0b0b5365` が**前後で同じ**）。
->   **§14 の段はこれで全部済み**——次にやるのは**利用者の判断待ち**（トレイ・再リンクの画面・
->   一覧 API の改ページ・`--include-library` を日次に載せるか・exe 化）。
+>   **§14 の段はこれで全部済み**——次にやるのは**利用者の判断待ち**（再リンクの画面・
+>   一覧 API の改ページ・`--include-library` を日次に載せるか・exe 化）。**トレイは 2026-10-19 に作った**。
 >
 > **P8 の追記（2026-10-18。重複・削除・バックアップ）**: **P8 の小段（P8-0〜P8-5）が全部通りました**
 > （P8-0 = v6 の表と `backup-manifest` の契約／P8-1 = 重複の検出と整理／P8-2 = 削除の 3 段階と 5 分の取り消し／
@@ -157,7 +157,7 @@
 >   `GET /api/locations/missing`（**読むだけ**）の 2 つ。**中身の `sha256` が一致したときだけ繋ぎ、pHash は使わない**。
 >   **ファイルは 1 つも動かさない**（`asset_location` の 1 行を `UPDATE` し、`location_history` に 1 行残す）。
 >   **画面は無い（口だけ）**。実装の記録は [`p8-6-relink.md`](p8-6-relink.md)（**事故 3 件目**と `create_app()` の硬化もそこ）。
->   `design.md` の §5.1・§5.8・§6.1・§14・§15・§16.6 に反映した。**トレイ（常駐）も無い**（常駐の実装がリポジトリに無い。`design.md` §16.6）。
+>   `design.md` の §5.1・§5.8・§6.1・§14・§15・§16.6 に反映した。**この時点ではトレイ（常駐）も無かった**（`design.md` §16.6。**2026-10-19 に作った**＝§16.8）。
 > - **次の段は P9（仕上げ）**。未計測の性能（1024px サムネ・一覧 API・表示速度・**`--include-library` の 292 MB**）の
 >   実測、テストの締め、**exe 化の判断**（[`design.md`](design.md) §14 の P9 の行）。
 >
@@ -237,7 +237,7 @@
 | **P8-2（削除の 3 段階と 5 分の取り消し）** | **完了 → 監査「合格（条件つき）」→ 全部反映**（A3 窓の間は `missing_at`・B-1 台帳を先に書く・B-2 失敗したら `purge_at` を NULL・B-3 実削除は錠の下・C-1 人は誰の削除でも戻せる・C-2 `S_IWRITE`・C-3 資産と場所の単位）。再確認の軽微 2 件も反映 | `docs/p8-2-implementation.md`、`docs/p8-2-audit-report.md` ＋ [`p8-2-audit-recheck.md`](p8-2-audit-recheck.md) / [`p8-2-audit-recheck-triage.md`](p8-2-audit-recheck-triage.md) ＋ triage |
 | **P8-3（重複と削除の画面）** | **完了 → 監査「合格（条件つき）」→ 反映 → 再確認「合格（条件なし）」**。`#/duplicates`・`#/pending-deletes`・削除の入口 3 つ（拡大・下部バー・まとまり）・`tools/gui_layout_seed.py`（前提の行を複製の中に作る）。**再リンクはこの段に来ず、後の P8-6 で実装した**（下の P8-6 の行） | `docs/p8-3-implementation.md`、`docs/p8-3-audit-report.md` ＋ [`p8-3-audit-recheck.md`](p8-3-audit-recheck.md) ＋ [`p8-3-audit-triage.md`](p8-3-audit-triage.md) |
 | **P8-4（バックアップと復元）** | **完了 → 監査「合格（条件つき）」→ 全部反映**（B-1 **壊れた写しを採用しない**・C-1 `restore` は `db_sha256` を照合・C-2 掴まれていれば 409 の 1 行・C-3 読み取り専用でも読める口は読める・D-2 `pre-topup-*` の控え・G-8 `import` で `create_app()` を走らせない）。**実機の日次だけは未達**（sandbox。再確認 B-1'） | `docs/p8-4-implementation.md`、`docs/p8-4-audit-report.md` ＋ [`p8-4-audit-recheck.md`](p8-4-audit-recheck.md) ＋ [`p8-4-audit-triage.md`](p8-4-audit-triage.md) |
-| **P8-5（画面の仕上げ。合格の線に数えない）** | **完了 → 監査は「合格（条件つき）」→ 条件 3 件も反映済み（2026-10-18）**。`#/settings` のバックアップ（最後の失敗の全文・7 世代・**取り直す**・置き場）と**置き場ごとの「段 3 を許す」印**・上部バーの「バックアップに失敗しています」と「走査中です」・段 3 の出し分け・文言の追い込み。**トレイは作らない**（常駐の実装が無い）。口は `GET /api/scan` の 1 つだけ足した。**条件 3 件（C-1〜C-3）**: `setAllow` の二度押し・`backupHtml` の `read_only`・`--screen asset` の段の期待値（**2026-10-19 に「許可なしの置き場の枚で 4 幅 ok」を実測**）。**画面の語は「取り直す」に統一した**（下の 0 の D-1） | `docs/p8-5-implementation.md`、[`p8-5-audit-report.md`](p8-5-audit-report.md)、[`p8-5-audit-triage.md`](p8-5-audit-triage.md) |
+| **P8-5（画面の仕上げ。合格の線に数えない）** | **完了 → 監査は「合格（条件つき）」→ 条件 3 件も反映済み（2026-10-18）**。`#/settings` のバックアップ（最後の失敗の全文・7 世代・**取り直す**・置き場）と**置き場ごとの「段 3 を許す」印**・上部バーの「バックアップに失敗しています」と「走査中です」・段 3 の出し分け・文言の追い込み。**トレイは P8-5 では作らなかった**（2026-10-19 に別段で作った＝[`tray.md`](tray.md)）。口は `GET /api/scan` の 1 つだけ足した。**条件 3 件（C-1〜C-3）**: `setAllow` の二度押し・`backupHtml` の `read_only`・`--screen asset` の段の期待値（**2026-10-19 に「許可なしの置き場の枚で 4 幅 ok」を実測**）。**画面の語は「取り直す」に統一した**（下の 0 の D-1） | `docs/p8-5-implementation.md`、[`p8-5-audit-report.md`](p8-5-audit-report.md)、[`p8-5-audit-triage.md`](p8-5-audit-triage.md) |
 | **P8-6（参照切れの再リンク。合格の線 9）** | **完了。2026-10-18**（**監査と仕分けも済み**＝[`p8-6-audit-report.md`](p8-6-audit-report.md) ＋ [`p8-6-audit-triage.md`](p8-6-audit-triage.md)）。`POST /api/locations/relink`（**人だけ**。`exact` = 新しいファイル / `nearby` = 探すフォルダ）と `GET /api/locations/missing`（**読むだけ**）・`location_history` に `to_path` / `reason` / `actor`（**版は上げない**＝`pre-topup-*` の控え）・**`create_app()` の硬化**（**`IMAGE_REVIEWER_DATA` が無ければ開かない**）・**事故 3 件目**（実データに 3 列が控え無しで入った。**行の変化は 0**。控え `.backup/pre-p8-6-20261018-100443/`）。**画面は作っていない**（口だけ）。`tools/probe_p8.py --relink` が **16 行すべて OK** | [`p8-6-relink.md`](p8-6-relink.md)、[`p8-6-audit-report.md`](p8-6-audit-report.md) |
 | **P8 の合格の線（P8-1〜P8-4）** | **済み。2026-10-18**（**残っていた再リンク＝線 9 も P8-6 で実装済み**）。決定は [`docs/design.md`](design.md) §16.6 に反映済み。**画面の仕上げ（P8-5）の監査の条件 3 件も 2026-10-18 に反映済み** | `docs/design.md` §14・§16.6、[`p8-5-audit-triage.md`](p8-5-audit-triage.md)、[`p8-6-audit-triage.md`](p8-6-audit-triage.md) |
 | **P9（仕上げ）** | **完了（2026-10-18）**。**§12.1 の「目標」の行を全部実測で埋めた**（**未計測 0**）。届かなかったのは**一覧 API の 1 行だけ**（p95 **244.7 ms** / 目標 20 ms。**目標は下げていない**。理由と必要な条件は §12.1）。計測の途中で **`PRAGMA temp_store = MEMORY` の欠落**（1 万枚の `GET /api/assets` が 500 になっていた）と **D-8**（壊れていない DB に復元を勧めていた）を直し、**一覧で切った枚数を画面に出した**。道具は `tools/make_synthetic_db.py`（1 万枚の合成 DB）と `tools/probe_p9.py`（**サーバ内**の計測）。**監査の指摘（C-1〜C-3）も 2026-10-19 に全部反映**（[`p9-audit-triage.md`](p9-audit-triage.md)） | [`p9-implementation.md`](p9-implementation.md)、[`design.md`](design.md) §12.1・§12.2・§12.3・§16.7 | [`docs/design.md`](design.md) §14 |
@@ -285,8 +285,11 @@
   記録は [`deletions-advance.md`](deletions-advance.md)。**残っているのは監査だけ**。
   **利用者の再起動 → `#/pending-deletes` で「まとめて片付ける」**が次の 1 操作
   （**187 件が閉じ、7 件は断られる**）。
-- **トレイ（タスクトレイ常駐）**: **常駐の実装がリポジトリに無い**ので作っていない。作る段で `frontend-design.md` §11 の
-  入口 (c)（「最近の削除を開く」）を足す。
+- **トレイ（タスクトレイ常駐）**: **2026-10-19 に作った**（`tools/tray.ps1`。記録は
+  [`tray.md`](tray.md)）。既定の起動は `start-image-reviewer.cmd` → `image-reviewer-tray.cmd`。
+  `frontend-design.md` §11 の入口 (c)（「最近の削除を開く」）も入れた。
+  **残る判断**: P10 の「ファイルが無いので片付ける」を**トレイからも**使えるようにするか
+  （いまは画面だけ。`handoff.md` §3 の 2）。
 - **P2 / P3 の残り**: 仮想フォルダ・スマートフォルダ・取込の 3 経路（D&D / クリップボード / URL）・
   `userdata` への設置・タグの統合と改名・本格的な検索・プリセットの画面。
 - **実機の日次バックアップ**: **取れている**（`.backup/daily` に 3 世代）。**既定の
@@ -400,10 +403,9 @@ orca orchestration check --run run_5bdd431bf57b --ack <deliveryId> --json
 
 ### 2. トレイ（タスクトレイ常駐）
 
-**常駐の実装がリポジトリに無い**ので作っていない（`frontend-design.md` §3・§4.5・§4.6・§11 から入口を外してある）。
-**利用者の当初の回答は「トレイに出す」**なので、作る段を決める。作る段では `frontend-design.md` §11 の入口 (c)
-（「最近の削除を開く」）を足す。**P10 の「ファイルが無いので片付ける」もトレイから使えるようにするか**は
-そのときに決める（いまは画面だけ）。
+**2026-10-19 に作った**（`tools/tray.ps1` ＋ `image-reviewer-tray.cmd`。記録は [`tray.md`](tray.md)）。
+`frontend-design.md` §11 の入口 (c)（「最近の削除を開く」）も入れた。**残る判断**は
+**P10 の「ファイルが無いので片付ける」もトレイから使えるようにするか**（いまは画面だけ。§7 の 5 と同じ問い）。
 
 ### 3. P2 / P3 の残り
 
@@ -680,8 +682,9 @@ uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データ�
 4. **再リンクの画面を作るか、いつ作るか。** **口は P8-6 で作った**（`POST /api/locations/relink` は**人だけ**・
    `GET /api/locations/missing` は読むだけ。**画面は無い**＝対象の枚を一覧で見て「近くを探す」「場所を指定」を
    押す画面。`docs/frontend-design.md` に項目が無いので、作るなら画面設計から）。
-5. **トレイ（タスクトレイ常駐）を作るか。** いまは**常駐の実装がリポジトリに無い**ので、画面の一覧と入口から外してある
-   （`frontend-design.md` §3・§4.5・§4.6・§11）。**利用者の当初の回答は「トレイに出す」**なので、作る段を決める。
+5. ~~**トレイ（タスクトレイ常駐）を作るか。**~~ **済み（2026-10-19 に作った）**。`tools/tray.ps1` ＋
+   `image-reviewer-tray.cmd`。**残る問い**は「**P10 の『ファイルが無いので片付ける』をトレイからも使えるようにするか**」
+   （いまは画面だけ）。`frontend-design.md` §3・§4.5・§4.6・§11 と `design.md` §4.1・§16.8 を直した。
 6. **768px の上部バーを詰めるか**（P9 で見送った。**溢れは 0** なので実害は無く、**3 行に折り返す**見た目の問題。
    直すには `gui_layout` の `VIEWPORTS` に狭い窓を足すのが先）。
 7. **exe 化するか**（**P9 の推奨は「今は作らない」**。作れることは実測済み＝`p9-implementation.md` §6）。

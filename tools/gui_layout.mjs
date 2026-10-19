@@ -1382,6 +1382,10 @@ try {
         if (!/選んだ(行|[0-9,]+ 件)をまとめてアプリのゴミ箱へ移す/.test(got.bulkText)) {
           bad.push(`まとめて移すの語（${got.bulkText}）`);
         }
+        // **（P10 の監査 D-2）1 件も選んでいないときは「選んだ 0 件」と書かない**（状態を言う）
+        if (/選んだ 0 件/.test(got.bulkText)) {
+          bad.push(`選んだ 0 件と書かない（${got.bulkText}）`);
+        }
         if (got.picks < got.rows) bad.push(`まとめてのチェック（${got.picks}/${got.rows}）`);
         if (stage1 && got.advances !== stage1) {
           bad.push(`段 1 の行に「アプリのゴミ箱へ移す」（${got.advances}/${stage1}）`);

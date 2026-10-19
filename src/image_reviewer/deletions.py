@@ -313,6 +313,50 @@ def _require_human(actor: str, what: str) -> str:
     return actor
 
 
+# ---- **カタログから外す印（`asset.deleted_at`）の規則**（**1 か所に書く**）----
+#
+# 規則そのものは P8-3 の C-3 から変わっていない（§4.1）。**（P10 の監査 A-3）** 閉じた行
+# （`closed_at`）を「隠す理由」に数えない 1 点だけを直した。**走査からも呼べるように
+# モジュールの関数にした**（`scan.py` が「ファイルが戻ったら印を引き直す」のに使う。
+# サービスの中の `_sync_hidden` / `_should_hide` は**この 2 つに委譲するだけ**にして、
+# `relink.py` とテストが今までどおり `DeletionService._sync_hidden` を呼べるようにしてある）。
+
+
+def should_hide(con, asset_id: str) -> bool:
+    """**一覧から外すべきか**（`_sync_hidden` の規則そのもの。**1 か所に書く**）。
+
+    - **生きている場所が 0**（段 2・3 で最後の 1 つを移した／実削除した）
+    - **生きた段 1 の行がある**（段 1 は場所を消さずにカタログから外す）
+
+    **（P10 の監査 A-3）片付けた行（`closed_at`）は数えない。** 閉じた行は「終わった」ので、
+    隠す理由にならない（**実体が無い間は `live == 0` で隠れたまま**になるので、幽霊は戻らない）。
+    この 1 点が無いと、**ファイルが戻ってきても二度と一覧に戻せない**。
+    """
+    live = con.execute("SELECT count(*) AS n FROM asset_location WHERE asset_id = ?"
+                       " AND missing_at IS NULL", (asset_id,)).fetchone()["n"]
+    if int(live) == 0:
+        return True
+    hidden = con.execute("SELECT count(*) AS n FROM deletion_log WHERE asset_id = ?"
+                         " AND stage = 1 AND restored_at IS NULL AND closed_at IS NULL",
+                         (asset_id,)).fetchone()["n"]
+    return int(hidden) > 0
+
+
+def sync_hidden(con, asset_id: str | None, at: str | None = None) -> None:
+    """**カタログから外す印（`asset.deleted_at`）を、いまの状態から引き直す**（§4.1・C-3）。
+
+    **（P10 の監査 A-3）走査も呼ぶ**（`scan.py`。ファイルが戻って `missing_at` が外れた枚は、
+    **閉じた行しか無ければ一覧に戻る**）。`at` を渡さなければ今の時刻を使う。
+    """
+    if not asset_id:
+        return
+    if should_hide(con, asset_id):
+        con.execute("UPDATE asset SET deleted_at = COALESCE(deleted_at, ?) WHERE id = ?",
+                    (at or db.now(), asset_id))
+    else:
+        con.execute("UPDATE asset SET deleted_at = NULL WHERE id = ?", (asset_id,))
+
+
 class DeletionService:
     """削除の 3 段階・凍結・取り消し・タイマー（§0.6・§0.7・§3.2）。
 
@@ -887,11 +931,18 @@ class DeletionService:
         return out
 
     def _live_stage1(self, target: dict):
-        """**同じ場所を既に段 1 で外しているか**（D-12。2 回目は行を増やさない）。"""
+        """**同じ場所を既に段 1 で外しているか**（D-12。2 回目は行を増やさない）。
+
+        **（P10 の監査 A-3）片付けた行（`closed_at`）は数えない。** 数えると、片付けた後に
+        同じ場所をもう一度段 1 で外しても `replayed: true` になって**新しい行が作られず**、
+        その行の `undo` も 409 `already_closed` のままになる（＝**ファイルが戻ってきても
+        カタログに戻せない**）。閉じた行は「終わった」ので、新しい削除として数え直す。
+        """
         with self.store.locked() as con:
             return con.execute(
                 "SELECT * FROM deletion_log WHERE stage = 1 AND restored_at IS NULL"
-                "   AND asset_id = ? AND path = ? ORDER BY at DESC, id DESC LIMIT 1",
+                "   AND closed_at IS NULL AND asset_id = ? AND path = ?"
+                " ORDER BY at DESC, id DESC LIMIT 1",
                 (target["asset_id"], target["path"])).fetchone()
 
     @staticmethod
@@ -1162,8 +1213,12 @@ class DeletionService:
 
         - **人だけ**（403 `human_only`）。`actor` は `delete_request` に残す（**台帳の行の
           `actor` は消した人なので上書きしない**。1 行 = 1 回の削除の記録を壊さない）
-        - **登録した場所にファイルが在るときだけ**。無ければ **409 `missing_file`** で断り、
+        - **その行が指すファイルが在るときだけ**。無ければ **409 `missing_file`** で断り、
           **「ファイルが無いので片付ける」を案内する**（画面の次の一手）
+        - **（P10 の監査 A-1）台帳の行が指す物かを照合する**。走査が同じ場所を別の `asset` として
+          登録し直すと台帳の `asset_id` は古くなる（実データの 6 行）。**台帳の `size`** と
+          **いまその場所を登録している枚**が合わなければ **409 `different_file`** で断る
+          （**別の画像のファイルを移さない**＝利用者の見ている枚を消さない）
         - 移し方は段 2 と同じ `_destination()` ＋ `move_no_clobber()`（**上書きしない**。
           409 `target_exists` / 別ボリュームは 409 `cross_volume`）
         - **台帳を先に書いてから動かす**（B-1 と同じ）。動かせなければ段 1 に戻す（`_unadvance`）
@@ -1192,6 +1247,8 @@ class DeletionService:
         1 件ずつ `_advance_one()` を通す（**規則を 2 か所に書かない**）。**断った 1 件は
         `skipped` に理由つきで残して、残りは進める**（1 件の失敗で全体を止めない。数を黙って捨てない）。
         1 回の上限は `MAX_BATCH_PER_CALL`（**超えたら 422 `too_many` で 1 件も進めない**）。
+
+        **（P10 の監査 B-2）1 回の呼び出しを `delete_request` に 1 行残す**（`_run_many`）。
         """
         _actor_of(actor)
         _require_human(actor, "アプリのゴミ箱へ移す")
@@ -1218,7 +1275,19 @@ class DeletionService:
         _require_human(actor, "片付ける")
         reason = _close_reason_of(reason)
         with self._lock:
-            return self._close_one(str(deletion_id), reason=reason, actor=actor)
+            # **（P10 の監査 B-2）片付けも要求の記録に残す**（誰がいつ終わりにしたか）。
+            # 断った要求（404 / 409 / 422）は `_drop_request` で残さない（`advance` と同じ）
+            request_id = self._open_request(
+                actor=actor, stage=self._request_stage_for([str(deletion_id)], "close"), count=1,
+                client_token=None,
+                payload={"kind": "close", "deletion_id": str(deletion_id), "reason": reason})
+            try:
+                got = self._close_one(str(deletion_id), reason=reason, actor=actor)
+            except BaseException:
+                self._drop_request(request_id)
+                raise
+            self._close_request(request_id, count=1, result=got)
+            return got
 
     def close_many(self, ids: Any, *, reason: str = "missing", actor: str = "human") -> dict:
         """**まとめて片付ける**（`POST /api/deletions/close`。**人だけ**。P10）。
@@ -1226,6 +1295,9 @@ class DeletionService:
         実データの 194 行を 1 回で片付けられるようにするための口（利用者の要望）。
         **ファイルがまだ在る行は断って `skipped` に残す**（**生きているファイルを片付けない**）。
         1 回の上限は `MAX_BATCH_PER_CALL`。
+
+        **（P10 の監査 B-2）1 回の呼び出しを `delete_request` に 1 行残す**（`_run_many`。
+        **誰がいつ 187 行を終わりにしたか**が台帳の `closed_at` にしか残らない、を塞ぐ）。
         """
         _actor_of(actor)
         _require_human(actor, "片付ける")
@@ -1241,34 +1313,70 @@ class DeletionService:
 
         1 件ずつの `ReviewError` は `skipped`（`reason` は口の `code`、`message` は本文）、
         それ以外の例外も `skipped`（`reason: "failed"`）。**成功と失敗を必ず両方返す。**
+
+        **（P10 の監査 B-2）1 回の呼び出しを `delete_request` に 1 行残す**（`count` は
+        `requested`、`result_json` に `skipped` も入る）。まとめては**誰がいつ 187 行を終わりに
+        したか**が台帳の `closed_at` にしか残らない、という穴を塞ぐ（記録の家風「1 行 = 1 回の
+        操作」）。`stage` は `_request_stage_for()`（片付けは段が無いので、揃っていればその段）。
+
+        **（P10 の監査 D-1）`replayed_count`**（既に片付いていた行の数）を分けて返す
+        （`count` には今までどおり成功として数える。画面の 1 行が「2 件を片付けました」と
+        **実際に閉じた数**を言い分けられるように）。
         """
-        one = self._advance_one if kind == "advance" else self._close_one
-        done: list[dict] = []
-        skipped: list[dict] = []
-        for deletion_id in id_list:
-            try:
-                if kind == "advance":
-                    got = self._advance_one(deletion_id, actor=actor)
-                else:
-                    got = self._close_one(deletion_id, reason=reason, actor=actor)
-            except ReviewError as exc:
-                skipped.append({"deletion_id": deletion_id, "reason": exc.code or "refused",
-                                "message": exc.detail})
-                continue
-            except Exception as exc:                            # noqa: BLE001 1 件で全体を止めない
-                skipped.append({"deletion_id": deletion_id, "reason": "failed",
-                                "message": f"{type(exc).__name__}: {exc}"})
-                continue
-            done.append(got)
-        key = "advanced" if kind == "advance" else "closed"
-        out = {"kind": kind, "requested": len(id_list), key: done, "skipped": skipped,
-               "count": len(done), "skipped_count": len(skipped), "actor": actor,
-               "replayed": False}
+        request_id = self._open_request(
+            actor=actor, stage=self._request_stage_for(id_list, kind), count=len(id_list),
+            client_token=None,
+            payload={"kind": f"{kind}_many", "ids": list(id_list),
+                     "reason": reason if kind == "close" else None})
+        try:
+            done: list[dict] = []
+            skipped: list[dict] = []
+            for deletion_id in id_list:
+                try:
+                    if kind == "advance":
+                        got = self._advance_one(deletion_id, actor=actor)
+                    else:
+                        got = self._close_one(deletion_id, reason=reason, actor=actor)
+                except ReviewError as exc:
+                    skipped.append({"deletion_id": deletion_id, "reason": exc.code or "refused",
+                                    "message": exc.detail})
+                    continue
+                except Exception as exc:                        # noqa: BLE001 1 件で全体を止めない
+                    skipped.append({"deletion_id": deletion_id, "reason": "failed",
+                                    "message": f"{type(exc).__name__}: {exc}"})
+                    continue
+                done.append(got)
+            key = "advanced" if kind == "advance" else "closed"
+            out = {"kind": kind, "requested": len(id_list), key: done, "skipped": skipped,
+                   "count": len(done), "skipped_count": len(skipped), "actor": actor,
+                   "replayed": False,
+                   "replayed_count": sum(1 for row in done if row.get("replayed"))}
+            if kind == "advance":
+                out["stage"] = 2
+            else:
+                out["reason"] = reason
+            self._close_request(request_id, count=len(id_list), result=out)
+            return out
+        except BaseException:
+            self._drop_request(request_id)
+            raise
+
+    def _request_stage_for(self, id_list: list[str], kind: str) -> int:
+        """要求の行に残す `stage`（P10 の監査 B-2。`delete_request.stage` は `CHECK` が 1〜3 を要求する）。
+
+        - **段 2 へ進める**のは段 1 の行だけなので **2**
+        - **片付けには段が無い**（段 1〜3 のどの行も閉じられる）。**対象の段が 1 つに揃っていれば
+          その段**、混ざっていれば **1**（`payload_json` の `kind` が `close` / `close_many` なので、
+          削除の要求と取り違えない）。行が無い id だけなら 1（どうせ 404 で断る）
+        """
         if kind == "advance":
-            out["stage"] = 2
-        else:
-            out["reason"] = reason
-        return out
+            return 2
+        q = ",".join("?" for _ in id_list)
+        with self.store.locked() as con:
+            rows = con.execute(f"SELECT DISTINCT stage FROM deletion_log WHERE id IN ({q})",
+                               tuple(id_list)).fetchall()
+        stages = sorted(int(r["stage"]) for r in rows)
+        return stages[0] if len(stages) == 1 else 1
 
     def _require_batch_size(self, count: int, *, what: str) -> int:
         """**1 回の上限**（P10。`MAX_BATCH_PER_CALL`＝エージェントの一括と同じ 200）。
@@ -1304,7 +1412,7 @@ class DeletionService:
                               code="already_stage2" if stage == 2 else "already_stage3",
                               details={"deletion_id": deletion_id, "stage": stage})
         target = self._target_for_advance(row)                   # 409 not_registered
-        self._require_file_for_advance(target, deletion_id=deletion_id)
+        self._require_file_for_advance(target, row=row, deletion_id=deletion_id)
         at = self.clock.now()
         dest_dir, dest = self._destination(target, 2, deletion_id)   # 409 cross_volume
         # **（B-1）台帳を先に書いてから動かす。** ここで落ちても `to_path` が残るので、
@@ -1340,12 +1448,23 @@ class DeletionService:
             con.execute("UPDATE deletion_log SET stage = 1, from_path = NULL, to_path = NULL"
                         " WHERE id = ? AND stage = 2 AND restored_at IS NULL", (deletion_id,))
 
-    def _require_file_for_advance(self, target: dict, *, deletion_id: str) -> None:
-        """**登録した場所にファイルが在るか**（P10。無ければ 409 `missing_file`）。
+    def _require_file_for_advance(self, target: dict, *, row, deletion_id: str) -> None:
+        """**その行が指すファイルが在るか**（P10。無ければ 409 `missing_file`）。
 
         段 1 の行は**カタログから外しただけ**なので、実体が利用者の手で既に外へ出ていることがある
         （実データの 194 行のうち 187 行がこれ。エクスプローラーで Windows のごみ箱へ移された）。
         そのときは**移す物が無い**ので断り、**「ファイルが無いので片付ける」を案内する**。
+
+        **（P10 の監査 A-1）台帳の行が指す物かどうかを先に見る。** 見るのは 2 つ:
+
+        - **台帳の `size`**（削除したときに記録した大きさ）
+        - **その場所をいま登録している枚**（`asset_location.asset_id`）が**台帳の枚と同じか**
+
+        実データでは、走査が同じ場所を**別の `asset` として登録し直した**ことで台帳の `asset_id` が
+        古くなった行が**6 行**あり、その 6 行は**利用者が消した画像の実体がもう無い**（同じ場所には
+        **別の画像 Y が登録され、カタログに見えている**）。ここで台帳を見ないと、**Y のファイルを
+        ゴミ箱へ移してしまい、Y が一覧から消える**（利用者の見ている画像が消える）。合わなければ
+        **409 `different_file`** で断り、**「ファイルが無いので片付ける」を案内する**。
 
         **中身が変わっていないことも見る**（`_require_file()` と同じ規則＝**別のファイルを移さない**）。
         `missing_at` は見ない——走査が「参照切れ」にした後でファイルが戻っていることがあり、
@@ -1359,6 +1478,18 @@ class DeletionService:
                               code="missing_file",
                               details={"deletion_id": deletion_id, "path": path})
         size, mtime_ns = identity_of(path)
+        ledger_size = None if row["size"] is None else int(row["size"])
+        if (target["asset_id"] != row["asset_id"]
+                or (ledger_size is not None and ledger_size != size)):
+            # **（P10 の監査 A-1）消した画像はもうこの場所に無い**（別の画像が在る）。
+            # **移さずに断る**（利用者が見ている別の枚をゴミ箱へ入れない）
+            raise ReviewError(
+                409, "消した画像はもうこの場所に無く、別の画像があります。"
+                     "「ファイルが無いので片付ける」で、この行を終わりにできます",
+                code="different_file",
+                details={"deletion_id": deletion_id, "path": path,
+                         "ledger": {"asset_id": row["asset_id"], "size": ledger_size},
+                         "now": {"asset_id": target["asset_id"], "size": size}})
         if int(target["size"]) != size or int(target["mtime_ns"]) != mtime_ns:
             raise ReviewError(409, "登録した時と中身が変わっています（別のファイルを移すところでした）",
                               code="changed",
@@ -1391,7 +1522,13 @@ class DeletionService:
                               details={"deletion_id": deletion_id, "found": found})
         at = self.clock.now()
         with self.store.transaction() as con:
-            cur = con.execute("UPDATE deletion_log SET closed_at = ?, close_reason = ?"
+            # **（P10 の監査 C-3）段 3 の行を閉じたら、タイマーからも外す**（`purge_at` と
+            # `remaining_sec` を NULL に。`stuck` と同じ扱い）。残すと「片付けたのに窓が動いて
+            # いる」行になり、`tick()` が `decremented` に数え続ける（実体は無いので `purged` には
+            # ならないが、台帳の形が「閉じた」と食い違う）。画面は段 3 に「片付ける」を出さないので、
+            # API を直に叩いたときだけの道
+            cur = con.execute("UPDATE deletion_log SET closed_at = ?, close_reason = ?,"
+                              " purge_at = NULL, remaining_sec = NULL"
                               " WHERE id = ? AND closed_at IS NULL", (at, reason, deletion_id))
             if int(cur.rowcount or 0) == 0:
                 # **錠の下では起きない**（起きたら黙って進まず断る）
@@ -1422,28 +1559,47 @@ class DeletionService:
                 "replayed": False}
 
     def _files_of_row(self, row) -> list[str]:
-        """**その行に紐づく実体が在る場所**（P10。片付けてよいかの確認）。**読むだけ**。
+        """**この行のファイルが在る場所**（P10。片付けてよいかの確認）。**読むだけ**。
 
-        見るのは 4 つ: **登録の場所**（`asset_location.display_path`）・**台帳の鍵**（`path`）・
+        見るのは **登録の場所**（`asset_location.display_path`）・**台帳の鍵**（`path`）・
         **元の場所**（`from_path`）・**ゴミ箱**（`to_path`）・**一時置き場**（`hold_path`）。
         `hold_path` の「消えた印」は場所ではないので飛ばす。**同じ場所は 1 回だけ**返す。
+
+        **（P10 の監査 A-1 / C-1）「在る」ではなく「この行のファイルが在る」を見る。** 台帳の
+        `asset_id` は走査で古くなりうる（同じ場所に**別の画像**が登録され直す。実データの 6 行）ので、
+        登録の場所と台帳の鍵は **`asset_location` の枚が台帳の枚と同じで、実体の大きさも台帳の
+        `size` と一致するとき**だけ数える。**別の画像のファイルを「まだ在る」と数えると、利用者は
+        その行を片付けられない**（実データの 6 行は「X の実体はどこにも無いのに、Y のファイルで
+        断られる」形になっていた。C-1）。**大きさが分からない古い行（`size` が NULL）は数えない**
+        （分からない物を「在る」と読まない。片付けは「実体が無い」ことを確かめてから）。
+
+        **`to_path` / `hold_path` は 1 回の削除に固有**の場所（このツールが自分で移した先）なので、
+        **在ればこの行のファイル**として数える（大きさは見ない＝**自分の置き場にファイルが残って
+        いる間は片付けない**）。
 
         **1 つでも在れば片付けない**（生きているファイルを片付けない）。在る物を先に返すので、
         画面の 1 行に出るパスは**登録の表記**（人が見ている場所）になる。
         """
-        with self.store.locked() as con:
-            loc = (con.execute("SELECT display_path FROM asset_location WHERE path = ?",
-                               (row["path"],)).fetchone() if row["path"] else None)
         keys = set(row.keys())
+        with self.store.locked() as con:
+            loc = (con.execute("SELECT display_path, asset_id, size, mtime_ns FROM asset_location"
+                               " WHERE path = ?", (row["path"],)).fetchone()
+                   if row["path"] else None)
         hold = row["hold_path"] if "hold_path" in keys else None
         if hold in HOLD_PURGED_ALL:
             hold = None
-        candidates = [loc["display_path"] if loc is not None else None,
-                      row["path"], row["from_path"] if "from_path" in keys else None,
-                      row["to_path"] if "to_path" in keys else None, hold]
-        found: list[str] = []
+        ledger_size = None if row["size"] is None else int(row["size"])
+        # **（監査 A-1）その場所を登録している枚が台帳の枚と同じか**（分からない古い行は数えない）
+        same_asset = (loc is not None and bool(row["asset_id"])
+                      and loc["asset_id"] == row["asset_id"] and ledger_size is not None)
+        registered = [loc["display_path"] if same_asset else None,
+                      row["path"] if same_asset else None,
+                      (row["from_path"] if "from_path" in keys else None) if same_asset else None]
+        owned = [row["to_path"] if "to_path" in keys else None, hold]
         seen: set[str] = set()
-        for got in candidates:
+        found: list[str] = []
+        for got, check_size in ([(one, True) for one in registered]
+                                + [(one, False) for one in owned]):
             if not got:
                 continue
             text = str(got)
@@ -1453,10 +1609,13 @@ class DeletionService:
                 continue
             seen.add(key)
             try:
-                if os.path.exists(text):
-                    found.append(text)
+                if not os.path.exists(text):
+                    continue
+                if check_size and identity_of(text)[0] != ledger_size:
+                    continue                       # **別の画像**（台帳の大きさと違う）
             except OSError:
                 continue
+            found.append(text)
         return found
 
     # ---- 取り消し（段 3 の窓・段 2 のゴミ箱・段 1 の印）----
@@ -1559,13 +1718,20 @@ class DeletionService:
         if row["restored_at"]:
             raise ReviewError(409, "既に戻しています", code="already_restored",
                               details={"deletion_id": deletion_id, "restored_at": row["restored_at"]})
+        stage = int(row["stage"])
         if _closed_at(row):
             # **（P10）片付けた行は戻せない。** 片付けられたのは**実体が無い**からで、
             # 段 1 はファイルを見ないので、ここを通すと**実体の無い枚をカタログに戻して**しまう
-            # （一覧に「参照切れ」が並ぶ）。ファイルを戻してから走査で登録し直すのが正しい道
-            raise ReviewError(409, "片付けた行は戻せません（ファイルがありません）",
-                              code="already_closed", details={"deletion_id": deletion_id})
-        stage = int(row["stage"])
+            # （一覧に「参照切れ」が並ぶ）。
+            # **（P10 の監査 A-3）ただし「ファイルが戻ってきた」行は開き直せる。** 実体が在り、
+            # 登録も生きていて（台帳の枚と同じで大きさも合う）、段 1 の行なら、その 1 行を
+            # 開き直して**下の段 1 の道**（ファイルを触らない）へ進む。ファイルを元の場所へ
+            # 戻してから走査したときは `scan.py` が印を引き直すので、**どちらの道でも戻せる**。
+            if not (stage == 1 and self._row_image_is_back(row, loc)):
+                raise ReviewError(409, "片付けた行は戻せません（ファイルがありません）。"
+                                       "ファイルを元の場所に戻してから走査すると、一覧に戻ります",
+                                  code="already_closed", details={"deletion_id": deletion_id})
+            self._reopen_closed_row(deletion_id)
         source = row["hold_path"] if stage == 3 else row["to_path"]
         destination = self._restore_destination(row, loc)
         if stage != 1:
@@ -1621,7 +1787,7 @@ class DeletionService:
                                 " WHERE path = ?", (at, row["path"]))
             con.execute("UPDATE deletion_log SET restored_at = ?, purge_at = NULL,"
                         " remaining_sec = NULL WHERE id = ?", (at, deletion_id))
-            self._sync_hidden(con, row["asset_id"], at)
+            self._sync_hidden_with_location(con, row, loc, at=at)
         self._born.pop(deletion_id, None)
         return {"deletion_id": deletion_id, "restored": True, "stage": stage,
                 "asset_id": row["asset_id"], "as_copy": bool(as_copy),
@@ -1635,11 +1801,19 @@ class DeletionService:
         台帳を先に書く順にしたので、`rename` の前にプロセスが落ちると「保留に在る」と台帳に
         残る。そのときファイルはまだ**元の場所**にある（削除は起きていない）ので、戻す操作は
         **何も動かさずに**「戻した」でよい（`missing_at` も元から NULL のまま）。
+
+        **（P10 の監査 A-2）印を引き直すのは、台帳の枚と「いまその場所に登録されている枚」の
+        両方**（`_restore()` と同じ）。立てた側（`advance` / `delete`）は**いまの登録**に立てるので、
+        消す側が台帳の枚だけを見ると**別の枚の印が立ったまま残る**。
         """
         with self.store.transaction() as con:
+            loc = None
+            if row["path"]:
+                loc = con.execute("SELECT * FROM asset_location WHERE path = ?",
+                                  (row["path"],)).fetchone()
             con.execute("UPDATE deletion_log SET restored_at = ?, purge_at = NULL,"
                         " remaining_sec = NULL WHERE id = ?", (at, row["id"]))
-            self._sync_hidden(con, row["asset_id"], at)
+            self._sync_hidden_with_location(con, row, loc, at=at)
         self._born.pop(row["id"], None)
         return {"deletion_id": row["id"], "restored": True, "stage": int(row["stage"]),
                 "asset_id": row["asset_id"], "as_copy": False, "path": row["path"],
@@ -1650,6 +1824,62 @@ class DeletionService:
         """戻す先。**元の場所（登録の表示パス）**（登録が無ければ台帳の鍵）。"""
         display = loc["display_path"] if loc is not None else row["path"]
         return Path(display)
+
+    def _sync_hidden_with_location(self, con, row, loc, *, at: str) -> None:
+        """**台帳の枚と、いまその場所に登録されている枚の両方**の印を引き直す（P10 の監査 A-2）。
+
+        `advance` / `delete` は `_sync_hidden(con, target["asset_id"], at)`＝**いまの登録の枚**に
+        印を立てる。台帳の `asset_id` は走査で古くなるので、**戻す側が台帳の枚だけを見ると、
+        いま登録されている枚（利用者に見えている枚）の `deleted_at` が立ったまま残る**——
+        実体は元の場所に戻り、登録も生きているのに、**その枚はカタログから永久に消える**
+        （`undo` は `already_restored`、走査は `missing_at` しか戻さない）。
+
+        **A-1 を直すとこの道は塞がるが、二重の守りとして残す**（走査が入れ替えを拾う道が
+        残っていても、戻したときに両方の印が正しくなる）。
+        """
+        self._sync_hidden(con, row["asset_id"], at)
+        other = loc["asset_id"] if loc is not None else None
+        if other and other != row["asset_id"]:
+            self._sync_hidden(con, other, at)
+
+    def _row_image_is_back(self, row, loc) -> bool:
+        """**その行の画像が、登録の場所に戻っているか**（P10 の監査 A-3。片付けた行を開き直して
+        よいかの確認）。**読むだけ**。
+
+        4 つとも満たすときだけ真:
+
+        - 登録が生きている（`asset_location` の行があり、**枚が台帳の枚と同じ**）
+        - ファイルが在る
+        - 大きさが**台帳の `size` と一致する**（別の画像ではない）
+        - 段 1 の行である（呼ぶ側が見る）
+
+        **実体の無い枚をカタログに戻さない**ための検査（片付けの意味そのもの）。
+        """
+        if loc is None or not row["path"]:
+            return False
+        if row["asset_id"] and loc["asset_id"] != row["asset_id"]:
+            return False
+        if row["size"] is None:
+            return False
+        display = str(loc["display_path"] or row["path"])
+        try:
+            if not os.path.exists(display):
+                return False
+            size, _ = identity_of(display)
+        except OSError:
+            return False
+        return int(row["size"]) == size
+
+    def _reopen_closed_row(self, deletion_id: str) -> None:
+        """**片付けた印を外して、行を開き直す**（P10 の監査 A-3。ファイルが戻ってきた行だけ）。
+
+        `closed_at` / `close_reason` を NULL に戻すだけで、**ファイルも登録も触らない**。
+        呼ぶ側（`_restore`）がそのまま段 1 の道（ファイルを見ない）へ進み、`_sync_hidden` が
+        印を引き直して**一覧に戻る**。
+        """
+        with self.store.transaction() as con:
+            con.execute("UPDATE deletion_log SET closed_at = NULL, close_reason = NULL"
+                        " WHERE id = ?", (deletion_id,))
 
     def _free_db_name(self, candidate: Path) -> Path:
         """**空いている別名**（`<名前>.<連番>.<拡張子>`。専門 §3.3）。
@@ -1776,25 +2006,17 @@ class DeletionService:
         消えない**ようにするため（削除は**場所**の単位、`deleted_at` は**資産**の単位）。
         段 1 の印は**場所ごと**なので、2 か所の片方だけを外したときも一覧からは消さない
         （生きている場所が残っている＝まだ見られる）。
+
+        **（P10 の監査 A-3）閉じた行は隠す理由に数えない**（`should_hide()` が持つ）。
+        **規則はモジュールの関数 1 か所**にある（`scan.py` も同じ規則を呼ぶ）。
         """
-        if not asset_id:
-            return
-        if cls._should_hide(con, asset_id):
-            con.execute("UPDATE asset SET deleted_at = COALESCE(deleted_at, ?) WHERE id = ?",
-                        (at, asset_id))
-        else:
-            con.execute("UPDATE asset SET deleted_at = NULL WHERE id = ?", (asset_id,))
+        sync_hidden(con, asset_id, at)
 
     @staticmethod
     def _should_hide(con, asset_id: str) -> bool:
-        """**一覧から外すべきか**（C-3 の規則そのもの。1 か所に書く）。"""
-        live = con.execute("SELECT count(*) AS n FROM asset_location WHERE asset_id = ?"
-                           " AND missing_at IS NULL", (asset_id,)).fetchone()["n"]
-        if int(live) == 0:
-            return True
-        hidden = con.execute("SELECT count(*) AS n FROM deletion_log WHERE asset_id = ?"
-                             " AND stage = 1 AND restored_at IS NULL", (asset_id,)).fetchone()["n"]
-        return int(hidden) > 0
+        """**一覧から外すべきか**（C-3 の規則そのもの。1 か所に書く）。**（P10 の監査 A-3）**
+        片付けた行（`closed_at`）は数えない——規則は `should_hide()` が持つ。"""
+        return should_hide(con, asset_id)
 
     def _open_request(self, *, actor: str, stage: int, count: int,
                       client_token: str | None, payload: dict) -> str:

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import time
 from pathlib import Path
 
@@ -22,6 +24,7 @@ from PIL import Image
 from image_reviewer import deletions
 from image_reviewer.deletions import AGENT_MAX_BATCH, TRASH_DIR, DeletionService
 from image_reviewer.review import ReviewError
+from image_reviewer.scan import scan
 from image_reviewer.store import Store, normalize_path
 
 HUMAN = {"X-Image-Reviewer-Actor": "human"}
@@ -163,6 +166,28 @@ def row_of(store: Store, deletion_id: str) -> dict:
                                   (deletion_id,)).fetchone())
 
 
+def deleted_at_of(store: Store, asset_id: str) -> str | None:
+    return store.con.execute("SELECT deleted_at FROM asset WHERE id = ?",
+                             (asset_id,)).fetchone()["deleted_at"]
+
+
+def park_away(path: Path, tmp_path: Path) -> Path:
+    """**利用者がエクスプローラーで外へ出した形**（Windows のごみ箱へ移したのと同じ。移動＝mtime 不変）。"""
+    parked = tmp_path / "windows-recycle"
+    parked.mkdir(exist_ok=True)
+    moved = parked / path.name
+    shutil.move(str(path), str(moved))
+    return moved
+
+
+def stage3_row(svc: DeletionService, store: Store, library: Path, path: Path) -> dict:
+    """段 3 の行を 1 つ作る（**印のある置き場**で、最後の 1 つを消す確認つき）。"""
+    svc.set_allow_stage3(normalize_path(library), allow=True, actor="human")
+    asset_id = add_asset(store, path)
+    return svc.delete(asset_id=asset_id, path=str(path), stage=3, actor="human",
+                      confirm_last_copy=True)
+
+
 # ---- 段 1 → 段 2（後から進める）----
 
 
@@ -202,12 +227,19 @@ def test_advance_keeps_the_catalog_hidden(svc, store, library):
                             (asset_id,)).fetchone()["deleted_at"], "カタログに戻っている"
 
 
-def test_advance_works_when_the_ledger_asset_id_is_stale(svc, store, library):
-    """壊すと落ちる: **走査が同じ場所を別の `asset` として登録し直した後**、台帳の古い
-    `asset_id` を要求して、**実体が在るのに `not_registered` で永久に進めない**。
+def test_advance_refuses_a_ledger_row_whose_image_is_replaced(svc, store, library):
+    """壊すと落ちる: **別の枚のファイルをゴミ箱へ移す**（P10 の監査 A-1。**最も重大な 3 件の 1**）。
 
-    実データの 194 行のうち **6 行がこの形**（実体が在る 7 行のうち 6 行。中身が入れ替わって
-    走査が登録し直した）。`delete()` の `_target(asset_id, path)` をそのまま使うと起きる。
+    実データの 194 行のうち 6 行は、**走査が同じ場所を別の `asset` として登録し直した**ことで
+    台帳の `asset_id`（X）が古くなっている。その 6 行は**利用者が消した画像の実体がもう無く**、
+    同じ場所には**別の画像 Y が登録されてカタログに見えている**。
+
+    台帳の行が指す物（`deletion_log.size` と枚）と、いま動かそうとしているファイルを
+    照合しないと、**Y のファイルをゴミ箱へ移して Y が一覧から消える**（利用者の見ている画像が
+    消える）。**409 `different_file`** で断り、「ファイルが無いので片付ける」を案内する。
+
+    壊すと落ちる: `_require_file_for_advance()` から**台帳の `size` との照合**（と
+    `asset_location.asset_id` の照合）を外すと、Y のファイルが動いてこのテストが落ちる。
     """
     path = make_png(library / "stale.png", seed=70)
     got = stage1(svc, store, path)
@@ -217,15 +249,65 @@ def test_advance_works_when_the_ledger_asset_id_is_stale(svc, store, library):
     assert new_asset != old_asset, "同じ asset のままでは、この形を作れない"
     assert store.con.execute("SELECT count(*) AS n FROM asset_location WHERE asset_id = ?",
                              (old_asset,)).fetchone()["n"] == 0, "古い場所が残っている"
-    out = svc.advance(got["deletion_id"], stage=2, actor="human")
-    assert out["stage"] == 2 and out["asset_id"] == new_asset, out
-    assert not path.exists() and Path(out["to_path"]).exists()
-    assert row_of(store, got["deletion_id"])["asset_id"] == old_asset, \
-        "台帳の「消した枚」を書き換えた（1 行 = 1 回の削除の記録）"
-    assert where(store, new_asset)["missing_at"], "いま登録されている場所に印が立っていない"
-    # **戻すと、いまの登録が元に戻る**（古い枚の印はそのまま）
-    svc.trash_restore(got["deletion_id"], actor="human")
-    assert path.exists() and where(store, new_asset)["missing_at"] is None
+    assert store.con.execute("SELECT deleted_at FROM asset WHERE id = ?",
+                             (new_asset,)).fetchone()["deleted_at"] is None, "Y は見えているはず"
+    before = (path.stat().st_size, path.stat().st_mtime_ns)
+    with pytest.raises(ReviewError) as exc:
+        svc.advance(got["deletion_id"], stage=2, actor="human")
+    assert exc.value.status == 409 and exc.value.code == "different_file", exc.value
+    assert "ファイルが無いので片付ける" in exc.value.detail, exc.value.detail
+    # **別の枚のファイルを 1 つも動かしていない**
+    assert path.exists() and (path.stat().st_size, path.stat().st_mtime_ns) == before
+    assert store.con.execute("SELECT deleted_at FROM asset WHERE id = ?",
+                             (new_asset,)).fetchone()["deleted_at"] is None, "Y が一覧から消えた"
+    row = row_of(store, got["deletion_id"])
+    assert int(row["stage"]) == 1 and row["to_path"] is None, "断ったのに段が上がっている"
+    assert row["asset_id"] == old_asset, "台帳の「消した枚」を書き換えた"
+    # **案内どおり「片付ける」で終われる**（Y のファイルを「まだ在る」と数えない。監査 C-1）
+    out = svc.close(got["deletion_id"], reason="missing", actor="human")
+    assert out["closed"] is True and out["files_touched"] == 0, out
+    assert path.exists(), "片付けが別の枚のファイルを触った"
+    assert store.con.execute("SELECT deleted_at FROM asset WHERE id = ?",
+                             (new_asset,)).fetchone()["deleted_at"] is None, "Y が一覧から消えた"
+
+
+def test_restore_clears_the_mark_of_the_asset_registered_now(svc, store, library):
+    """壊すと落ちる: **戻した後、いまその場所に登録されている枚 Y の `deleted_at` が立ったまま**
+    （P10 の監査 A-2。**実体があるのにカタログから永久に消える**）。
+
+    立てる側（`advance` / `delete`）は**いま登録されている枚**に印を立てるのに、消す側
+    （`_restore`）が**台帳の枚 X だけ**を見ていた。`undo` は `already_restored`、走査は
+    `missing_at` しか戻さないので、**Y を見せる操作が 1 つも無い**。
+
+    形は「X の段 2 の行が在る → 同じ場所に別の画像 Y が登録され、その Y も段 2 で外れて
+    **生きた場所が 0**（＝隠れている）→ X の行を戻す」。戻すと**ファイルは元の場所に戻り、
+    Y の登録も生き返る**ので、Y の印も外れていなければならない（`_sync_hidden_with_location`）。
+
+    壊すと落ちる: `_restore()` の同期を台帳の枚だけ（`_sync_hidden(con, row["asset_id"], at)`）に
+    戻すと、**Y の `deleted_at` が立ったまま**になり、このテストが落ちる。
+    """
+    path = make_png(library / "swap.png", seed=72)
+    first = add_asset(store, path)
+    gone = svc.delete(asset_id=first, path=str(path), stage=2, actor="human")
+    # **同じ場所に別の画像が登録され直す**（走査が入れ替えを拾った形）→ Y が見えている
+    make_png(path, seed=73)
+    other = add_asset(store, path, name="swap-2.png")
+    assert other != first
+    # **その Y も段 2 で外す**（生きた場所が 0 になる＝隠れる）
+    second = svc.delete(asset_id=other, path=str(path), stage=2, actor="human")
+    assert store.con.execute("SELECT deleted_at FROM asset WHERE id = ?",
+                             (other,)).fetchone()["deleted_at"], "Y が隠れていない（前提が崩れた）"
+    assert not path.exists(), "Y のファイルがまだ元の場所にある（前提が崩れた）"
+    # **X の行を戻す**（ファイルは元の場所へ帰る。登録は Y の物）
+    back = svc.trash_restore(gone["deletion_id"], actor="human")
+    assert back["restored"] is True, back
+    assert path.exists(), "ファイルが戻っていない"
+    row = where(store, other)
+    assert row["missing_at"] is None, "いま登録されている枚の参照切れが残っている"
+    assert store.con.execute("SELECT deleted_at FROM asset WHERE id = ?",
+                             (other,)).fetchone()["deleted_at"] is None, \
+        "戻したのに、いま登録されている枚がカタログから消えたまま"
+    assert Path(second["to_path"]).exists(), "Y のゴミ箱の中身を触った"
 
 
 def test_advance_refuses_when_the_file_is_gone(svc, store, library):
@@ -247,15 +329,31 @@ def test_advance_refuses_when_the_file_is_gone(svc, store, library):
 
 
 def test_advance_refuses_when_the_file_changed(svc, store, library):
-    """壊すと落ちる: **別のファイルを移す**（登録した `(size, mtime_ns)` を見ない）。"""
+    """壊すと落ちる: **別のファイルを移す**（登録した `(size, mtime_ns)` を見ない）。
+
+    (1) **同じ大きさのまま `mtime_ns` だけ変わった**形 → 409 `changed`（登録との照合。
+    `_require_file_for_advance()` の `mtime_ns` の比較を外すと落ちる）。
+    (2) **大きさが変わった**形 → 409 `different_file`（台帳の `size` との照合。監査 A-1）。
+    どちらも**ファイルを 1 つも動かさない**。
+    """
     path = make_png(library / "changed.png", seed=13)
     got = stage1(svc, store, path)
-    make_png(path, seed=99)                       # 中身が入れ替わった（別のファイル）
+    before = path.stat()
+    # (1) 中身は同じで時刻だけ進める（**同じ大きさ・違う mtime**。規則の届く差し替え）
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000))
+    assert path.stat().st_size == before.st_size, "大きさまで変わっては (1) の形にならない"
     with pytest.raises(ReviewError) as exc:
         svc.advance(got["deletion_id"], stage=2, actor="human")
     assert exc.value.status == 409 and exc.value.code == "changed", exc.value
     assert path.exists(), "断ったのにファイルが消えた"
     assert int(row_of(store, got["deletion_id"])["stage"]) == 1
+    # (2) 大きさを変える（**台帳の `size` と違う**＝この行の画像ではない）
+    path.write_bytes(path.read_bytes() + b"x")
+    with pytest.raises(ReviewError) as exc:
+        svc.advance(got["deletion_id"], stage=2, actor="human")
+    assert exc.value.status == 409 and exc.value.code == "different_file", exc.value
+    assert "ファイルが無いので片付ける" in exc.value.detail, exc.value.detail
+    assert path.exists() and int(row_of(store, got["deletion_id"])["stage"]) == 1
 
 
 def test_advance_refuses_rows_that_are_already_past_stage_1(svc, store, library):
@@ -427,7 +525,10 @@ def test_a_closed_row_leaves_the_pending_list_and_stays_in_the_ledger(svc, store
 
 def test_a_closed_row_cannot_be_restored(svc, store, library):
     """壊すと落ちる: 片付けた行を戻す（**段 1 はファイルを見ない**ので、実体の無い枚が
-    カタログに戻り「参照切れ」が並ぶ）。"""
+    カタログに戻り「参照切れ」が並ぶ）。
+
+    **（P10 の監査 A-3）ファイルがまだ無い**（または**別の画像**が戻っている）うちは 409 のまま。
+    """
     path = library / "no-back.png"
     got = stage1(svc, store, path, missing=True)
     svc.close(got["deletion_id"], reason="missing", actor="human")
@@ -435,6 +536,135 @@ def test_a_closed_row_cannot_be_restored(svc, store, library):
         svc.undo(got["deletion_id"], actor="human")
     assert exc.value.status == 409 and exc.value.code == "already_closed", exc.value
     assert row_of(store, got["deletion_id"])["restored_at"] is None
+    # **別の画像が戻った**形でも開き直さない（幽霊を戻さない）
+    make_png(path, seed=64)                       # 台帳の `size` と違う中身
+    with pytest.raises(ReviewError) as exc:
+        svc.undo(got["deletion_id"], actor="human")
+    assert exc.value.status == 409 and exc.value.code == "already_closed", exc.value
+    assert path.exists(), "断ったのにファイルを触った"
+
+
+def test_a_closed_row_opens_again_when_the_file_comes_back(svc, store, library, tmp_path):
+    """壊すと落ちる: **片付けた行は、ファイルが戻ってきても二度とカタログに戻せない**
+    （P10 の監査 A-3。**監査の推奨 (a)**）。
+
+    利用者が Windows のごみ箱からファイルを戻す → 走査が `missing_at` を外す → **そのとき
+    `asset.deleted_at` も `_should_hide()` の規則で引き直す**（`scan.py`）。閉じた行しか
+    無い枚は**一覧に戻る**（生きた段 1 の行がある枚は**隠れたまま**＝利用者の意思を消さない）。
+
+    壊すと落ちる: 走査の引き直し（`sync_hidden`）を外す、`_should_hide()` から
+    `closed_at IS NULL` を外す、`_live_stage1()` から `closed_at IS NULL` を外す
+    （それぞれ下の検査が落ちる）。
+    """
+    path = make_png(library / "back.png", seed=73)
+    got = stage1(svc, store, path)
+    asset_id = row_of(store, got["deletion_id"])["asset_id"]
+    parked = park_away(path, tmp_path)             # 利用者が外へ出す
+    svc.close(got["deletion_id"], reason="missing", actor="human")
+    assert deleted_at_of(store, asset_id), "片付けた後は隠れたままのはず（実体が無い）"
+    # **利用者がファイルを元の場所に戻して、走査する**（記録が案内していた道）
+    shutil.move(str(parked), str(path))
+    stats = scan(store, [str(library)])
+    assert stats["missing"] == 0 and stats["known"] == 1, stats
+    assert where(store, asset_id)["missing_at"] is None, "参照切れが戻っていない"
+    assert deleted_at_of(store, asset_id) is None, "ファイルが戻ったのに一覧に戻らない"
+    row = row_of(store, got["deletion_id"])
+    assert row["closed_at"], "片付けの記録が消えた（1 行 = 1 回の片付けの記録）"
+    assert row["restored_at"] is None
+    assert svc.pending(actor="human")["items"] == [], "片付けた行が「最近の削除」に戻った"
+    # **（A-3）閉じた行は「生きた段 1 の行」ではない**——同じ場所をもう一度外すと**新しい行**になる
+    # （古い行の再送 `replayed` になると、その行の `undo` が 409 のままで戻せない）
+    again = svc.delete(asset_id=asset_id, path=str(path), stage=1, actor="human")
+    assert again["replayed"] is False and again["deletion_id"] != got["deletion_id"], again
+    assert svc.undo(again["deletion_id"], actor="human")["restored"] is True
+    assert deleted_at_of(store, asset_id) is None, "外し直して戻したのに一覧に戻らない"
+
+
+def test_a_closed_row_opens_again_when_the_file_is_back_before_the_scan(svc, store, library,
+                                                                       tmp_path):
+    """壊すと落ちる: **走査を待たずに「戻す」を押せる形**（P10 の監査 A-3 の (b)）。
+
+    ファイルが戻っていれば、片付けた段 1 の行は**開き直して戻せる**（実体が在り、登録も
+    生きていて、大きさも台帳と一致するときだけ）。開き直しは `closed_at` を外すだけで、
+    **ファイルも登録も触らない**。
+
+    壊すと落ちる: `_restore()` の「ファイルが戻っていれば開き直す」を外す（409 のままになる）。
+    """
+    path = make_png(library / "reopen.png", seed=74)
+    got = stage1(svc, store, path)
+    asset_id = row_of(store, got["deletion_id"])["asset_id"]
+    parked = park_away(path, tmp_path)
+    svc.close(got["deletion_id"], reason="missing", actor="human")
+    shutil.move(str(parked), str(path))            # **走査の前に**戻ってきた
+    before = (path.stat().st_size, path.stat().st_mtime_ns)
+    out = svc.undo(got["deletion_id"], actor="human")
+    assert out["restored"] is True and out["stage"] == 1, out
+    assert (path.stat().st_size, path.stat().st_mtime_ns) == before, "戻すのにファイルを触った"
+    row = row_of(store, got["deletion_id"])
+    assert row["restored_at"] and row["closed_at"] is None, "片付けた印が残っている"
+    assert deleted_at_of(store, asset_id) is None, "一覧に戻っていない"
+    assert svc.ledger(actor="human")["items"][0]["state"] == "restored"
+
+
+def test_close_refuses_a_file_that_is_in_the_hold(svc, store, library):
+    """壊すと落ちる: **一時置き場に実体があるのに片付ける**（P10 の監査 F の A3＝テストの穴）。
+
+    段 3 の行の実体は `hold_path` にある。ここを見ないと、**保留のファイルを残したまま行を
+    終わりにする**（「実体がどこにも無い」の確認が 1 つ抜ける）。**監査はこの形の検査が
+    1 件も無いことを示した**（`_files_of_row()` から `hold_path` を外す変異が落ちなかった）。
+
+    壊すと落ちる: `_files_of_row()` の候補から `hold_path` を外す。
+    """
+    path = make_png(library / "in-hold.png", seed=75)
+    got = stage3_row(svc, store, library, path)
+    assert Path(got["hold_path"]).exists(), "保留に実体が無い（前提が崩れた）"
+    with pytest.raises(ReviewError) as exc:
+        svc.close(got["deletion_id"], reason="missing", actor="human")
+    assert exc.value.status == 409 and exc.value.code == "file_found", exc.value
+    assert Path(got["hold_path"]).exists(), "断ったのに保留のファイルが消えた"
+    assert row_of(store, got["deletion_id"])["closed_at"] is None
+
+
+def test_a_closed_row_with_the_file_back_is_not_advanced(svc, store, library, tmp_path):
+    """壊すと落ちる: **片付けた行を後から段 2 へ進める**（P10 の監査 F の A14＝テストの穴）。
+
+    閉じた行は普通は実体が無いので `missing_file` で止まる。**ファイルが戻った閉じた行**なら
+    素通りして**ファイルを移してしまう**（利用者はその行を終わりにしたのに、後から動く）。
+    検査が 1 件も無かった形。
+
+    壊すと落ちる: `_advance_one()` の `already_closed` の断りを外す。
+    """
+    path = make_png(library / "closed-move.png", seed=76)
+    got = stage1(svc, store, path)
+    parked = park_away(path, tmp_path)
+    svc.close(got["deletion_id"], reason="missing", actor="human")
+    shutil.move(str(parked), str(path))            # ファイルが戻った
+    before = (path.stat().st_size, path.stat().st_mtime_ns)
+    with pytest.raises(ReviewError) as exc:
+        svc.advance(got["deletion_id"], stage=2, actor="human")
+    assert exc.value.status == 409 and exc.value.code == "already_closed", exc.value
+    assert path.exists() and (path.stat().st_size, path.stat().st_mtime_ns) == before, \
+        "断ったのにファイルを動かした"
+    assert row_of(store, got["deletion_id"])["to_path"] is None
+
+
+def test_close_takes_a_stage3_row_out_of_the_timer(svc, store, library):
+    """壊すと落ちる: **片付けた段 3 の行がタイマーに残る**（P10 の監査 C-3。
+
+    実体が無いので実削除にはならないが、台帳の行が「閉じたのに窓が動いている」形になる
+    （`tick()` が `decremented` に数え続ける）。`stuck` と同じ扱いで `purge_at` と
+    `remaining_sec` を NULL にする。
+
+    壊すと落ちる: `_close_one()` の UPDATE から `purge_at = NULL, remaining_sec = NULL` を外す。
+    """
+    path = make_png(library / "stage3-close.png", seed=77)
+    got = stage3_row(svc, store, library, path)
+    Path(got["hold_path"]).unlink()                # 利用者が保留の中身を消した
+    out = svc.close(got["deletion_id"], reason="missing", actor="human")
+    assert out["closed"] is True and out["stage"] == 3, out
+    row = row_of(store, got["deletion_id"])
+    assert row["purge_at"] is None and row["remaining_sec"] is None, dict(row)
+    assert svc.tick()["decremented"] == 0, "片付けた行の窓が動いている"
 
 
 def test_close_takes_the_row_out_of_the_trash_too(svc, store, library, tmp_path):
@@ -541,6 +771,57 @@ def test_many_folds_duplicate_ids(svc, store, library):
     assert out["requested"] == 1 and out["count"] == 1 and out["skipped_count"] == 0, out
 
 
+def test_many_records_the_request_and_counts_the_replays(svc, store, library):
+    """壊すと落ちる: **まとめて・片付けの記録が `delete_request` に残らない**（P10 の監査 B-2。
+    記録の「`actor` は `delete_request` に残す」は 4 つの口のうち単発の `advance` だけだった）。
+    **既に片付いていた行を成功に数えた数**（`replayed_count`）も分けて返す（監査 D-1）。
+
+    壊すと落ちる: `_run_many()` / `close()` の `_open_request()` を外す（記録が増えない）、
+    `replayed_count` を外す（既に片付けた行の数が分からない）。
+    """
+    def requests() -> list:
+        return store.con.execute(
+            "SELECT * FROM delete_request WHERE result_json IS NOT NULL"
+            " ORDER BY rowid").fetchall()
+
+    live = [stage1(svc, store, make_png(library / f"rec-{n}.png", seed=80 + n))["deletion_id"]
+            for n in range(2)]
+    gone = [stage1(svc, store, library / f"rec-gone-{n}.png", missing=True)["deletion_id"]
+            for n in range(2)]
+    before = len(requests())
+    # (1) まとめて段 2 へ（1 回の呼び出しで 1 行）
+    out = svc.advance_many(live + ["no-such-row"], stage=2, actor="human")
+    assert out["count"] == 2 and out["skipped_count"] == 1, out
+    made = requests()
+    assert len(made) == before + 1, "まとめての記録が残っていない"
+    row = made[-1]
+    assert row["actor"] == "human" and int(row["stage"]) == 2 and int(row["count"]) == 3
+    payload = json.loads(row["payload_json"])
+    assert payload["kind"] == "advance_many" and payload["ids"] == live + ["no-such-row"], payload
+    assert "no-such-row" in str(row["result_json"]), "断りも記録に残していない"
+    # (2) 単発の片付け（**段 2 の行**なので、記録の段は 2）
+    Path(row_of(store, live[0])["to_path"]).unlink()
+    svc.close(live[0], reason="missing", actor="human")
+    made = requests()
+    assert len(made) == before + 2, "単発の片付けの記録が残っていない"
+    assert json.loads(made[-1]["payload_json"])["kind"] == "close"
+    assert int(made[-1]["stage"]) == 2, "段 2 の行を片付けたのに、記録の段が違う"
+    # (3) まとめて片付ける（既に片付けた 1 件は `replayed_count` に数える。監査 D-1）
+    out = svc.close_many([live[0]] + gone, reason="missing", actor="human")
+    assert out["count"] == 3 and out["replayed_count"] == 1, out
+    assert [one["replayed"] for one in out["closed"]] == [True, False, False], out["closed"]
+    made = requests()
+    assert len(made) == before + 3, "まとめて片付けの記録が残っていない"
+    assert json.loads(made[-1]["payload_json"])["kind"] == "close_many"
+    assert int(made[-1]["count"]) == 3
+    # **断った要求は記録に残さない**（`advance` と同じ規則）
+    alive = stage1(svc, store, make_png(library / "rec-alive.png", seed=88))
+    count_before = len(requests())
+    with pytest.raises(ReviewError):
+        svc.close(alive["deletion_id"], reason="missing", actor="human")     # 409 file_found
+    assert len(requests()) == count_before, "断ったのに要求の行が残っている"
+
+
 # ---- 読みは書かない ----
 
 
@@ -617,9 +898,16 @@ def test_the_new_endpoints_are_guarded(client, tmp_path):
                        json={"reason": "other"}).json()["code"] == "bad_reason"
     assert client.post("/api/deletions/close", headers=HUMAN,
                        json={"ids": [], "reason": "missing"}).json()["code"] == "bad_ids"
-    # **`GET` の口は無い**（読むのは `GET /api/pending-deletes` と `/api/deletions`）
-    assert client.get(f"/api/deletions/{deletion_id}/advance", headers=HUMAN).status_code == 404
-    assert client.get("/api/deletions/close", headers=HUMAN).status_code == 404
+    # **`GET` の口は無い**（読むのは `GET /api/pending-deletes` と `/api/deletions`）。
+    # **（P10 の監査 D-3）404 か 405**——405 は「口はあるが GET は無い」。GUI の静的マウントが
+    # あるかどうかで変わるので**両方を許し**、そのうえで**口そのものが在ること**を経路で見る
+    # （`app.routes` は取り込んだルーターを畳まないので `openapi()` の経路を使う）
+    paths = set(client.app.openapi()["paths"])
+    assert "/api/deletions/{deletion_id}/advance" in paths, "口が無い"
+    assert "/api/deletions/advance" in paths and "/api/deletions/close" in paths, "口が無い"
+    assert client.get(f"/api/deletions/{deletion_id}/advance",
+                      headers=HUMAN).status_code in (404, 405)
+    assert client.get("/api/deletions/close", headers=HUMAN).status_code in (404, 405)
 
 
 def test_advance_and_close_over_http(client, tmp_path):

@@ -1709,6 +1709,94 @@ CLOSE_NOW = { kind: 'close', requested: 0, count: 2, skipped_count: 0, replayed:
               reason: 'missing', closed: [], skipped: [] };
 globalThis.confirm = () => true;
 
+// 12k. **（P10 の監査 B-1）二度押しで POST を 2 回飛ばさない**（本物の Chrome で再現した穴）。
+//
+// `advance` / `closeRow` / `runBatch` に `busy` が無かったので、2 回目の応答が 1 回目の結果の
+// 文を上書きしていた（**1 回の操作が成功しているのに「既にアプリのゴミ箱へ移しています」の赤**／
+// まとめては**6 枚動いたのに「0 件を…移しました。」**）。**待たずに 2 回**押して数える（罠 27）。
+// 壊すと落ちる: `state.busy` の見張りを 3 つの関数から外す（POST が 2 回になる）。
+let confirms = 0;
+const countConfirm = (value) => { confirms += 1; return value; };
+await pdUi.showPending('?ids=');
+writes.length = 0;
+const oneAdvance = hitOf('.pd-advance', { id: 'd4' });
+el('pd-running').dispatch('click', { target: oneAdvance });
+el('pd-running').dispatch('click', { target: oneAdvance });      // **await を挟まず 2 回目**
+await tick();
+await tick();
+check(writes.filter((w) => w.url === '/api/deletions/d4/advance').length === 1,
+  `1 行の「移す」の二度押しは 1 回だけ: ${writes.filter((w) => w.url === '/api/deletions/d4/advance').length} 回`);
+check(String(el('pd-msg').innerHTML || '').includes('1 件をアプリのゴミ箱へ移しました。'),
+  `二度押しでも 1 回目の結果の文が残る: ${String(el('pd-msg').innerHTML || '').slice(0, 60)}`);
+
+await pdUi.showPending('?ids=');
+pdUi.pickAll(true);
+ADVANCE_NOW = { advanced: [{ deletion_id: 'd4', stage: 2 }], skipped: [], count: 1,
+                skipped_count: 0, replayed: false };
+writes.length = 0;
+const manyAdvance = hitOf('.pd-advance-many', {});
+el('pd-bulk').dispatch('click', { target: manyAdvance });
+el('pd-bulk').dispatch('click', { target: manyAdvance });
+await tick();
+await tick();
+check(writes.filter((w) => w.url === '/api/deletions/advance').length === 1,
+  `まとめて移すの二度押しは 1 回だけ: ${writes.filter((w) => w.url === '/api/deletions/advance').length} 回`);
+check(String(el('pd-msg').innerHTML || '').includes('1 件をアプリのゴミ箱へ移しました。'),
+  `まとめて移すも 1 回目の結果の文が残る: ${String(el('pd-msg').innerHTML || '').slice(0, 60)}`);
+ADVANCE_NOW = { advanced: [], skipped: [], count: 0, skipped_count: 0, replayed: false };
+
+await pdUi.showPending('?ids=');
+pdUi.pickAll(true);
+confirms = 0;
+globalThis.confirm = () => countConfirm(true);
+writes.length = 0;
+const manyClose = hitOf('.pd-close-many', {});
+el('pd-bulk').dispatch('click', { target: manyClose });
+el('pd-bulk').dispatch('click', { target: manyClose });
+await tick();
+await tick();
+check(writes.filter((w) => w.url === '/api/deletions/close').length === 1,
+  `まとめて片付けるの二度押しは 1 回だけ: ${writes.filter((w) => w.url === '/api/deletions/close').length} 回`);
+check(confirms === 1, `確認も 1 回だけ: ${confirms} 回`);
+
+writes.length = 0;
+confirms = 0;
+const closeButtonHit = hitOf('.pd-close', { id: 'd4' });
+el('pd-running').dispatch('click', { target: closeButtonHit });
+el('pd-running').dispatch('click', { target: closeButtonHit });
+await tick();
+await tick();
+check(writes.filter((w) => w.url === '/api/deletions/d4/close').length === 1,
+  `1 行の片付けの二度押しは 1 回だけ: ${writes.filter((w) => w.url === '/api/deletions/d4/close').length} 回`);
+check(confirms === 1, `1 行の片付けの確認も 1 回だけ: ${confirms} 回`);
+globalThis.confirm = () => true;
+
+// 12l. **（P10 の監査 D-1・D-2）数を実際に起きたことに合わせる**
+//   - **既に片付いていた行**（`replayed_count`）は「既に片付けていました」と分けて言う
+//     （成功に数えたままだと「2 件を片付けました。」に見える）
+//   - **1 件も選んでいないときは「選んだ 0 件」と書かない**（数ではなく状態を言う）
+CLOSE_NOW = { kind: 'close', requested: 2, count: 2, skipped_count: 0, replayed_count: 2,
+              reason: 'missing', skipped: [],
+              closed: [{ deletion_id: 'd4', closed: true, replayed: true, files_touched: 0 },
+                       { deletion_id: 't1', closed: true, replayed: true, files_touched: 0 }] };
+await pdUi.showPending('?ids=');
+pdUi.pickAll(true);
+writes.length = 0;
+el('pd-bulk').dispatch('click', { target: hitOf('.pd-close-many', {}) });
+await tick();
+await tick();
+const replayHtml = String(el('pd-msg').innerHTML || '');
+check(replayHtml.includes('2 件を片付けました。') && replayHtml.includes('2 件は既に片付けていました。'),
+  `既に片付いていた数を分けて言う（監査 D-1）: ${replayHtml.slice(0, 80)}`);
+CLOSE_NOW = { kind: 'close', requested: 0, count: 2, skipped_count: 0, replayed: false,
+              reason: 'missing', closed: [], skipped: [] };
+await pdUi.showPending('?ids=');
+const freshBulk = String(el('pd-bulk').innerHTML || '');
+check(freshBulk.includes('選んだ行はありません') && !freshBulk.includes('選んだ 0 件'),
+  `1 件も選んでいないときは「選んだ 0 件」と書かない（監査 D-2）: ${(freshBulk.match(/選んだ[^<]*/) || [])[0]}`);
+check(pdUi.skipText('different_file') === '別の画像があります',
+  `新しい断りの理由も日本語で出す（監査 A-1）: ${pdUi.skipText('different_file')}`);
+
 // 13. **押す検査**: 削除の確認（`?ids=`）→ 段の選択 → 凍結 → 実行（**画面の中の段**）
 // **ボタンと結果の 1 行は、選んだ段の名前をそのまま動詞にする**（`frontend-design.md` §6.1 の規則 4）。
 // 段ごとに語が変わることを見る（前は段に関係なく「消す用意をする」だった）

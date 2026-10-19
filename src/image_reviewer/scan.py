@@ -8,6 +8,9 @@
 - **ファイルは 1 回だけ開く**（I19）。先頭 8 バイト・ハッシュ・チャンクを同じハンドルから取る
 - （パス・サイズ・mtime）が同じなら何もしない（2 回目以降を安くする）。**ただし参照切れの
   印（`missing_at`）が立っていれば戻す**（P8-6 の監査 C-1。戻ってきたファイルを生き返らせる）
+- **（P10 の監査 A-3）参照切れを戻した枚は、カタログから外す印（`asset.deleted_at`）も引き直す。**
+  片付けた行（`closed_at`）しか無い枚は、**ファイルが戻れば一覧にも戻る**（規則は
+  `deletions.sync_hidden()` の 1 か所。**走査は規則を持たない**）
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import os
 from pathlib import Path
 
 from . import png_meta
+from .deletions import sync_hidden        # **`asset.deleted_at` の規則は 1 か所**（deletions.py）
 from .store import Store, normalize_path
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
@@ -57,6 +61,8 @@ def scan(store: Store, roots: list[str], *, on_progress=None) -> dict:
     stats = {"roots": roots, "seen": 0, "created": 0, "known": 0, "changed": 0,
              "images": 0, "not_image": 0, "errors": [], "with_provenance": 0, "missing": 0}
     seen_keys: set[str] = set()
+    #: **（P10 の監査 A-3）参照切れを戻した枚**（走査の最後に `deleted_at` を引き直す）
+    revived: list[str] = []
     store.set_roots(roots)
 
     for root in roots:
@@ -80,7 +86,14 @@ def scan(store: Store, roots: list[str], *, on_progress=None) -> dict:
                 # 落ちる（`register()` の `missing_at = NULL` に届かない）。ここで戻さないと、
                 # 走査を何度回しても「参照切れ」のままで、人は何を押せばよいか分からない。
                 if known["missing_at"]:
-                    store.mark_seen(path)
+                    if store.mark_seen(path):
+                        revived.append(known["asset_id"])
+                elif known["deleted_at"]:
+                    # **（P10 の監査 A-3）ファイルが在り、登録も生きているのに隠れている枚。**
+                    # 段 1 で外しただけの行は**ファイルを動かさない**（利用者が外へ出しても
+                    # `missing_at` は立たないことがある）ので、上の「印が立っていれば戻す」だけでは
+                    # **片付けた後にファイルが戻った枚**を拾えない。ここで印を引き直す
+                    revived.append(known["asset_id"])
                 stats["known"] += 1
                 asset = store.asset(known["asset_id"])
                 if asset and asset.get("meta"):
@@ -125,6 +138,10 @@ def scan(store: Store, roots: list[str], *, on_progress=None) -> dict:
                 width=width, height=height, fmt=fmt, meta=meta, note=note,
                 kind=kind, kind_source=kind_source,
             )
+            # **（P10 の監査 A-3）参照切れだった場所・隠れていた枚**も、印を戻した側に数える
+            # （`register()` は `missing_at` を NULL に戻す。`mark_seen()` を通らない道）
+            if known and (known["missing_at"] or known["deleted_at"]):
+                revived.append(asset_id)
             # 置き換えは created より先に見る（置き換えると新しい内容＝新規 asset にもなるため）
             if replaced:
                 stats["changed"] += 1
@@ -136,6 +153,14 @@ def scan(store: Store, roots: list[str], *, on_progress=None) -> dict:
                 on_progress(stats)
 
     stats["missing"] = store.mark_missing(seen_keys, roots)
+    # **（P10 の監査 A-3）ファイルが戻った枚の「カタログから外す印」を引き直す。**
+    # 片付けた行（`closed_at`）しか無い枚は**ここで一覧に戻る**（実体が無い間は `live == 0` で
+    # 隠れたままになるので、幽霊は戻らない）。生きた段 1 の行がある枚は**隠れたまま**（利用者の意思）。
+    # **規則は `deletions.sync_hidden()` の 1 か所**（走査はここで呼ぶだけ）。
+    if revived:
+        with store.transaction() as con:
+            for asset_id in sorted(set(revived)):
+                sync_hidden(con, asset_id)
     store.save()
     return stats
 

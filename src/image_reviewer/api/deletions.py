@@ -204,10 +204,16 @@ def deletions_advance_many(request: Request, body: dict = Body(...)):
 def deletions_advance(request: Request, deletion_id: str, body: dict | None = Body(default=None)):
     """**カタログから外した行を、後からアプリのゴミ箱へ移す**（`{stage: 2}`。**人だけ**。P10）。
 
-    - 登録した場所にファイルが在れば、**段 2 と同じ道**で `<data>/trash/<日付>/<ハッシュ>/` へ
-      移す（**上書きしない**＝409 `target_exists`／別ボリュームは 409 `cross_volume`）
-    - ファイルが無ければ **409 `missing_file`**（「ファイルが無いので片付ける」を案内する）
-    - 既に段 2 以上なら **409 `already_stage2` / `already_stage3`**（**二重に移さない**）
+    - **その行が指すファイルが在るときだけ**。無ければ **409 `missing_file`**
+      （「ファイルが無いので片付ける」を案内する）
+    - **（P10 の監査 A-1）台帳の行が指す物かを見る**。走査が同じ場所を別の `asset` として
+      登録し直すと台帳の `asset_id` は古くなる（実データの 6 行）。**別の画像のファイルを
+      移さない**ように、台帳の `size` と「いまその場所を登録している枚」を照合し、合わなければ
+      **409 `different_file`**（「ファイルが無いので片付ける」を案内する）
+    - 移し方は**段 2 と同じ道**で `<data>/trash/<日付>/<ハッシュ>/` へ
+      （**上書きしない**＝409 `target_exists`／別ボリュームは 409 `cross_volume`）
+    - 既に段 2 以上なら **409 `already_stage2` / `already_stage3`**（**二重に移さない**）／
+      片付けた行は **409 `already_closed`**
     - **段 3 へは直行しない**（`stage` は 2 だけ）
     """
     got = body or {}
@@ -231,13 +237,16 @@ def deletions_close_many(request: Request, body: dict = Body(...)):
 def deletions_close(request: Request, deletion_id: str, body: dict | None = Body(default=None)):
     """**実体が無い行を片付ける**（`{reason: "missing"}`。**人だけ**。P10）。
 
-    **登録の場所・元の場所・ゴミ箱・一時置き場のどこにも実体が無いことを確かめてから**、
-    その行を終わりにする（`closed_at` / `close_reason`）。1 つでも見つかったら
+    **この行のファイルが、登録の場所・元の場所・アプリのゴミ箱・一時置き場のどこにも無いことを
+    確かめてから**、その行を終わりにする（`closed_at` / `close_reason`）。1 つでも見つかったら
     **409 `file_found`**（**生きているファイルを片付けない**）。
+    **（P10 の監査 A-1 / C-1）「在る」ではなく「この行の画像が在る」**を見る——台帳の `asset_id`
+    が古く、同じ場所に**別の画像**が登録されていても、そのファイルは数えない（数えると
+    **X の実体はどこにも無いのに片付けられない**）。**段 3 の行はタイマーからも外す**（監査 C-3）。
 
     **ファイルは 1 つも消さない・動かさない**（`files_touched: 0`）。**`asset.deleted_at` は
     そのまま**（カタログには戻さない）。**既に片付けている行は 200 で `replayed: true`**
-    （二重に記録しない）。
+    （二重に記録しない）。**誰が片付けたかは `delete_request` に残る**（監査 B-2）。
     """
     got = body or {}
     return deletions_of(request).close(

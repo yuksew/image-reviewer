@@ -187,11 +187,15 @@ class Store:
         `sha256` も返す。`scan.py` は「同じパスの中身が入れ替わったか」を
         `known["asset_id"] != sha` で見ていたが、`asset_id` が ULID になったので
         内容そのものを返して比べさせる（点検 I17 の帰結）。
+
+        **（P10 の監査 A-3）`deleted_at` も返す**（`asset` の「カタログから外す印」）。走査は
+        これを見て、**ファイルが在り登録も生きているのに隠れている枚**の印を引き直す
+        （`scan.py`。閉じた行しか無い枚は一覧に戻る）。
         """
         key = normalize_path(path)
         row = self._fetchone(
             "SELECT l.path, l.display_path, l.asset_id, l.size, l.mtime_ns, l.is_primary,"
-            " l.missing_at, l.last_seen_at, a.sha256"
+            " l.missing_at, l.last_seen_at, a.sha256, a.deleted_at"
             " FROM asset_location l JOIN asset a ON a.id = l.asset_id WHERE l.path = ?",
             (key,),
         )

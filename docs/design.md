@@ -588,7 +588,7 @@ CREATE TABLE tag_gloss (
 | **`root.allow_stage3`**（列） | その置き場で**実ファイルの削除（段 3）を許すか** | **既定は 0（許さない）**（利用者の回答 Q8。**別のツールの管理下を守るための印**）。実データは `illust-authoring` の置き場（262 / 263 枚）にだけ 1 が立っている |
 | **`job.cancel_requested`**（列） | 背景ジョブの**中断の印** | `JobService` と `DuplicatesService` が**同じ列を見る**（前の版は各サービスが自分のメモリに印を持ち、`POST /api/jobs/{id}/cancel` で**ハッシュのジョブが止まらなかった**）。**再起動をまたいでも残る** |
 | **`location_history` の `to_path` / `reason` / `actor`**（列。**P8-6 で足した**） | 履歴の 1 行を「入れ替わった」と「繋ぎ直した」に分ける。`reason` は `replaced` / `relinked`、`to_path` は繋ぎ直した先（入れ替わりは `NULL`）、`actor` は繋ぎ直した人（走査の入れ替わりは `NULL`） | **版は上げていない**（`db.TOP_UP_COLUMNS` が正。**古い行の `reason` は `NULL`**＝「列を足す前の入れ替わり」）。`register()` は `reason='replaced'` を書き、`RelinkService` は `reason='relinked'` を書く |
-| **`deletion_log.closed_at` / `close_reason`**（列。**P10 で足した**） | **実体が無い行を終わりにした**時刻と理由（**P10**。[`deletions-advance.md`](deletions-advance.md)）。`close_reason` の語彙は **`missing` だけ**（`CHECK` にも入れた）。**片付けてもファイルは 1 つも消さない・動かさない**（`asset.deleted_at` もそのまま＝**カタログに戻さない**） | **版は上げていない**（`db.TOP_UP_COLUMNS` が正）。**閉じた行は「最近の削除」から外れ、台帳 `GET /api/deletions` には残る**。**片付けた後は戻せない**（`undo` は 409 `already_closed`） |
+| **`deletion_log.closed_at` / `close_reason`**（列。**P10 で足した**） | **実体が無い行を終わりにした**時刻と理由（**P10**。[`deletions-advance.md`](deletions-advance.md)）。`close_reason` の語彙は **`missing` だけ**（`CHECK` にも入れた）。**片付けてもファイルは 1 つも消さない・動かさない**（`asset.deleted_at` もそのまま＝**カタログに戻さない**）。**段 3 の行は `purge_at` / `remaining_sec` も NULL にする**（タイマーから外す。**P10 の監査 C-3**） | **版は上げていない**（`db.TOP_UP_COLUMNS` が正）。**閉じた行は「最近の削除」から外れ、台帳 `GET /api/deletions` には残る**。**片付けた後は戻せない**（`undo` は 409 `already_closed`）。**（P10 の監査 A-3）ただしファイルが戻ってくれば戻せる**（走査が印を引き直す／実体が在れば `undo` が開き直す） |
 
 - **版を上げずに形を足した物**（`deletion_log.stuck_reason`・**`deletion_log.closed_at` / `close_reason`**・
   **`location_history` の `to_path` / `reason` / `actor`**）は
@@ -599,6 +599,13 @@ CREATE TABLE tag_gloss (
   **利用者がアプリを立ち上げ直した時点**で `pre-topup-<日時>/` の控えが付いてから足される。
 - **`asset.deleted_at` は資産の単位・削除は場所の単位。** 印を立てるのは**生きている `asset_location` が 0** か
   **生きた段 1 の行がある**ときだけ（場所が 2 つある画像の片方を消しただけで一覧から消さない）。
+  **（P10 の監査 A-3）片付けた行（`closed_at`）は数えない**——閉じた行は「終わった」ので隠す理由に
+  ならない（実体が無い間は「生きている場所が 0」で隠れたままになる＝幽霊は戻らない）。
+  規則は **`deletions.should_hide()` / `sync_hidden()` の 1 か所**で、**走査もそこを呼ぶ**
+  （`relink.py` も同じ関数を呼ぶ）。
+- **`delete_request` は「1 行 = 1 回の操作」**。**（P10 の監査 B-2）まとめて（`advance` / `close`）も
+  1 回の呼び出しで 1 行**残す（`count` = requested、`result_json` に `skipped` も）。**断った要求は
+  残さない**（`_drop_request`）。
 
 ---
 
@@ -775,6 +782,11 @@ GET    /api/pending-deletes       -- **最近の削除**（段 1〜3。残り時
 POST   /api/pending-deletes/{id}/undo {as_copy?}
                                   -- **取り消す**（**上書きしない**。埋まっていれば 409 target_exists で**止めて尋ねる**）
                                   -- **人だけ**が `as_copy: true`（`<名前>.<連番>.<拡張子>` で戻す）
+                                  -- **（P10 の監査 A-2）台帳の枚と、いまその場所に登録されている枚の
+                                  -- 両方の `deleted_at` を引き直す**（片方だけだと、戻したのに実体の
+                                  -- ある枚が一覧から永久に消える）
+                                  -- **（P10 の監査 A-3）片付けた段 1 の行でも、実体が在り登録も生きて
+                                  -- いれば開き直して戻せる**（ファイルが無い間は 409 `already_closed`）
 POST   /api/deletions/{id}/undo   {as_copy?}                   -- 同じ道（段 1〜3 に効く）
 GET    /api/deletions             ?limit=                      -- 削除の台帳（deletion_log）
 GET    /api/deletions/trash       ?limit=                      -- ゴミ箱（段 2。日付は現地）
@@ -792,28 +804,54 @@ POST   /api/deletions/{id}/advance {stage:2}
                                    -- `os.rename` で `<data>/trash/<日付>/<ハッシュ>/` へ）。**上書きしない**
                                    -- （埋まっていれば 409 `target_exists`／別ボリュームは 409 `cross_volume`）。
                                    -- **台帳を先に書いてから動かし**、動かせなければ `_unadvance()` で段 1 に戻す
-                                   -- （**「戻す」がそのまま効く**）。**古い `asset_id` の行でも進められる**
-                                   -- （`_target_for_advance()` が**いま登録されている行**を引く。**別のファイルを
-                                   -- 移さない**守りは `(size, mtime_ns)` の照合。§16.7 の 6）
-                                   -- エラー: 409 `missing_file`（実体が無い）/ `already_stage2` /
-                                   --   `already_stage3`（もう進んでいる）/ `already_closed`（片付け済み）/
-                                   --   `target_exists` / `cross_volume` / `not_registered`
+                                   -- （**「戻す」がそのまま効く**）。**いま登録されている行**を引くので
+                                   -- **古い `asset_id` の行でも進められる**（`_target_for_advance()`）。
+                                   -- **（P10 の監査 A-1）台帳の行が指す物かを必ず照合する**——
+                                   -- **台帳の `size`** と**いまその場所を登録している枚**の両方を見て、
+                                   -- 合わなければ **409 `different_file`**（「消した画像はもうこの場所に
+                                   -- 無く、別の画像があります」＋「ファイルが無いので片付ける」の案内）。
+                                   -- 実データの 6 行がこの形で、**別の画像 Y のファイルを移して
+                                   -- 一覧から消していた**（`(size, mtime_ns)` の照合だけでは足りない）。
+                                   -- **（P10 の監査 A-2）「戻す」は台帳の枚と、いまその場所に登録されて
+                                   -- いる枚の両方の `deleted_at` を引き直す**（片方だけだと、戻したのに
+                                   -- 実体のある枚が一覧から永久に消える）
+                                   -- エラー: 409 `missing_file`（その行のファイルが無い）/ `different_file`
+                                   --   （別の画像が在る）/ `changed`（登録した時と中身が違う）/
+                                   --   `already_stage2` / `already_stage3`（もう進んでいる）/
+                                   --   `already_closed`（片付け済み）/ `target_exists` / `cross_volume` /
+                                   --   `not_registered`
 POST   /api/deletions/advance      {ids:[...], stage:2}
                                    -- まとめて段 2 へ（**1 件ずつ同じ道**）。**1 回の上限は 200 件**——
                                    -- 超えたら 422 `too_many` で**1 件も進めない**（**人にも同じ規則**。
                                    -- **画面は 200 件ずつに分けて送る**）。断った行は理由つきで返す（**黙って捨てない**）
 POST   /api/deletions/{id}/close   {reason:"missing"}
                                    -- **実体が無い行を終わりにする**（**P10 で実装**。`closed_at` / `close_reason`）。
-                                   -- **人だけ**。**「登録した場所・アプリのゴミ箱・一時置き場のどこにも実体が
-                                   -- 無い」ことを確かめてから**閉じる（**ファイルは 1 つも消さない・動かさない**。
-                                   -- `asset.deleted_at` はそのまま＝**カタログに戻さない**）。`reason` は
-                                   -- **`missing` だけ**（`CLOSE_REASONS`。`CHECK` にも入れた）
-                                   -- エラー: 409 `file_found`（実体がまだ在る。**生きているファイルを片付けない**）/
-                                   --   `already_closed`（**片付けた後の `undo` もここで断る**＝実体の無い枚を
-                                   --   カタログに戻して「参照切れ」を並べない）/ `not_registered`
+                                   -- **人だけ**。**この行のファイルが、登録の場所・元の場所・アプリの
+                                   -- ゴミ箱・一時置き場のどこにも無い**ことを確かめてから閉じる
+                                   -- （**ファイルは 1 つも消さない・動かさない**。`asset.deleted_at` は
+                                   -- そのまま＝**カタログに戻さない**）。`reason` は **`missing` だけ**
+                                   -- （`CLOSE_REASONS`。`CHECK` にも入れた）
+                                   -- **（P10 の監査 A-1 / C-1）「在る」ではなく「この行の画像が在る」を見る**
+                                   -- （登録の場所は `asset_location.asset_id` が台帳の枚と同じで、
+                                   -- 大きさも台帳の `size` と一致するときだけ数える。`to_path` /
+                                   -- `hold_path` は 1 回の削除に固有なので在れば数える）。**別の画像を
+                                   -- 「まだ在る」と数えると、実体がどこにも無い行を片付けられない**
+                                   -- **（P10 の監査 C-3）段 3 の行は `purge_at` / `remaining_sec` も
+                                   -- NULL にする**（タイマーから外す。`stuck` と同じ扱い）
+                                   -- **（P10 の監査 B-2）`delete_request` に 1 行残す**（`kind: "close"`。
+                                   -- 誰がいつ終わりにしたか。`stage` は対象の段）
+                                   -- エラー: 409 `file_found`（この行のファイルがまだ在る。**生きている
+                                   --   ファイルを片付けない**）/ `already_closed`（**片付けた後の `undo` も
+                                   --   ここで断る**＝実体の無い枚をカタログに戻して「参照切れ」を並べない。
+                                   --   **（P10 の監査 A-3）ファイルが戻ってきていれば、段 1 の行は開き直して
+                                   --   戻せる**＝「実体が在り、登録も生きていて、大きさも台帳と一致する」
+                                   --   ときだけ）/ `not_registered`
 POST   /api/deletions/close        {ids:[...], reason}
                                    -- まとめて片付ける（**1 回の上限は 200 件**。超えたら 422 `too_many` で
-                                   -- 1 件も片付けない）。**実体がまだ在る行は `file_found` で断り、断った数を返す**
+                                   -- 1 件も片付けない）。**その行のファイルがまだ在る行は `file_found` で
+                                   -- 断り、断った数を返す**。**（P10 の監査 B-2）1 回の呼び出しを
+                                   -- `delete_request` に 1 行残す**（`kind: "close_many"`）。**（D-1）
+                                   -- 既に片付いていた行は `replayed_count` に分けて返す**
 POST   /api/locations             {asset_id, path, kind}       -- 場所を足す（**まだ無い**）
 GET    /api/locations/missing     ?limit=500&include_deleted=0|1
                                   -- **参照切れの一覧**（**読むだけ**。**P8-6 で実装**）。`missing_at` が
@@ -2065,19 +2103,41 @@ P8 の設計 [`p8-design.md`](p8-design.md) §0 が**拘束力のある差分**�
 | --- | --- | --- | --- |
 | 1 | **段 1 → 2 は後から進められる** | `POST /api/deletions/{id}/advance`（`{stage:2}`）と `POST /api/deletions/advance`（`{ids,stage:2}`）。**既存の段 2 と同じ道**（`_destination()` ＋ `move_no_clobber()`＝`os.rename` で `<data>/trash/<日付>/<ハッシュ>/` へ）で、**上書きしない**（409 `target_exists`／別ボリュームは 409 `cross_volume`）。**台帳を先に書いてから動かし**、動かせなければ `_unadvance()` で段 1 に戻す。**「戻す」がそのまま効く** | §6.1, `deletions.py` |
 | 2 | **段 3 への直行は作らない** | まとめての口も含めて `stage` は **2 だけ**（他は 422 `bad_stage`）。段 3 は**置き場ごとの許可（`root.allow_stage3`。Q8 の利用者の意思表示）と凍結**が要る既存の道のままにする（許可を飛ばす近道を作らない） | §6.1, §16.6 |
-| 3 | **片付けは「実体がどこにも無い」ことを確かめてから** | `POST /api/deletions/{id}/close`（`{reason:'missing'}`）と `POST /api/deletions/close`。**登録した場所・アプリのゴミ箱・一時置き場のどこにも実体が無い**ことを確かめてから `closed_at` / `close_reason` を書く。**ファイルは 1 つも消さない・動かさない**。`asset.deleted_at` はそのまま＝**カタログに戻さない**。実体がまだ在れば 409 `file_found`（**生きているファイルを片付けない**）。**閉じた行は「最近の削除」から外れ、台帳 `GET /api/deletions` には残る** | §5.8, §6.1 |
-| 4 | **片付けた後の `undo` は 409** | 段 1 は**ファイルを見ない**ので、閉じた行の `undo` を通すと**実体の無い枚がカタログに戻り「参照切れ」が並ぶ**。`already_closed` で断る（**幽霊を戻さない**） | §6.1 |
+| 3 | **片付けは「この行のファイルがどこにも無い」ことを確かめてから** | `POST /api/deletions/{id}/close`（`{reason:'missing'}`）と `POST /api/deletions/close`。**登録した場所・元の場所・アプリのゴミ箱・一時置き場のどこにも、その行のファイルが無い**ことを確かめてから `closed_at` / `close_reason` を書く。**ファイルは 1 つも消さない・動かさない**。`asset.deleted_at` はそのまま＝**カタログに戻さない**。**その行のファイル**がまだ在れば 409 `file_found`（**生きているファイルを片付けない**）。**閉じた行は「最近の削除」から外れ、台帳 `GET /api/deletions` には残る** | §5.8, §6.1 |
+| 4 | **片付けた後の `undo` は 409**（**ファイルが戻っていれば開き直す**。監査 A-3） | 段 1 は**ファイルを見ない**ので、閉じた行の `undo` を通すと**実体の無い枚がカタログに戻り「参照切れ」が並ぶ**。`already_closed` で断る（**幽霊を戻さない**）。**（P10 の監査 A-3）ただし「ファイルが戻ってきた」行は戻せる**——①**走査**が `missing_at` を戻したときに `deleted_at` を引き直す（`should_hide()`。閉じた行は隠す理由に数えない）、②走査の前でも、**実体が在り登録も生きていて大きさも台帳と一致する**段 1 の行は `undo` が**開き直して**戻す。**ファイルが無い間は今までどおり 409** | §6.1, `scan.py` |
 | 5 | **1 回 200 件（人にも同じ規則）** | `MAX_BATCH_PER_CALL = AGENT_MAX_BATCH`。超えたら **422 `too_many` で 1 件も進めない**（部分適用しない）。要望の「エージェントと同じ規則」は**値ではなく規則の形**と読んで、人にもそのまま当てた。**画面は 200 件ずつに分けて送る**（実データの 194 行は 1 回で収まる） | §6.1, `deletions-advance.md` §2-1 |
-| 6 | **古い `asset_id` の行でも進められる（`_target_for_advance`）** | 台帳の `asset_id` は**走査で古くなる**（走査が同じ場所を別の `asset` として登録し直すため。実データの段 1 で**実体が在る 7 行のうち 6 行**がこの形）。`delete()` の `_target(asset_id, path)` は 409 `not_registered` を返して**永久に進めない**ので、`advance` は**いま登録されている行**を引く。**別のファイルを移さない**守りは **`(size, mtime_ns)` の照合**が持つ（`close` は元から `path` しか見ない） | `deletions.py`, `deletions-advance.md` §3-1 |
+| 6 | **古い `asset_id` の行でも進められる（`_target_for_advance`）。ただし台帳の行が指す物かを照合する（監査 A-1）** | 台帳の `asset_id` は**走査で古くなる**（走査が同じ場所を別の `asset` として登録し直すため。実データの段 1 で**実体が在る 7 行のうち 6 行**がこの形）。`delete()` の `_target(asset_id, path)` は 409 `not_registered` を返して**永久に進めない**ので、`advance` は**いま登録されている行**を引く。**ただし「別のファイルを移さない」守りは `(size, mtime_ns)` の照合だけでは足りない**——その 6 行は**利用者が消した画像の実体がもう無く、同じ場所には別の画像 Y が登録されて一覧に見えている**ので、**台帳の `size`** と**いまその場所を登録している枚**を照合し、合わなければ **409 `different_file`**（「ファイルが無いので片付ける」を案内）。**`close` も「この行の画像が在るか」で見る**（別の画像を「まだ在る」と数えない） | `deletions.py`, `deletions-advance.md` §3-1・§7 |
 | 7 | **画面の語は「ファイルが無いので片付ける」** | 要望の語は「実体が無いので片付ける」だが、`frontend-design.md` §6.1 の**規約 4 が「実体」→「ファイル」を決めている**（§17 の画面の語）。**要望の語のままにしていない唯一の点**（規則が正）。段 2 の行にも同じボタンを出す（ゴミ箱の中身をエクスプローラーで消したときの後始末） | `frontend-design.md` §4.6・§6, §17 |
 
+#### P10 の監査（Fable、2026-10-19。**判定: 直してから次へ**）で確定したこと
+
+**正は [`p10-audit-triage.md`](p10-audit-triage.md)**（指摘ごとの仕分け）と
+[`p10-audit-report.md`](p10-audit-report.md)（実行込みの監査）。**推奨はすべて採用した。**
+**A-1 は利用者のファイルを壊し得る穴**だった（下の 1 行目）。
+
+| # | 決めたこと | 中身 | 根拠 |
+| --- | --- | --- | --- |
+| 8 | **（A-1）advance は台帳の行が指す物かを照合し、合わなければ 409 `different_file`** | 台帳の `size` と、**いまその場所を登録している枚**（`asset_location.asset_id`）の両方を見る。**別の画像 Y のファイルをゴミ箱へ移して Y を一覧から消していた**（実データの 6 行。`(size, mtime_ns)` の照合は現在の登録としか比べていなかった）。断りの文は「**消した画像はもうこの場所に無く、別の画像があります。「ファイルが無いので片付ける」で、この行を終わりにできます。**」＝**そのまま次の一手を案内する** | `deletions.py` `_require_file_for_advance()`, `p10-audit-report.md` A-1 |
+| 9 | **（A-1 / C-1）`close` は「この行の画像が在るか」で見る** | 登録の場所と台帳の鍵は、**`asset_location.asset_id` が台帳の枚と同じ**で**大きさも台帳の `size` と一致する**ときだけ数える。`to_path` / `hold_path` は**1 回の削除に固有**なので在れば数える。**これで実データの 6 行が片付けられる**（別の画像で `file_found` にならない） | `deletions.py` `_files_of_row()`, `p10-audit-report.md` A-1・C-1 |
+| 10 | **（A-2）「戻す」は台帳の枚と、いまその場所に登録されている枚の両方の印を引き直す** | `advance` / `delete` は**いまの登録**に `deleted_at` を立てるのに、`_restore()` は**台帳の枚 X だけ**を同期していた。**実体が戻り登録も生きているのに、Y がカタログから永久に消える**（`undo` は `already_restored`、走査は `missing_at` しか戻さない）。A-1 を直すとこの道は塞がるが、**二重の守り**として直した | `deletions.py` `_sync_hidden_with_location()`, `p10-audit-report.md` A-2 |
+| 11 | **（A-3）片付けた行は、ファイルが戻れば戻せる** | ①`_should_hide()` と `_live_stage1()` で**閉じた行（`closed_at`）を隠す理由・生きた段 1 の行に数えない**（実体が無い間は `live == 0` で隠れたまま＝**幽霊は戻らない**）②**走査が印を戻したとき `deleted_at` を引き直す**（`scan.py` は `deletions.sync_hidden()` を呼ぶだけ。**規則は 1 か所**）③走査の前でも、実体が在り登録も生きている段 1 の行は `undo` が**開き直して**戻す。**実データを走査すれば 1 回で戻る** | `scan.py`, `deletions.py`, `p10-audit-report.md` A-3・G-2 |
+| 12 | **（B-1）二度押しで POST を 2 回飛ばさない** | `advance` / `closeRow` / `runBatch` に `busy` が無く、**2 回目の応答が 1 回目の結果の文を上書き**していた（1 回の操作が成功しているのに「既にアプリのゴミ箱へ移しています」の赤／まとめては**6 枚動いたのに「0 件」**）。`await` の前に `busy` を立て、確認も 1 回だけにする。`gui_smoke` に**2 連打で POST 1 回**の検査を足した | `apps/gui/pending.js`, `p10-audit-report.md` B-1 |
+| 13 | **（B-2）まとめて・`close` も `delete_request` に 1 行残す** | 記録の「`actor` は `delete_request` に残す」は**4 つの口のうち単発の `advance` だけ**だった（誰がいつ 187 行を終わりにしたかが台帳の `closed_at` にしか残らない）。**1 呼び出し 1 行**（`count` = requested、`result_json` に `skipped` も。`stage` は対象の段。片付けは段が無いので揃っていればその段）。**断った要求は残さない**（`advance` と同じ） | `deletions.py` `_run_many()` / `close()`, `p10-audit-report.md` B-2 |
+| 14 | **（C-3）片付けた段 3 の行はタイマーからも外す** | `close` で `purge_at` / `remaining_sec` を NULL にする（`stuck` と同じ扱い）。残すと「閉じたのに窓が動いている」行になり、`tick()` が `decremented` に数え続ける。画面は段 3 に「片付ける」を出さないので API 直打ちの道 | `deletions.py` `_close_one()`, `p10-audit-report.md` C-3 |
+| 15 | **（D-1・D-2）数を実際に起きたことに合わせる** | **D-1**: まとめての再送で**既に片付いていた行**は成功に数えたままだと「2 件を片付けました。」と嘘に見えるので、`replayed_count` を分けて返し「**2 件は既に片付けていました。**」と足す。**D-2**: 1 件も選んでいないときは「選んだ 0 件」ではなく「**選んだ行はありません**」（数ではなく状態を言う） | `deletions.py`, `apps/gui/pending.js`, `p10-audit-report.md` D-1・D-2 |
+| 16 | **（D-3）口の有無の検査は 404 と 405 の両方を許す** | `GET /api/deletions/advance` の 404 は**GUI の静的マウント**が返していた（`apps/gui` が無いと 405）。**口そのものは `openapi()` の経路で見る**（`app.routes` は取り込んだルーターを畳まない） | `tests/test_deletions_advance.py`, `p10-audit-report.md` D-3 |
+| 17 | **（C-2）不安定だった 1 件は別件として先に直した** | `test_the_stuck_reason_says_why_it_could_not_go_back` は**時計の刻み**（0.3 ms 後の書き直しが同じ `mtime_ns` に落ちる）が原因で、**実装は仕様どおり**だった（`(size, mtime_ns)` で見る＝§8.4 F4 の規則の限界）。テストの**前提**を `os.utime` で固定した（`docs/stuck-reason-fix.md`。`deletions.py` は 1 行も変えていない） | `tests/test_deletions.py`, `docs/stuck-reason-fix.md` |
+| 18 | **（F）監査が見つけたテストの穴を埋めた** | ①段 3 の行（保留に実体）の `close` が 409 `file_found`（A3）②**ファイルが戻った閉じた行**の `advance` が 409 `already_closed`（A14）③**台帳の枚と現在の枚が違う**行の `advance` が 409 `different_file` で、`close` で終われる ④走査で一覧に戻る（A-3）⑤`undo` の開き直し ⑥二度押し（B-1。`gui_smoke`）。**どれも壊すと落ちる**ことを変異で確かめた | `tests/test_deletions_advance.py`, `tools/gui_smoke.mjs`, `p10-audit-report.md` F |
+
 **実データの数（2026-10-19 の実測。`mode=ro` で読んだだけ）**: `asset` **461 行**（生きた **267 枚**）・
-段 1 の生きた行 **194**・**実体が在るのは 7 行**（うち 6 行が上の古い `asset_id` の形）・実体が無いのは 187。
-まとめて片付けると **187 件が閉じ、7 件は 409 `file_found` で断られる**（**意図どおり**。残る 7 行は
-「アプリのゴミ箱へ移す」で進められる。移した後も**アプリのゴミ箱に実体が在る間は片付けを断る**＝
-ゴミ箱を空にするのは利用者）。**列 `closed_at` / `close_reason` は実データにまだ無い**（§5.8）。
-**要望の前提（「194 行は実体が無い」）とは食い違う**ので、押す前にこの内訳を画面で確かめられる形にしてある
-（「187 件を片付けました。」＋「7 件はファイルがまだあるので片付けませんでした。」＝**数を黙って捨てない**）。
+段 1 の生きた行 **194**・**実体が在るのは 7 行**（うち 6 行が上の古い `asset_id` の形＝**別の画像 Y が
+見えている**。利用者が消した X の実体は無い）・実体が無いのは 187。**（P10 の監査 A-1 で直した後）**
+まとめて片付けると **193 件が閉じ、1 件だけ 409 `file_found` で断られる**（その 1 件は
+「アプリのゴミ箱へ移す」で進める。移した後も**アプリのゴミ箱に実体が在る間は片付けを断る**＝
+ゴミ箱を空にするのは利用者）。**別の画像 Y は 1 枚も動かない**（advance は 6 行とも 409
+`different_file` で断る）。**列 `closed_at` / `close_reason` は実データにまだ無い**（§5.8）。
+押す前にこの内訳を画面で確かめられる形にしてある（「**193 件を片付けました。**」＋
+「**1 件はファイルがまだあるので片付けませんでした。**」＝**数を黙って捨てない**）。
 
 ---
 

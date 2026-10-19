@@ -208,7 +208,8 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/p8-3-band-miss.md`](docs/p8-3-band-miss.md) | **帯の取りこぼしの調査**（8bit × 8 本 → **4bit × 16 本**に作り直した根拠。距離 0〜64 の総当たりとの一致） | — |
 | [`docs/p9-implementation.md`](docs/p9-implementation.md)、[`docs/p9-audit-report.md`](docs/p9-audit-report.md)、[`docs/p9-audit-triage.md`](docs/p9-audit-triage.md) | **P9 の記録**（§12.1 の実測・exe 化の判断）と、その**監査報告**（C-1〜C-3・D 10 件・G 6 件）と**仕分け**（指摘ごとに 1 行。C-1 は新しい読み取り専用の接続で `quick_check`） | — |
 | [`docs/wording-audit-report.md`](docs/wording-audit-report.md)、[`docs/wording-fix.md`](docs/wording-fix.md) | **ワーディング監査**（利用者に見える日本語 約 1,200 行を 1 行ずつ見た報告。判定は「自然」で、原因は中国語ではなく**癖 3 つ**）と、その**修正の記録**（規則 3 つ・直した 141 件・食い違い 24 行の裁定・用語の対応表・残した物） | — |
-| [`docs/deletions-advance.md`](docs/deletions-advance.md) | **P10 の実装の記録**（段 1 の行を後からアプリのゴミ箱へ移す・実体が無い行を片付ける。口 4 つ・決めた 8 点・**設計の穴 4 件**・複製で通した線 14 件・壊し試験 13 件） | — |
+| [`docs/deletions-advance.md`](docs/deletions-advance.md) | **P10 の実装の記録**（段 1 の行を後からアプリのゴミ箱へ移す・実体が無い行を片付ける。口 4 つ・決めた 8 点・**設計の穴 4 件**・複製で通した線 14 件・壊し試験 13 件）＋**§7 に監査の指摘で直した所** | — |
+| [`docs/p10-audit-report.md`](docs/p10-audit-report.md)、[`docs/p10-audit-triage.md`](docs/p10-audit-triage.md) | **P10 の監査報告**（**実行込み**。判定は**「直してから次へ」**。**A-1 は利用者のファイルを壊し得る穴**——古い `asset_id` の 6 行の advance が**別の画像をゴミ箱へ移していた**。A-2・A-3・B 2 件・C 3 件・D 12 件・**壊し試験 32 通りで 28 が落ち、落ちない 4 のうち 3 がテストの穴**）と、その**仕分け**（**指摘ごとに 1 行**。推奨はすべて採用・A-1〜A-3 は複製で再現して直した） | §6.1, §16.7 |
 | [`docs/duplicates-keep-button.md`](docs/duplicates-keep-button.md) | **重複の整理の「残す 1 枚以外を削除する…」**（利用者の要望の追い足し。ラジオに「残す」の語・群ごとのボタン・**渡す直前に `keep` を除く**二重の守り・本物の Chrome 25 検査） | — |
 | [`docs/japanese-ui-audit-report.md`](docs/japanese-ui-audit-report.md)、[`docs/japanese-ui-fix.md`](docs/japanese-ui-fix.md) | **日本語 UI の監査**（「日本語のシステムとして自然か」の軸。判定は**「一部に不揃い」**で、規約 A〜F・違反 A16/B11/C30/D17/E11/F9・用語 27 語の判定・質問 G-1〜G-10）と、その**修正の記録**（**§6.1 を規約 A〜F＝通し番号 1〜6 に振り直した**・分類ごとの件数・直す前→後・残した物と理由・1024×700 の検査を足した話） | §6.1, §17 |
 | [`schemas/backup-manifest.schema.json`](schemas/backup-manifest.schema.json) | **日次スナップショットの `manifest.json` の契約**（`restore` が復元の前に読む。`abi: 0.1`） | — |
@@ -300,10 +301,18 @@ uv run image-reviewer serve --port 8790
 **P9（仕上げ）は完了**（2026-10-18。[`docs/p9-implementation.md`](docs/p9-implementation.md)）。
 **P10（段 1 の行を後から進める・実体が無い行を片付ける）も完了**（2026-10-19。
 [`docs/deletions-advance.md`](docs/deletions-advance.md)）。**利用者の要望**（一度カタログから外した物を
-ゴミ箱へ／実体が無い物を片付ける）で、**段 1 が行き止まりだった**のを塞いだ。**P10 の監査はこれから**
-（Fable が `docs/p10-audit-report.md` を書く）。**実データは 461 行（生きた 267 枚）・段 1 の生きた行 194・
-うち実体が在るのは 7 行**（187 行が実体なし）で、**利用者がアプリを立ち上げ直して「まとめて片付ける」を
-押す番**（`pre-topup-<日時>/` の控えが付いてから列が足される。**押すと 187 件が閉じ、7 件は断られる**）。
+ゴミ箱へ／実体が無い物を片付ける）で、**段 1 が行き止まりだった**のを塞いだ。
+**P10 の監査も受けて、指摘は全部直した**（2026-10-19。[`docs/p10-audit-report.md`](docs/p10-audit-report.md)
+＝判定**「直してから次へ」**、[`docs/p10-audit-triage.md`](docs/p10-audit-triage.md)）——**A-1 は利用者の
+ファイルを壊し得る穴**だった（**古い `asset_id` の 6 行**に「アプリのゴミ箱へ移す」を打つと、**いま同じ
+場所に登録されている別の画像 Y のファイルを移して、Y を一覧から消していた**。台帳の `size` と
+**いま登録している枚**を照合して **409 `different_file`** で断る形にした）。**A-2**（戻しても Y の
+`deleted_at` が立ったまま＝実体があるのに永久に消える）と **A-3**（片付けた行はファイルが戻っても
+二度とカタログに戻せない）も直した（**走査が印を引き直す**・実体が在れば `undo` が**開き直す**）。
+**実データは 461 行（生きた 267 枚）・段 1 の生きた行 194・うち実体が在るのは 7 行**（187 行が実体なし、
+**7 行のうち 6 行は「別の画像が在る」形**）で、**利用者がアプリを立ち上げ直して「まとめて片付ける」を
+押す番**（`pre-topup-<日時>/` の控えが付いてから列が足される。**押すと 193 件が閉じ、1 件だけ断られる**
+——その 1 件は「アプリのゴミ箱へ移す」で進める。**別の画像 6 枚は 1 枚も動かない**）。
 **P9 の監査（[`docs/p9-audit-report.md`](docs/p9-audit-report.md)。判定「合格（条件つき）」）の
 指摘も全部直した**（2026-10-19。[`docs/p9-audit-triage.md`](docs/p9-audit-triage.md)）——
 **C-1**（走ったまま壊れた DB の入口が、**書き込んだ接続のページキャッシュ**越しに見ていて

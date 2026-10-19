@@ -94,8 +94,16 @@ export function advanceDoneText(count) {
   return `${Number(count || 0).toLocaleString('ja-JP')} 件をアプリのゴミ箱へ移しました。`;
 }
 
-export function closeDoneText(count) {
-  return `${Number(count || 0).toLocaleString('ja-JP')} 件を片付けました。`;
+/** **（D-1）既に片付いていた数を分けて言う**（`replayed_count`。監査 D-1）。
+ *
+ * まとめての再送では、既に片付けた行も**成功として数える**（200 で返る）。それを
+ * 「片付けました」とだけ言うと、**実際には何も起きていないのに N 件片付けたように見える**。
+ */
+export function closeDoneText(count, replayed = 0) {
+  const n = Number(count || 0);
+  const again = Number(replayed || 0);
+  return `${n.toLocaleString('ja-JP')} 件を片付けました。`
+    + (again > 0 ? `${again.toLocaleString('ja-JP')} 件は既に片付けていました。` : '');
 }
 
 /** **片付けの確認**（戻せない操作なので 1 回挟む。§6.1 の規約 3）。
@@ -117,6 +125,9 @@ export const SKIP_TEXT = {
   already_closed: '既に片付けています',
   already_restored: '既に戻しています',
   changed: '中身が変わっています',
+  // **（P10 の監査 A-1）** 消した画像はもうその場所に無く、**別の画像**が登録されている
+  // （台帳の枚・大きさと合わない）。**そのまま「片付ける」へ案内する**（本文が案内する）
+  different_file: '別の画像があります',
   not_registered: '登録がありません',
   refused: '見つかりません',
   failed: 'うまくいきませんでした',
@@ -399,7 +410,8 @@ function pickBox(item) {
 /** まとめての帯（**全部選ぶ**＋2 つのボタン。P10。**194 件を 1 回で**片付けられる）。
  *
  * **枚はそれぞれの操作が効く行で数える**（段 1 の行だけが「移す」に数えられる）。
- * 1 件も選んでいなければ押せない（**0 件と書かない**。§6.1 の規約 3・C-22）。
+ * 1 件も選んでいなければ押せない。**（P10 の監査 D-2）1 件も選んでいないときは「選んだ 0 件」と
+ * 書かない**——数ではなく**状態**を言う（「選んだ行はありません」。§6.1 の規約 3・C-22）。
  */
 export function bulkHtml() {
   const rows = selectableRows();
@@ -408,10 +420,12 @@ export function bulkHtml() {
   const advance = picked.filter((i) => Number(i.stage) === 1).length;
   const close = picked.filter((i) => i.closeable).length;
   const all = picked.length === rows.length;
+  const pickedText = picked.length
+    ? `選んだ ${picked.length.toLocaleString('ja-JP')} 件` : '選んだ行はありません';
   return `<div class="pd-bulk">
     <label class="pd-all"><input type="checkbox" class="pd-all-box"${all ? ' checked' : ''}>`
     + ` 全部選ぶ</label>
-    <span class="stat">選んだ ${picked.length.toLocaleString('ja-JP')} 件</span>
+    <span class="stat">${pickedText}</span>
     <span class="spacer"></span>
     <button class="pd-advance-many"${advance ? '' : ' disabled'}>`
     + `${esc(bulkLabel('advance', advance))}</button>
@@ -885,45 +899,65 @@ export async function purge(id, confirmed = false) {
  *
  * **確認は挟まない**——「戻す」でいつでも戻せるので、戻す側と同じ軽さにする（§4.6）。
  * 失敗したら読み直す（サーバはその行を触っていないので、画面の状態と食い違わない）。
+ *
+ * **（P10 の監査 B-1）`busy` で二度押しを止める。** 止めないと POST が 2 回飛び、**1 回目の
+ * 成功の文を 2 回目の 409（「既にアプリのゴミ箱へ移しています」）が上書きする**——
+ * 利用者の 1 回の操作は成功しているのに、**失敗の文が出る**（本物の Chrome で再現）。
+ * `load()` と同じ形（**`await` の前に立てる**ので、2 回目の押下はここで止まる）。
  */
 export async function advance(id) {
-  const res = await fetch(advanceOneUrl(id), {
-    method: 'POST', headers: human(), body: JSON.stringify({ stage: 2 }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    // **実体が無いときの 409 は本文がそのまま次の一手**（「ファイルが無いので片付ける」）
-    state.msg = body.detail || `移せませんでした。もう一度試してください（詳細: ${res.status}）。`;
-    state.bad = true;
+  if (state.busy) return null;
+  state.busy = true;
+  try {
+    const res = await fetch(advanceOneUrl(id), {
+      method: 'POST', headers: human(), body: JSON.stringify({ stage: 2 }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      // **実体が無いときの 409 は本文がそのまま次の一手**（「ファイルが無いので片付ける」）
+      state.msg = body.detail || `移せませんでした。もう一度試してください（詳細: ${res.status}）。`;
+      state.bad = true;
+      await load();
+      return null;
+    }
+    state.msg = advanceDoneText(1);
+    state.bad = false;
     await load();
-    return null;
+    return body;
+  } finally {
+    state.busy = false;
   }
-  state.msg = advanceDoneText(1);
-  state.bad = false;
-  await load();
-  return body;
 }
 
 /** **1 件を片付ける**（実体が無い行を終わりにする。**人だけ**。**ファイルは消さない**）。
  *
  * 戻せない操作なので**押す前に 1 回確認する**（「ファイルは消しません」を文に入れる）。
+ *
+ * **（P10 の監査 B-1）`busy` で二度押しを止める**（確認の 2 回目も出さない。`await` の前に立てる）。
  */
 export async function closeRow(id, confirmed = false) {
-  if (!confirmed && !globalThis.confirm(closeConfirmText(1))) return null;
-  const res = await fetch(closeOneUrl(id), {
-    method: 'POST', headers: human(), body: JSON.stringify({ reason: 'missing' }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    state.msg = body.detail || `片付けられませんでした。もう一度試してください（詳細: ${res.status}）。`;
-    state.bad = true;
+  if (state.busy) return null;
+  state.busy = true;
+  try {
+    if (!confirmed && !globalThis.confirm(closeConfirmText(1))) return null;
+    const res = await fetch(closeOneUrl(id), {
+      method: 'POST', headers: human(), body: JSON.stringify({ reason: 'missing' }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      state.msg = body.detail || `片付けられませんでした。もう一度試してください（詳細: ${res.status}）。`;
+      state.bad = true;
+      await load();
+      return null;
+    }
+    // **（D-1）既に片付いていた行（`replayed`）は、そう言う**
+    state.msg = closeDoneText(1, body.replayed ? 1 : 0);
+    state.bad = false;
     await load();
-    return null;
+    return body;
+  } finally {
+    state.busy = false;
   }
-  state.msg = closeDoneText(1);
-  state.bad = false;
-  await load();
-  return body;
 }
 
 /** **まとめて**（`kind` は `advance` / `close`。**選んだ行だけ**）。
@@ -931,41 +965,55 @@ export async function closeRow(id, confirmed = false) {
  * **200 件ずつ分けて送る**（サーバの上限は 1 回 200 件。194 件は 1 回で収まる）。
  * **数を黙って捨てない**——成功と断りを別々に数え、両方を 1 行ずつ出す。
  * 断られた行だけ選択に残す（そのまま押し直せる）。
+ *
+ * **（P10 の監査 B-1）`busy` で二度押しを止める。** 止めないと POST が 2 回飛び、**2 回目は
+ * 0 件・全部断りになるので、6 枚動いたのに「0 件をアプリのゴミ箱へ移しました。」と出る**
+ * （本物の Chrome で再現。§6.1 の規約 3「実際に起きたことを言う」に反する）。
+ * 止めるのは**確認を出す前**（2 回目の確認も出さない）。
  */
 export async function runBatch(kind, confirmed = false) {
-  const targets = pickedRows().filter((i) => (kind === 'advance'
-    ? Number(i.stage) === 1 : Boolean(i.closeable)));
-  if (!targets.length) return null;
-  if (kind === 'close' && !confirmed && !globalThis.confirm(closeConfirmText(targets.length))) {
-    return null;
-  }
-  const ids = targets.map((i) => i.id);
-  const done = [];
-  const skipped = [];
-  for (let at = 0; at < ids.length; at += BATCH_MAX) {
-    const chunk = ids.slice(at, at + BATCH_MAX);
-    const res = await fetch(kind === 'advance' ? ADVANCE_MANY : CLOSE_MANY, {
-      method: 'POST', headers: human(),
-      body: JSON.stringify(kind === 'advance'
-        ? { ids: chunk, stage: 2 } : { ids: chunk, reason: 'missing' }),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      state.msg = body.detail || `できませんでした。もう一度試してください（詳細: ${res.status}）。`;
-      state.bad = true;
-      await load();
+  if (state.busy) return null;
+  state.busy = true;
+  try {
+    const targets = pickedRows().filter((i) => (kind === 'advance'
+      ? Number(i.stage) === 1 : Boolean(i.closeable)));
+    if (!targets.length) return null;
+    if (kind === 'close' && !confirmed && !globalThis.confirm(closeConfirmText(targets.length))) {
       return null;
     }
-    done.push(...(body[kind === 'advance' ? 'advanced' : 'closed'] || []));
-    skipped.push(...(body.skipped || []));
+    const ids = targets.map((i) => i.id);
+    const done = [];
+    const skipped = [];
+    let replayed = 0;
+    for (let at = 0; at < ids.length; at += BATCH_MAX) {
+      const chunk = ids.slice(at, at + BATCH_MAX);
+      const res = await fetch(kind === 'advance' ? ADVANCE_MANY : CLOSE_MANY, {
+        method: 'POST', headers: human(),
+        body: JSON.stringify(kind === 'advance'
+          ? { ids: chunk, stage: 2 } : { ids: chunk, reason: 'missing' }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.msg = body.detail || `できませんでした。もう一度試してください（詳細: ${res.status}）。`;
+        state.bad = true;
+        await load();
+        return null;
+      }
+      done.push(...(body[kind === 'advance' ? 'advanced' : 'closed'] || []));
+      skipped.push(...(body.skipped || []));
+      replayed += Number(body.replayed_count || 0);       // **（D-1）既に片付いていた数**
+    }
+    state.msg = (kind === 'advance'
+      ? advanceDoneText(done.length) : closeDoneText(done.length, replayed))
+      + skippedText(kind, skipped);
+    state.bad = skipped.length > 0;
+    const left = new Set(skipped.map((s) => s.deletion_id));
+    state.selected = new Set([...state.selected].filter((id) => left.has(id)));
+    await load();
+    return { count: done.length, skipped: skipped.length, replayed };
+  } finally {
+    state.busy = false;
   }
-  state.msg = (kind === 'advance' ? advanceDoneText(done.length) : closeDoneText(done.length))
-    + skippedText(kind, skipped);
-  state.bad = skipped.length > 0;
-  const left = new Set(skipped.map((s) => s.deletion_id));
-  state.selected = new Set([...state.selected].filter((id) => left.has(id)));
-  await load();
-  return { count: done.length, skipped: skipped.length };
 }
 
 /** チェック 1 つを切り替える（**描き直して帯の枚数を揃える**）。 */

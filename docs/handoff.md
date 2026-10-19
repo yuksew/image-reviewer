@@ -1,7 +1,42 @@
-# 引継書 — image-reviewer / **P9（仕上げ）完了。§14 の段は全部済み**（2026-10-18 時点）
+# 引継書 — image-reviewer / **P10 まで完了**（2026-10-19 時点）
 
 このセッション（dsh・ワークツリー `dsh`）で進めた内容と、**次のセッションがそのまま続けられる形**の引継ぎです。
 読む順: **§0 危険な操作 → §1 いまの状態 → §2 Fable との往復 → §3 次の手順**。細部は §4 以降。
+
+> **2026-10-19 の追記（最新。P9 の監査の反映 → 文言の監査 2 つと適用 → P10）**:
+> - **P9（仕上げ）の監査の指摘も全部反映した**（判定「合格（条件つき）」。[`p9-audit-triage.md`](p9-audit-triage.md)）——
+>   **C-1**（走ったまま壊れた DB の入口を、**書き込んだ接続のページキャッシュ**越しに見ていた →
+>   **新しい読み取り専用の接続**で `quick_check`）・**C-2**（画面の「枚」が 262 と 455 で食い違っていた →
+>   **生きた枚**に統一）・**C-3**（「同時 8 本」は実装に無い見込みだった・`state=kept` は 0 件への絞り込みだった）。
+> - **文言の監査を 2 つ受け、どちらも適用した**:
+>   **ワーディング監査**（[`wording-audit-report.md`](wording-audit-report.md) → [`wording-fix.md`](wording-fix.md)。
+>   判定「自然」。原因は中国語ではなく**癖 3 つ**・直した 141 件・食い違い 24 行の裁定）と、
+>   **日本語 UI の監査**（[`japanese-ui-audit-report.md`](japanese-ui-audit-report.md) →
+>   [`japanese-ui-fix.md`](japanese-ui-fix.md)。判定「一部に不揃い」。**`frontend-design.md` §6.1 を
+>   規約 A〜F＝通し番号 1〜6 に振り直した**・違反 A16/B11/C30/D17/E11/F9・用語 27 語・質問 G-1〜G-10 は
+>   **推奨を全部採用**）。**`design.md` §17 に「画面の語」の列ができた**——「実体」→**ファイル**・
+>   「語釈」→**日本語訳**・「控え」→**バックアップ**・「捕獲」→**取り込む**・「入れ物」→**絞り込み**。
+> - **P10（段 1 の行を後から進める・実体が無い行を片付ける）が通った**（2026-10-19）。
+>   利用者の要望（**一度カタログから外した物をゴミ箱へ／実体が無い物を片付ける**）で、
+>   **段 1 が行き止まりだった**のを塞いだ（口 4 つ。**人だけ**・**1 回 200 件**・**段 3 への直行は作らない**・
+>   **ファイルは 1 つも消さない/動かさない**）。記録は [`deletions-advance.md`](deletions-advance.md)、
+>   決定は [`design.md`](design.md) §16.7、画面の文言は `frontend-design.md` §4.6・§6。
+>   **数（私が回して実測）**: `pytest` **547 件**（547 passed・0 failed・40.3 秒）・
+>   `gui_smoke` **395 検査（NG 0）**・`gui_layout` **10 画面 × 4 幅＋`pending --ids`**（複製 8797 で。
+>   **`--screen tags` は語を植えた複製で 4 幅 ok**。**`--screen pending --ids` の「段 2 の結果の 1 行」だけ
+>   4 幅 NG**＝`gui_layout.mjs` の `WANT_STAGE[2]` が「2 枚をゴミ箱へ移しました。」のまま。
+>   画面は「2 枚をアプリのゴミ箱へ移しました。」で `frontend-design.md` §6 が正。**検査の 1 行の残件**）。
+> - **実データ `.data/`（`mode=ro` で読んだだけ。1 バイトも書いていない）**: **461 行・生きた 267 枚・
+>   段 1 の生きた行 194・うち実体が在るのは 7 行**（**187 行が実体なし**。実体が在る 7 行のうち **6 行**は
+>   台帳の `asset_id` が古い形＝§6 の罠）。`deletion_log.closed_at` / `close_reason` の**列はまだ無い**。
+>   **利用者がアプリを立ち上げ直して「まとめて片付ける」を押す番**——そのとき `pre-topup-<日時>/` の控えが
+>   付いてから列が足される。**押すと 187 件が閉じ、7 件は 409 `file_found` で断られる**（意図どおり。
+>   残る 7 行は「アプリのゴミ箱へ移す」で進められる）。
+>   **この作業の時点では 8790 は動いていなかった**（`Get-NetTCPConnection` に 8790 が無い。**止めてはいない**）。
+> - **P8-5 の監査の条件 3 件（C-1〜C-3）は 2026-10-18 の仕分けで直っていた**
+>   （[`p8-5-audit-triage.md`](p8-5-audit-triage.md)。印のボタンの二度押し・読み取り専用の DB で書き込むボタンを
+>   置かない・`--screen asset` の段の期待値を API から組む）。**README と `design.md` の「未反映」は古い事実
+>   だったので直した**（**段 3 の許可が無い置き場の枚で 4 幅とも ok** を 2026-10-19 に実測）。
 
 > **2026-10-16 12:50 の追記**: **利用者の了解で `onnxruntime`（CPU 版）を入れ、P4 の線 8 を測って達成**しました
 > （実画像 4 枚で**語の集合が完全一致**。詳しくは [`p4-line8-note.md`](p4-line8-note.md)）。
@@ -95,6 +130,8 @@
 > [`p8-5-audit-report.md`](p8-5-audit-report.md)）を受け、
 > 判定はどれも「合格（条件つき）」→ **指摘は全部反映**（P8-3 の再確認は**合格（条件なし）**。
 > **P8-5 の条件 3 件だけは未反映**——文書化の後に出たため。→ §3 の 0）。
+> **（2026-10-19 の注記）この 3 件は 2026-10-18 の仕分け（[`p8-5-audit-triage.md`](p8-5-audit-triage.md)）で
+> 反映済み。上の最新の追記を見よ。**
 > - **数（実測。2026-10-18 に私が回した）**: `pytest` **477 件**・`gui_smoke` **291 検査**（すべて ok）・
 >   `gui_layout` **10 画面＋`pending --ids` の 11 本**（比較 / 要求 / まとまり / 注記とタグ / 語の一覧 / ジョブ /
 >   重複の整理 / 最近の削除 / 削除の確認つき / ライブラリの下部バー / 設定。**11 本とも ok**）。
@@ -200,57 +237,74 @@
 | **P8-2（削除の 3 段階と 5 分の取り消し）** | **完了 → 監査「合格（条件つき）」→ 全部反映**（A3 窓の間は `missing_at`・B-1 台帳を先に書く・B-2 失敗したら `purge_at` を NULL・B-3 実削除は錠の下・C-1 人は誰の削除でも戻せる・C-2 `S_IWRITE`・C-3 資産と場所の単位）。再確認の軽微 2 件も反映 | `docs/p8-2-implementation.md`、`docs/p8-2-audit-report.md` ＋ [`p8-2-audit-recheck.md`](p8-2-audit-recheck.md) / [`p8-2-audit-recheck-triage.md`](p8-2-audit-recheck-triage.md) ＋ triage |
 | **P8-3（重複と削除の画面）** | **完了 → 監査「合格（条件つき）」→ 反映 → 再確認「合格（条件なし）」**。`#/duplicates`・`#/pending-deletes`・削除の入口 3 つ（拡大・下部バー・まとまり）・`tools/gui_layout_seed.py`（前提の行を複製の中に作る）。**再リンクはこの段に来ず、後の P8-6 で実装した**（下の P8-6 の行） | `docs/p8-3-implementation.md`、`docs/p8-3-audit-report.md` ＋ [`p8-3-audit-recheck.md`](p8-3-audit-recheck.md) ＋ [`p8-3-audit-triage.md`](p8-3-audit-triage.md) |
 | **P8-4（バックアップと復元）** | **完了 → 監査「合格（条件つき）」→ 全部反映**（B-1 **壊れた写しを採用しない**・C-1 `restore` は `db_sha256` を照合・C-2 掴まれていれば 409 の 1 行・C-3 読み取り専用でも読める口は読める・D-2 `pre-topup-*` の控え・G-8 `import` で `create_app()` を走らせない）。**実機の日次だけは未達**（sandbox。再確認 B-1'） | `docs/p8-4-implementation.md`、`docs/p8-4-audit-report.md` ＋ [`p8-4-audit-recheck.md`](p8-4-audit-recheck.md) ＋ [`p8-4-audit-triage.md`](p8-4-audit-triage.md) |
-| **P8-5（画面の仕上げ。合格の線に数えない）** | **完了 → 監査は「合格（条件つき）」**。`#/settings` のバックアップ（最後の失敗の全文・7 世代・**取り直す**・置き場）と**置き場ごとの「段 3 を許す」印**・上部バーの「バックアップに失敗しています」と「走査中です」・段 3 の出し分け・文言の追い込み。**トレイは作らない**（常駐の実装が無い）。口は `GET /api/scan` の 1 つだけ足した。**条件 3 件（C-1〜C-3）は未反映**（下の「次の手順」の 0）。**画面の語は「取り直す」に統一した**（下の 0 の D-1） | `docs/p8-5-implementation.md`、[`p8-5-audit-report.md`](p8-5-audit-report.md)、[`p8-5-audit-triage.md`](p8-5-audit-triage.md) |
-| **P8-6（参照切れの再リンク。合格の線 9）** | **完了。2026-10-18**（**監査はこれから**）。`POST /api/locations/relink`（**人だけ**。`exact` = 新しいファイル / `nearby` = 探すフォルダ）と `GET /api/locations/missing`（**読むだけ**）・`location_history` に `to_path` / `reason` / `actor`（**版は上げない**＝`pre-topup-*` の控え）・**`create_app()` の硬化**（**`IMAGE_REVIEWER_DATA` が無ければ開かない**）・**事故 3 件目**（実データに 3 列が控え無しで入った。**行の変化は 0**。控え `.backup/pre-p8-6-20261018-100443/`）。**画面は作っていない**（口だけ）。`tools/probe_p8.py --relink` が **16 行すべて OK**・`pytest` **507 件** | [`p8-6-relink.md`](p8-6-relink.md) |
-| **P8 の合格の線（P8-1〜P8-4）** | **済み。2026-10-18**（**残っていた再リンク＝線 9 も P8-6 で実装済み**）。決定は [`docs/design.md`](design.md) §16.6 に反映済み。**画面の仕上げ（P8-5）は監査の条件 3 件が残っている** | `docs/design.md` §14・§16.6、[`p8-5-audit-report.md`](p8-5-audit-report.md)、[`p8-6-relink.md`](p8-6-relink.md) |
-| **P9（仕上げ）** | **完了（2026-10-18）**。**§12.1 の「目標」の行を全部実測で埋めた**（**未計測 0**）。届かなかったのは**一覧 API の 1 行だけ**（p95 **244.7 ms** / 目標 20 ms。**目標は下げていない**。理由と必要な条件は §12.1）。計測の途中で **`PRAGMA temp_store = MEMORY` の欠落**（1 万枚の `GET /api/assets` が 500 になっていた）と **D-8**（壊れていない DB に復元を勧めていた）を直し、**一覧で切った枚数を画面に出した**。道具は `tools/make_synthetic_db.py`（1 万枚の合成 DB）と `tools/probe_p9.py`（**サーバ内**の計測） | [`p9-implementation.md`](p9-implementation.md)、[`design.md`](design.md) §12.1・§12.2・§12.3・§16.7 | [`docs/design.md`](design.md) §14 |
+| **P8-5（画面の仕上げ。合格の線に数えない）** | **完了 → 監査は「合格（条件つき）」→ 条件 3 件も反映済み（2026-10-18）**。`#/settings` のバックアップ（最後の失敗の全文・7 世代・**取り直す**・置き場）と**置き場ごとの「段 3 を許す」印**・上部バーの「バックアップに失敗しています」と「走査中です」・段 3 の出し分け・文言の追い込み。**トレイは作らない**（常駐の実装が無い）。口は `GET /api/scan` の 1 つだけ足した。**条件 3 件（C-1〜C-3）**: `setAllow` の二度押し・`backupHtml` の `read_only`・`--screen asset` の段の期待値（**2026-10-19 に「許可なしの置き場の枚で 4 幅 ok」を実測**）。**画面の語は「取り直す」に統一した**（下の 0 の D-1） | `docs/p8-5-implementation.md`、[`p8-5-audit-report.md`](p8-5-audit-report.md)、[`p8-5-audit-triage.md`](p8-5-audit-triage.md) |
+| **P8-6（参照切れの再リンク。合格の線 9）** | **完了。2026-10-18**（**監査と仕分けも済み**＝[`p8-6-audit-report.md`](p8-6-audit-report.md) ＋ [`p8-6-audit-triage.md`](p8-6-audit-triage.md)）。`POST /api/locations/relink`（**人だけ**。`exact` = 新しいファイル / `nearby` = 探すフォルダ）と `GET /api/locations/missing`（**読むだけ**）・`location_history` に `to_path` / `reason` / `actor`（**版は上げない**＝`pre-topup-*` の控え）・**`create_app()` の硬化**（**`IMAGE_REVIEWER_DATA` が無ければ開かない**）・**事故 3 件目**（実データに 3 列が控え無しで入った。**行の変化は 0**。控え `.backup/pre-p8-6-20261018-100443/`）。**画面は作っていない**（口だけ）。`tools/probe_p8.py --relink` が **16 行すべて OK** | [`p8-6-relink.md`](p8-6-relink.md)、[`p8-6-audit-report.md`](p8-6-audit-report.md) |
+| **P8 の合格の線（P8-1〜P8-4）** | **済み。2026-10-18**（**残っていた再リンク＝線 9 も P8-6 で実装済み**）。決定は [`docs/design.md`](design.md) §16.6 に反映済み。**画面の仕上げ（P8-5）の監査の条件 3 件も 2026-10-18 に反映済み** | `docs/design.md` §14・§16.6、[`p8-5-audit-triage.md`](p8-5-audit-triage.md)、[`p8-6-audit-triage.md`](p8-6-audit-triage.md) |
+| **P9（仕上げ）** | **完了（2026-10-18）**。**§12.1 の「目標」の行を全部実測で埋めた**（**未計測 0**）。届かなかったのは**一覧 API の 1 行だけ**（p95 **244.7 ms** / 目標 20 ms。**目標は下げていない**。理由と必要な条件は §12.1）。計測の途中で **`PRAGMA temp_store = MEMORY` の欠落**（1 万枚の `GET /api/assets` が 500 になっていた）と **D-8**（壊れていない DB に復元を勧めていた）を直し、**一覧で切った枚数を画面に出した**。道具は `tools/make_synthetic_db.py`（1 万枚の合成 DB）と `tools/probe_p9.py`（**サーバ内**の計測）。**監査の指摘（C-1〜C-3）も 2026-10-19 に全部反映**（[`p9-audit-triage.md`](p9-audit-triage.md)） | [`p9-implementation.md`](p9-implementation.md)、[`design.md`](design.md) §12.1・§12.2・§12.3・§16.7 | [`docs/design.md`](design.md) §14 |
+| **P10（段 1 の行を後から進める・実体が無い行を片付ける）** | **完了（2026-10-19）**。利用者の要望（**一度カタログから外した物をゴミ箱へ／実体が無い物を片付ける**）で、**段 1 が行き止まりだった**のを塞いだ。口は 4 つ（`POST /api/deletions/{id}/advance`・`POST /api/deletions/advance`・`POST /api/deletions/{id}/close`・`POST /api/deletions/close`。**人だけ**・**1 回 200 件**・**段 3 への直行は作らない**・**ファイルは 1 つも消さない/動かさない**）。`deletion_log.closed_at` / `close_reason` は**版を上げずに** `TOP_UP_COLUMNS` で足した（**実データにはまだ列が無い**＝利用者の再起動で付く）。**監査はこれから**（Fable が `docs/p10-audit-report.md`） | [`deletions-advance.md`](deletions-advance.md)、[`design.md`](design.md) §5.8・§6.1・§14・§16.7、`frontend-design.md` §4.6・§6 |
 
-**いまの数（実測。2026-10-18・P9 の最後に回した）**: `pytest` **518 件**（**5 回**回して**5 回とも緑**。
-2〜5 回目は 37.5〜38.2 秒。1 回目は 66.1 秒＝計測のサーバと Chrome が同時に走っていた）・
-`gui_smoke` **322 検査（NG 0）**・`gui_layout` **10 画面＋`pending --ids` の 11 本**（**11 本とも ok**。
-複製 8795 で。**`--screen pending --ids` には生きている枚を渡す**——外した枚を渡すと
-「置き場を確かめられないので段 3 は出していません」が出て NG になる。**あれが正しい動作**）。
-`SCHEMA_VERSION = 6`。**実データは v6・455 枚（生きた 262 枚）・段 1 の 193 行・判断 3 件・`missing_at` 0 件**。
-**P9 の前後で画像の署名 `d9604560e494c510` と `.data` の署名 `ae60041b0b0b5365` が同じ。**
+**いまの数（実測。2026-10-19 に私が回した）**: `pytest` **547 件**（**547 passed・0 failed**・40.3 秒。
+**並行して実データを読む者がいると `test_data_dir_guard.py` の 1 件が落ちうる**＝§6 の罠。
+実際に 2 回目の全体で **546 passed / 1 failed**、単独では 4 passed、3 回目は 547 passed）。
+`gui_smoke` **395 検査（NG 0）**。`gui_layout` **10 画面 × 4 幅**（`VIEWPORTS` は 1400・1024・1200・1920）＋
+**`pending --ids` の 11 本目**を**複製 8797** で回した（**`--screen tags` は語を植えた複製で 4 幅 ok**。
+**`--screen pending --ids` の「段 2 の結果の 1 行」だけ 4 幅 NG**＝`gui_layout.mjs` の `WANT_STAGE[2]` の残件。
+下の §6）。**`--screen asset` は段 3 の許可が無い置き場の枚でも 4 幅 ok**（P8-5 の C-2 が直っている証拠）。
+`SCHEMA_VERSION = 6`。**実データは v6・461 行（生きた 267 枚）・段 1 の生きた行 194・判断 3 件**。
+**うち実体が在るのは 7 行**（187 行が実体なし。実体が在る 7 行のうち 6 行は台帳の `asset_id` が古い形）。
+**`deletion_log.closed_at` / `close_reason` の列は実データにまだ無い**（`TOP_UP_COLUMNS`＝利用者の再起動で付く）。
+**この作業では実データを `mode=ro` でしか開いていない**（画像は 1 枚も動かしていない）。
 
 ### いま走っているもの
 
-**利用者のアプリが 8790 で動いています**（2026-10-18 08:38 起動の個体。PID 7324）。**止めない・触らない。**
-**画面（静的ファイル）は P8-5、裏側のプロセスは P8-4 まで**です（`GET /api/scan` は **404**。P8-5 の監査が実機で確かめた形。
-**P8-5 のコードで立て直すと 200 になる**）。**P9 の間も一度も止めていない**（`/api/health` も打っていない）。
-**日次バックアップだけは sandbox の中で失敗しています**（§0 の表。`GET /api/backup` の `last_error` に `WinError 5`・`count 0`）。
-**P8-5 の監査は出ました**（[`p8-5-audit-report.md`](p8-5-audit-report.md)。**合格（条件つき）**。条件 3 件は下の「次の手順」の 0）。
-**P8-6 の監査はまだ受けていない**（`p8-6-audit-triage.md` の指摘は反映済み）。
+**利用者のアプリは 2026-10-19 の時点で 8790 に居ません**（`Get-NetTCPConnection` に 8790 が無い。
+**こちらから止めたのではなく、もともと動いていなかった**。最後に確認したのは 2026-10-18 08:38 起動の個体 PID 7324）。
+**次に利用者が立ち上げ直した時点**で、P10 の `closed_at` / `close_reason` が `pre-topup-<日時>/` の控え付きで足され、
+**4 つの口が使えるようになる**（**こちらでは 1 バイトも書いていない**）。
+**日次のバックアップは `.backup/daily` に 3 世代ある**（2026-10-19 の P9 の監査 D-4 で確認。
+`%USERPROFILE%\image-reviewer-backups` は作られていないまま＝既定の置き場の謎は未解決）。
+**P10 の監査はこれから**（Fable が `docs/p10-audit-report.md` を書く。**私は触らない**）。
 
 ### 未着手
 
-- **P8-5 の監査の条件 3 件（C-1〜C-3）**: **未反映**（→ **§3 の 0** に直し方つき）。
+- **P10 の監査の結果待ち**（Fable。`docs/p10-audit-report.md`）。出たら仕分けして直す。
+- **`tools/gui_layout.mjs` の `WANT_STAGE[2]` の 1 行**（**文言の担当の残件**。段 2 の結果の 1 行が
+  「2 枚をゴミ箱へ移しました。」のままで、画面は「2 枚をアプリのゴミ箱へ移しました。」＝
+  `frontend-design.md` §6 が正。**直すと `--screen pending --ids` の 4 幅 NG が消える**。
+  `deletions-advance.md` §3-4）。
 - **再リンク（P8 の合格の線 9）**: **口は P8-6 で実装済み**（`POST /api/locations/relink` は**人だけ**で
   `exact` / `nearby`、`GET /api/locations/missing` は**読むだけ**。**中身の `sha256` が一致したときだけ繋ぎ、
-  `pHash` は使わない**。実装の記録は [`p8-6-relink.md`](p8-6-relink.md)）。**残っているのは画面**（P8 では
-  作らないと決めたまま。`design.md` §6.1）。**P8-6 の監査もこれから**。
+  `pHash` は使わない**。実装の記録は [`p8-6-relink.md`](p8-6-relink.md)、**監査と仕分けも済み**）。
+  **残っているのは画面**（P8 では作らないと決めたまま。`design.md` §6.1）。
 - **P9（仕上げ）**: **完了**（2026-10-18）。§12.1 の未計測は 0（届かなかったのは一覧 API の 1 行だけ）。
-  記録は [`p9-implementation.md`](p9-implementation.md)。**次にやるのは利用者の判断待ち**（下の §7 と
-  `p9-implementation.md` §8 の申し送り: **一覧 API のキーセット改ページ**・**一覧の仮想グリッドとページ送り**・
-  **768px の上部バー**・**`--no-hash`**・**exe 化**）。
+  **監査の指摘も 2026-10-19 に全部反映**。記録は [`p9-implementation.md`](p9-implementation.md)。
+  **次にやるのは利用者の判断待ち**（下の §7 と `p9-implementation.md` §8 の申し送り:
+  **一覧 API のキーセット改ページ**・**一覧の仮想グリッドとページ送り**・**768px の上部バー**・
+  **`--no-hash`**・**exe 化**）。
+- **P10（段 1 の行を後から進める・実体が無い行を片付ける）**: **完了**（2026-10-19）。
+  記録は [`deletions-advance.md`](deletions-advance.md)。**残っているのは監査だけ**。
+  **利用者の再起動 → `#/pending-deletes` で「まとめて片付ける」**が次の 1 操作
+  （**187 件が閉じ、7 件は断られる**）。
 - **トレイ（タスクトレイ常駐）**: **常駐の実装がリポジトリに無い**ので作っていない。作る段で `frontend-design.md` §11 の
   入口 (c)（「最近の削除を開く」）を足す。
 - **P2 / P3 の残り**: 仮想フォルダ・スマートフォルダ・取込の 3 経路（D&D / クリップボード / URL）・
   `userdata` への設置・タグの統合と改名・本格的な検索・プリセットの画面。
-- **実機の日次バックアップ**: **利用者が sandbox の外で 8790 を立て直す**（それだけで取れるようになる。
-  `count` が 1 以上になったことを 1 度確かめる）。
-- **`README.md` と `docs/design.md` の本体は反映済み**（README は 507 件・310 検査・10 画面＋`pending --ids`・
-  P8 の文書表（**P8-6 の行**）・未実装の一覧。design.md は §5.1・§5.8・§6.1・§6.2・§9.5・§11・§12.1・§12.3・
-  §14・§15・§16.6。**P8-6 の反映は §5.1・§5.8・§6.1・§14・§15・§16.6**）。
-  **`docs/p8-*.md` は歴史としてそのまま**（§16.6 に決定を集約した。**例外は P8-6 の記録 `p8-6-relink.md`**＝
+- **実機の日次バックアップ**: **取れている**（`.backup/daily` に 3 世代）。**既定の
+  `%USERPROFILE%\image-reviewer-backups` が使えない謎は未解決**（→ §7 の 14・**診断には利用者の許可が要る**）。
+- **`README.md` と `docs/design.md` の本体は反映済み**（README は **547 件・395 検査・10 画面 × 4 幅**・
+  **P10 の行と `deletions-advance.md` の文書表**・未実装の一覧・**P8-5 の条件 3 件は反映済みに直した**。
+  design.md は §5.8・§6.1・§14・§16.7 に **P10**、§16.6 の **P8-5 の条件の「未反映」を直した**）。
+  **`docs/p8-*.md` と `docs/p9-*.md`・`docs/deletions-advance.md`・`docs/japanese-ui-fix.md` は履歴として
+  そのまま**（**例外は P8-6 の記録 `p8-6-relink.md` と P10 の記録 `deletions-advance.md`**＝
   履歴ではなく**いまの実装の記録**）。
 
 ### セッションを切り替えるときの注意
 
 **進行中の作業は無いので、いつ切っても安全です。** ただし次のセッションの最初に**これを回して緑を確かめてください**:
-`uv run --no-sync pytest -q`（**507 passed が期待値**）と `node tools/gui_smoke.mjs`（**310 ok / NG 0**）。
+`uv run --no-sync pytest -q`（**547 passed が期待値**）と `node tools/gui_smoke.mjs`（**395 ok / NG 0**）。
 **`git` 管理です**（`https://github.com/yuksew/image-reviewer`）。ただし**エージェントはコミットしない**（親が行う）。
-控えは `.backup/`（**9 フォルダ**。**消さない**）。
+控えは `.backup/`（**9 フォルダ**。**消さない**）。**P10 は版を上げない変更なので、増えるのは
+`pre-topup-<日時>/`**（利用者の再起動のときに付く）。
 
 
 ### このセッションで終わったこと（2026-10-16 10:25 追記）
@@ -316,59 +370,63 @@ orca orchestration check --run run_5bdd431bf57b --ack <deliveryId> --json
 
 ## 3. 次の手順（この順で）
 
-### 0. P8-5 の監査の条件 3 件（**未反映**。[`p8-5-audit-report.md`](p8-5-audit-report.md)）
+### 0. 監査の結果待ち（**新しい順にここ**）
 
-**C-1 印のボタンは二度押しで 2 回 POST される**（`apps/gui/settings.js` の `setAllow` だけ `state.busy = true; render();` が無い。
-`takeNow` / `saveDir` と同じ形にする。`gui_smoke` に「2 回押しても 1 回」を 1 行）。
-**C-2 `gui_layout --screen asset` が「段が 3 つ」を前提にしていて、印の無い置き場の枚では必ず NG**
-（`tools/gui_layout.mjs` の `PRESS_ASSET_DELETE`。`.pd-stage` は 2 以上に緩め、「印が無ければ 2・あれば 3」は API と突き合わせる。
-**印ありの複製で回す手順だと見えない**——`--no-stage3` でも 11 本を回す手順を記録に足す）。
-**C-3 版が新しい DB（`read_only` だが `GET /api/backup` は 200）では設定の「いま取る」「保存する」が押せるまま**
-（`backupHtml()` の分岐を `state.status === 503 || got.read_only` にし、`reason` は `GET /api/health/db` から引く）。
-軽微（D-1〜D-9）の推奨は監査の §G に 1 行ずつ（D-1「取り直す」→「いま取る」・D-2「今日の分」の文・D-4 走査の印は順番待ちを含む・
-D-7 §11 のトレイの 1 行 など）。
+- **P10 の監査はこれから**（Fable が `docs/p10-audit-report.md` を書く。**こちらの担当は触らない**）。
+  出たら**仕分け**（`docs/p10-audit-triage.md` の形）を書いて、指摘を直し、
+  **`design.md` §5.8・§6.1・§14・§16.7 と `deletions-advance.md` に書き戻す**（**P10 の記録は
+  履歴ではなく「いまの実装の記録」**なので、直したら本文も直す）。
+- **P9 の仕分けは済み**（[`p9-audit-triage.md`](p9-audit-triage.md)。C-1〜C-3 は全部反映）だが、
+  **再確認はまだ受けていない**（P8 の各段と同じく「直した物が実行で直っているか」）。
+  とくに **C-1（新しい読み取り専用の接続で `quick_check`）** は**走ったまま壊れた DB**を作る試験なので、
+  再確認では**複製で**回す。
+- **P8-5 の監査の条件 3 件（C-1〜C-3）は 2026-10-18 の仕分けで反映済み**——古い「未反映」の記述は
+  README と `design.md` §16.6 で直した（**段 3 の許可が無い置き場の枚で `--screen asset` が 4 幅 ok** を実測）。
 
-### 1. P9（仕上げ）— **済み（2026-10-18）**。未計測は 0 になった
+### 1. 未計測（**1 万枚になったら**測る／入れる）
 
-**正**: [`design.md`](design.md) §14 の P9 の行と §12.1 の「目標」の行（**§12.1 の表はもう「未計測」が無い**）。
-**記録**: [`p9-implementation.md`](p9-implementation.md)（測り方・生の値・届かない物・見送った物・exe 化の推奨）。
-**結果**（P8 の時点で「未計測」と書いてあった物）:
+**`design.md` §12.1 の「目標」の行は全部実測で埋まっている**（未計測 0。**測り方と生の値は §5 と
+[`p9-implementation.md`](p9-implementation.md)**）。残っているのは**見込みだけの行**:
 
-| 測る物 | 結果 |
-| --- | --- |
-| 1024px サムネイルの生成 | **128 ms/枚（実画像）→ 1 万枚 21.3 分**（同時 8 本で 3.7 分）。**目標を 25 分と決めた** |
-| 一覧 API の応答（1 万枚・p95 20ms） | **244.7 ms（届かない）**。理由は §12.2 の「一覧」が未実装。**目標は下げていない**。実データ 262 枚なら 14.3 ms |
-| グリッド初回表示 300ms（100 枚・Chrome） | **87 ms**（最初のカード）。299 枚で 93 ms・1 万枚（2000 枚で切れる）で 532 ms |
-| 追加ページ読み込み 100ms | **実装が無い**（1 回の `limit=2000` で全部描く。**測る対象が無い**） |
-| 2 回目以降の走査（差分なし・10 秒） | **2.62〜2.70 秒** |
-| 一括削除の再照合（1,000 件で 1 秒） | **596 ms**（`os.stat` だけなら 13.8 ms） |
-| `--include-library`（実データ 291.1 MB） | **2.40 秒**（132 MB/s。1 万枚 11.1 GB なら 1.4 分）。**目標を 5 分と決めた** |
-| 再リンクの `nearby`（1 万枚） | **39.2 ms**（全部歩く最悪）／44.6 ms（1 段目で見つかる）。**目標を 3 秒と決めた** |
-| タグ付け 0.5 秒/枚（GPU） | **未再計測**（**ComfyUI に触らない**指示のため。いまは `IllustTagger` 0.27 秒/枚） |
-| `--no-hash` の初回走査（30 秒） | **実装が無い**（`cli scan` にその口は無い。**測る対象が無い**） |
-| 判断の記録（100ms） | **p95 1.5 ms** |
-| 日次バックアップ（5 秒） | **201 ms**（DB が 3.2 MB になったので P8-4 の 37 ms より大きい） |
+- **一覧 API のキーセット改ページ**（p95 **244.7 ms** / 目標 20 ms。**目標は下げていない**）。
+  **1 万枚が現実になるまでは困らない**（実データ 267 枚なら p95 14.3 ms）。入れるときは `total` の意味と
+  `q` / `tag` の絞り込みが変わるので、**テストと画面の前提を一緒に直す**（§12.1 の「必要な条件」）。
+  **入れる段を別に立てる**（利用者の判断）。
+- **一覧の仮想グリッドとページ送り**（いまは `limit=2000` で 1 回引いて全部描く。**2000 枚より先を見る道が無い**）。
+  入れるなら**狭い窓の検査**（`gui_layout` の `VIEWPORTS` は 1200 以上しか無い）とセットで。
+- **`--include-library` を日次に載せるか**（日次が 201 ms → 2.4 秒。1 万枚なら 1.4 分）。
+- **`--no-hash` の走査**（実装に無い）。
+- **768px の上部バー**（**溢れは 0** なので実害は無く、3 行に折り返す見た目の問題）。
 
-**計測の作法**（家風）: サーバ内（`TestClient`）で測る・**別々の入力**で測る・**何回の p95 か**を書く・
-**「初回生成」と「生成済み」を分ける**（分けないと「配信」を測ってしまう。**実際に踏んだ**）・
-**土台（`/api/health`）の p95 を一緒に出す**。道具は `tools/probe_p9.py`（`--all`）と
-`tools/make_synthetic_db.py`（1 万枚の合成 DB）。
+### 2. トレイ（タスクトレイ常駐）
 
-### 2. 再リンク（P8 の合格の線 9）— **済み（P8-6。監査待ち）**
+**常駐の実装がリポジトリに無い**ので作っていない（`frontend-design.md` §3・§4.5・§4.6・§11 から入口を外してある）。
+**利用者の当初の回答は「トレイに出す」**なので、作る段を決める。作る段では `frontend-design.md` §11 の入口 (c)
+（「最近の削除を開く」）を足す。**P10 の「ファイルが無いので片付ける」もトレイから使えるようにするか**は
+そのときに決める（いまは画面だけ）。
 
-`POST /api/locations/relink`（**近くを探す**＝`nearby`・**場所を指定**＝`exact`。**人だけ**。
-**`sha256` が一致しなければ 409 `hash_mismatch`**）と `GET /api/locations/missing`（**読むだけ**）。
-設計は `p8-design.md` §0.11 と §3.2、元ネタは [`duplicates-deletion-backup.md`](duplicates-deletion-backup.md) §4。
-**実装の記録は [`p8-6-relink.md`](p8-6-relink.md)**（**16 行すべて OK**・`pytest` 507 件・**事故 3 件目**と
-`create_app()` の硬化もそこ）。**`design.md` の「まだ無い」は §5.1・§5.8・§6.1・§14・§15・§16.6 で直した**。
-**残っているのは画面と監査**（**「自動（走査のたびに繋ぐ）」は作らないと決めた**＝`duplicates-deletion-backup.md` §4）。
+### 3. P2 / P3 の残り
 
-### 3. 利用者に頼む 1 操作（バックアップ）
+仮想フォルダ・スマートフォルダ・取込の 3 経路（D&D / クリップボード / URL）・`userdata` への設置・
+タグの統合と改名・本格的な検索・プリセットの画面・再リンクの画面（**口は P8-6 でできている**）。
+**`.data` の版を上げるのはこの段**（上げる前に `pre-migrate-<日時>/` の控えを取り、掃除の対象にしない）。
 
-**利用者が sandbox の外（自分の端末）で 8790 を立て直す。** それだけで日次が取れるようになる
-（`%USERPROFILE%\image-reviewer-backups` が作られ、`GET /api/backup` の `count` が 1 以上になる）。
-**置き場を変えて凌ぐ**なら `PATCH /api/settings {"backup_dir": "C:\\work\\image-reviwer\\.backup\\daily"}`
-（`.backup/` は既に控えの置き場なので趣旨に合う。**`<data>` の中は 422 で断られる**）。
+### 4. `%USERPROFILE%` の権限の診断（**利用者の許可が要る**）
+
+**既定の `%USERPROFILE%\image-reviewer-backups` がアプリのプロセスから作れない謎**は未解決のまま
+（`WinError 5`。同じ持ち主のシェルからは作れる。CFA は無効・ACL も正常・系譜は Explorer → cmd → uv → exe）。
+**いまは `settings.backup_dir` を `C:\work\image-reviwer\.backup\daily\` にして凌いでいる**（利用者の決定。
+**同じドライブなので、ドライブが壊れた場合は両方失う**）。
+診断には**利用者の許可が要る**（`icacls` の読み取りと、`%USERPROFILE%` の下に**試験用のフォルダを 1 つ作る**許可。
+**エージェントの sandbox の子プロセスからは書けない**ので、**利用者の端末のシェルで**試す必要がある）。
+
+### 5. 利用者に頼む 1 操作（P10。**これが次の 1 手**）
+
+**利用者がアプリを立ち上げ直して `#/pending-deletes` を開き、「全部選ぶ」→「まとめて片付ける」を押す。**
+そのとき **`pre-topup-<日時>/` の控えが付いてから `closed_at` / `close_reason` が足される**（版は上げない）。
+**予想される結果**: **「187 件を片付けました。」＋「7 件はファイルがまだあるので片付けませんでした。」**。
+**残る 7 行は「アプリのゴミ箱へ移す」**で進められる（移した後も**アプリのゴミ箱に実体が在る間は片付けを断る**＝
+ゴミ箱を空にするのは利用者）。**バックアップは `.backup/daily` に 3 世代取れている**（P9 の監査 D-4 で確認済み）。
 
 ---
 
@@ -376,8 +434,8 @@ D-7 §11 のトレイの 1 行 など）。
 
 ```powershell
 $env:UV_CACHE_DIR = "C:\work\image-reviwer\.uv-cache"
-uv run --no-sync pytest -q                      # 507 件
-node tools/gui_smoke.mjs                        # 322 ok（軽い DOM。CSS を持たない）
+uv run --no-sync pytest -q                      # 547 件（2026-10-19 に実測）
+node tools/gui_smoke.mjs                        # 395 ok（軽い DOM。CSS を持たない）
 # 本物の Chrome。サーバは実データのコピーで立てる（8791〜）。前提の行は seed が複製の中に作る
 $env:IMAGE_REVIEWER_DATA = "C:\work\image-reviwer\.tmp-audit-redo\data-XXXX"
 uv run --no-sync python -X utf8 tools/gui_layout_seed.py --data $env:IMAGE_REVIEWER_DATA `
@@ -394,10 +452,16 @@ node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen pending         
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen pending --ids <id>,<id>  # 削除の確認つき（P8）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen library             # 下部バーの入口（P8）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen settings            # 設定（P8-5）
-# ★ --screen asset は「段が 3 つ」を前提にしている（P8-5 の監査 C-2）。**印の無い置き場の枚では必ず NG**になるので、
-#   段 3 の印を立てた複製で回す（上の seed の --stage3）。印なしの形は --no-stage3 で別に回す（未修正）。
+node tools/gui_layout.mjs --base http://127.0.0.1:8796 --screen pending             # 段 1 の後始末（P10。**複製で**）
+# ★ --screen asset は「段が 3 つ」を前提に**しない**（P8-5 の監査 C-2 で API から期待値を組む形に直した）。
+#   段 3 の許可が無い置き場の枚では段 2 までを期待する（2026-10-19 に 4 幅 ok を実測）。
+#   **印ありの複製で回す手順だけだと見えない**ので、**印なしの枚でも 1 回は回す**。
 # ★ --screen pending --ids には**生きている枚**を渡す（P9 で踏んだ）。外した枚（deleted_at）を渡すと
 #   「置き場を確かめられないので段 3 は出していません」が出て、段 3 の検査が 3 窓とも NG になる（**正しい動作**）。
+# ★ --screen pending --ids の**段 2 の結果の 1 行だけは 4 幅とも NG**（`WANT_STAGE[2]` が古い 1 行。§6）。
+# ★ --screen tags は語が 0 件だと必ず NG。`gui_layout_seed.py --tags` を**複製に**当ててから回す。
+# ★ `gui_layout` は**Python の subprocess から呼ばない**（Chrome が `%TEMP%` に書けず EPERM。**PowerShell から直に**。
+#   `.ps1` は実行ポリシーで拒まれるので `powershell -NoProfile -ExecutionPolicy Bypass -File …` か、そのまま打つ）。
 # 実機の線（合否を出す）
 uv run --no-sync python tools/probe_p4.py --engine comfyui   # P4 の線 1・2・7
 uv run --no-sync python tools/probe_p6_1a.py                 # P6 の性能（線 150ms / 20ms）
@@ -407,6 +471,9 @@ uv run --no-sync python tools/probe_p8.py --delete           # P8 の線 5〜8�
 uv run --no-sync python tools/probe_p8.py --backup           # P8 の線 10・12（日次と健全性）
 uv run --no-sync python tools/probe_p8.py --restore          # P8 の線 11（消して戻す・組み直し）
 uv run --no-sync python tools/probe_p8.py --all              # 全部（自分の置き場を作り、後始末する）
+# P10（段 1 の後始末。**複製を作って 14 件の線を回す**／`--serve` は gui_layout 用に立てるだけ）
+.venv\Scripts\python.exe tools\probe_deletions_advance.py --port 8796            # 複製を作って 14 件の線
+.venv\Scripts\python.exe tools\probe_deletions_advance.py --serve --port 8796    # 複製サーバ（--keep を含む）
 uv run --no-sync --with jsonschema python tools/check_contract_p6.py       # 契約の検証（P6）
 uv run --no-sync --with jsonschema python tools/check_contract_p8.py       # 契約の検証（P8 の backup-manifest）
 # P9（性能の実測。**合成 1 万枚の DB と実データの複製を作る**。§12.1 の表を作り直せる）
@@ -418,6 +485,21 @@ uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データ�
 
 ## 5. 数字の記録（次のセッションが前提にできる実測）
 
+- **P10（段 1 の行を後から進める・実体が無い行を片付ける。2026-10-19 の実測。正は
+  [`deletions-advance.md`](deletions-advance.md) と [`design.md`](design.md) §16.7）**:
+  **私（文書の反映の担当）が回した数** — `pytest` **547 passed / 0 failed**（40.3 秒）・
+  `gui_smoke` **395 ok / NG 0**・`gui_layout` **10 画面 × 4 幅**（`VIEWPORTS` は 1400・1024・1200・1920）＋
+  `pending --ids` の 11 本目（**複製 8797**。`probe_deletions_advance.py --serve` が作った複製）。
+  **`--screen tags` は語を植えた複製で 4 幅 ok**・**`--screen asset` は段 3 の許可が無い置き場の枚でも 4 幅 ok**
+  （P8-5 の C-2 が直っている証拠）・**`--screen pending --ids` は「段 2 の結果の 1 行」だけ 4 幅 NG**
+  （`gui_layout.mjs` の `WANT_STAGE[2]` の残件。§6）。
+  **実データ（`mode=ro` で読んだだけ。1 バイトも書いていない）**: `asset` **461 行**・生きた **267 枚**・
+  段 1 の生きた行 **194**・**実体が在る 7 行**（うち **6 行**は台帳の `asset_id` が古い形）・実体が無い **187 行**・
+  `deletion_log` **194 行**・`closed_at` / `close_reason` の**列はまだ無い**。
+  **P10 の実装者が複製で通した線**（`tools/probe_deletions_advance.py` の **14 件**）: 段 1 → アプリのゴミ箱へ移る／
+  「戻す」で元に戻る／実体が無ければ 409 `missing_file`／**194 件を 1 回で片付けて 187 件が閉じ 7 件が `file_found`**／
+  `asset.deleted_at` はそのまま（187/187 が隠れたまま）／**ファイルの署名が同じ**（536 件が動いていない）／
+  二重の片付けは 200 で `replayed`／エージェントは 403 `human_only`。**壊し試験は 13/13 が落ちた**。
 - **P9（仕上げ。2026-10-18 の実測。正は [`design.md`](design.md) §12.1 と [`p9-implementation.md`](p9-implementation.md)）**:
   **一覧 API は p95 244.7 ms**（1 万枚・`TestClient`。**目標 20 ms に届かない**。`store.assets()` が 200 ms・
   SQL 3 本が 47.5 ms。実データ 262 枚なら **p95 14.3 ms**）／**1024px サムネイルの生成は 128 ms/枚**
@@ -477,6 +559,32 @@ uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データ�
 - **キャッシュに当たった計測を実測と思い込まない**（ComfyUI の `execution_cached`）。**別々の入力で測る**。
 - 例外を投げる前に**一時ファイルを消す**。起動時に `*.tmp` を掃除する。
 
+**P10 で踏んだ罠**
+
+- **Chrome を起こす道具（`gui_layout` / `gui_shot`）を Python の `subprocess` から呼ぶと `%TEMP%` に書けず
+  `EPERM`（`mkdtemp`）で落ちる**——この環境の sandbox の子プロセスは `%TEMP%` にも `%USERPROFILE%` にも書けない。
+  **PowerShell から直に回す**。`.ps1` にまとめると**実行ポリシー**で拒まれるので、
+  `powershell -NoProfile -ExecutionPolicy Bypass -File …` に渡すか、そのまま打つ
+  （**この環境の `pwsh` は 5.1 で、`pwsh` という名前の実行ファイルは無い**）。
+- **台帳の `asset_id` は走査で古くなる**（走査が**同じ場所を別の `asset` として登録し直す**ため）。
+  `delete()` の `_target(asset_id, path)` は**古い `asset_id` を渡すと 409 `not_registered` で永久に進めない**
+  （実データの段 1 で**実体が在る 7 行のうち 6 行**がこの形。**要望の前提「194 行は実体が無い」とも食い違う**）。
+  **「いま登録されている行」を引く**道（`_target_for_advance`）を作り、**別のファイルを移さない**守りは
+  **`(size, mtime_ns)` の照合**に持たせた。**「その場所がまだその枚の物か」の検査を `asset_id` の一致で代用しない。**
+- **`pytest -k` の綴り違いは「1 件も選ばずに終了コード 5」で返る**（**落ちていないのに「落ちた」と数えていた**——
+  壊し試験 13 件のうち 2 件がこれだった）。**`-k` で絞ったら「何件選ばれたか」を見る**
+  （`1 deselected` / `no tests ran` を見落とさない）。**「落ちた」と数える前に、その試験が本当に走ったかを確かめる。**
+- **`deletion_log` に `closed_at` を書く SQL を、列の無い実データに打つと `no such column` で落ちる**
+  （読み取り専用の点検スクリプトでも同じ。**列の有無を `PRAGMA table_info` で見てから**書く。
+  §0 の「版を上げずに表を変える」と同じ規律）。
+- **実データの署名（`rglob` の size と `mtime_ns`）は、他のプロセスが `mode=ro` で開くだけで揺れる**——
+  **`db.sqlite3-shm` の `mtime_ns` が動く**（2026-10-19 に実測: 675 ファイルのうち `-shm` だけが変わる）。
+  `tests/test_data_dir_guard.py` の「実データが変わった」の比較は**この形**なので、
+  **並行して誰かが実データを読んでいると（監査・複製づくり・利用者のアプリ）1 件だけ落ちうる**。
+  **落ちたら中身の変化ではなく `-shm` を見る**（**本当に変わったのかを `mode=ro` の問い合わせで確かめる**）。
+  2026-10-19 の実例: 1 回目 **547 passed** → 2 回目 **546 passed / 1 failed**（この検査。**単独では 4 passed**、
+  3 回目の全体は **547 passed**）。**並行作業中の「1 件だけ落ちた」を、実装の不具合と早合点しない。**
+
 **P8 で踏んだ罠**
 
 - **`os.replace` は既存のファイルを黙って上書きする**（実測: 置いた別のファイルが消えた）。**「上書きしない」を作るのは `os.rename`**
@@ -532,8 +640,28 @@ uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データ�
 
 ## 7. 利用者（人間）の判断待ち・確認待ち
 
-**P9 で「段」は全部終わったので、ここにある物が次にやることの全部**です。
-**P9 の申し送り（`p9-implementation.md` §8）も同じ内容**です。
+**P10 まで終わったので、ここにある物が次にやることの全部**です。
+**新しく足した物（2026-10-19）を先に**、そのあとに P9 までの持ち越しを並べます。
+
+**新しく足した物（2026-10-19）**
+
+1. **★ P10 の監査の結果待ち**（Fable が `docs/p10-audit-report.md`）。**利用者に聞くことは無い**（こちらで仕分ける）。
+2. **★ P9 の監査の再確認待ち**（[`p9-audit-triage.md`](p9-audit-triage.md) の直しが**実行で直っているか**）。
+   とくに **C-1**（新しい読み取り専用の接続で `quick_check`）は**走ったまま壊れた DB**を作るので**複製で**回す。
+3. **★ 利用者の 1 操作: アプリを立ち上げ直して「まとめて片付ける」を押す**（P10 の仕上げ）。
+   押すと **`pre-topup-<日時>/` の控えが付いて `closed_at` / `close_reason` が足される**。
+   **予想: 「187 件を片付けました。」＋「7 件はファイルがまだあるので片付けませんでした。」**。
+   **残る 7 行は「アプリのゴミ箱へ移す」**で進められる（**ゴミ箱を空にするのは利用者**）。
+4. **`tools/gui_layout.mjs` の `WANT_STAGE[2]` の 1 行**（**文言の担当の残件**。段 2 の結果の 1 行だけが
+   4 幅とも NG。**画面の語が正**＝`frontend-design.md` §6。`deletions-advance.md` §3-4）。
+   **誰が直すかは利用者の判断**（私は `tools/` を触らない指示だった）。
+5. **`%USERPROFILE%` の権限の診断**（**利用者の許可が要る**。§3 の 4。`icacls` の読み取りと、
+   **利用者の端末のシェルから `%USERPROFILE%` の下に試験用のフォルダを 1 つ作る**許可）。
+   **既定のバックアップの置き場が使えない謎**は未解決のまま（**いまは `.backup/daily` で凌いでいる**）。
+6. **`--include-library` を日次に載せるか**（判断待ちのまま。日次が 201 ms → 2.4 秒。1 万枚なら 1.4 分）。
+7. **`?source=` の複数指定が AND か OR か**（P4 からの持ち越し。設計に無く、実装は AND）。
+
+**P9 までの持ち越し**
 
 1. ~~**★ 8790 を sandbox の外（自分の端末）で立て直す**（**バックアップのため**）~~ → **済み（P9 の監査 D-4 で確認）**。
    **8790 は Explorer → `start-image-reviewer.cmd` の系譜で動いていて（PID 7324）、利用者が置き場を
@@ -541,8 +669,9 @@ uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データ�
    **`20261018`（263 枚・17:12 JST）・`20261018-171143`（「いま取る」）・`20261019`（455 枚・00:00:15 JST）**。
    `%USERPROFILE%\image-reviewer-backups` は無い（既定のままでは使えない、という §13 の謎は未解決のまま）。
    **`.backup/` はリポジトリの中・同じドライブ**なので、別のドライブに置くかは利用者の判断。
+   **（2026-10-19 の追記）その 8790 は、この作業の時点では動いていない**（`Get-NetTCPConnection` に 8790 が無い）。
 2. **★ 一覧 API のキーセット改ページを入れるか、いつ入れるか**（**P9 で唯一目標に届かなかった行**）。
-   p95 **244.7 ms** / 目標 20 ms。**1 万枚が現実になるまでは困らない**（実データ 262 枚で p95 14.3 ms）ので、
+   p95 **244.7 ms** / 目標 20 ms。**1 万枚が現実になるまでは困らない**（実データ 267 枚で p95 14.3 ms）ので、
    P9 では入れずに**段を別に立てる**ことにした。入れるときは `total` の意味と `q` / `tag` の絞り込みが
    変わるので、**テストと画面の前提を一緒に直す**（`design.md` §12.1 の「必要な条件」）。
 3. **一覧の仮想グリッドとページ送りを入れるか。** いまは `limit=2000` で 1 回引いて全部描くので、
@@ -576,10 +705,12 @@ uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データ�
 
 | 何 | どこ |
 | --- | --- |
-| 全体の設計（正） | [`design.md`](design.md)（**P8 の決定は §16.6**。表は §5.8・口は §6.1・性能は §12.3・段は §14。**P8-6 の再リンクは §5.1・§5.8・§6.1・§14・§15・§16.6**） |
+| 全体の設計（正） | [`design.md`](design.md)（**P8 の決定は §16.6・P9 と P10 の決定は §16.7**。表は §5.8・口は §6.1・性能は §12.3・段は §14。**P8-6 の再リンクは §5.1・§5.8・§6.1・§14・§15・§16.6**、**P10 は §5.8・§6.1・§14・§16.7**） |
 | フロントの設計 | [`frontend-design.md`](frontend-design.md)（画面一覧は §3。**削除と重複は §4.6**・文言は §6・細部は §11） |
 | 段ごとの設計 | [`p8-design.md`](p8-design.md)（**§0 が拘束力のある差分**） / `p5-design.md` / `p6-design.md` / `p4-design.md` |
 | **P9（仕上げ）の実装の記録** | [`p9-implementation.md`](p9-implementation.md)（**§12.1 の実測値の表**・測り方・届かない物・**exe 化の推奨**・見送った物・申し送り・設計の穴） |
+| **P9 の監査と仕分け** | [`p9-audit-report.md`](p9-audit-report.md)（判定「合格（条件つき）」・C-1〜C-3・D 10 件・G 6 件）＋ [`p9-audit-triage.md`](p9-audit-triage.md)（指摘ごとに 1 行。**再確認はこれから**） |
+| **P10（段 1 の行を後から進める・実体が無い行を片付ける）の実装の記録** | [`deletions-advance.md`](deletions-advance.md)（**履歴ではなく、いまの実装の記録**。口 4 つ・決めた 8 点・**設計の穴 4 件**・複製で通した線 **14 件**・壊し試験 **13/13**・申し送り） |
 | P8 の点検と仕分け | [`p8-review-report.md`](p8-review-report.md) ＋ [`p8-review-triage.md`](p8-review-triage.md) |
 | P8 の監査と仕分け | [`p8-0-audit-report.md`](p8-0-audit-report.md) / [`p8-1-audit-report.md`](p8-1-audit-report.md) / [`p8-2-audit-report.md`](p8-2-audit-report.md) ＋ [`p8-2-audit-recheck.md`](p8-2-audit-recheck.md) / [`p8-3-audit-report.md`](p8-3-audit-report.md) ＋ [`p8-3-audit-recheck.md`](p8-3-audit-recheck.md) / [`p8-4-audit-report.md`](p8-4-audit-report.md) ＋ [`p8-4-audit-recheck.md`](p8-4-audit-recheck.md)（＋各 `p8-*-audit-triage.md`） |
 | P8 の実装の記録（自分で決めた点・穴） | `docs/p8-{0,1,2,3,4,5}-implementation.md` |
@@ -588,7 +719,7 @@ uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データ�
 | 前の段の記録（歴史） | `docs/p4-*` / `docs/p5-*` / `docs/p6-*` / `docs/p7-*`（P7 は廃止。[`p7-decision.md`](p7-decision.md)） |
 | 朝のまとめ（利用者向け） | [`p6-morning-report.md`](p6-morning-report.md)（P8 は利用者への問いを §0.14 で先に済ませた） |
 | 控え | `.backup\`（**9 フォルダ**。`pre-p4-*` / `pre-p7-removal*` / `pre-p8-0-*` / `pre-p8-1-restart-*` / `pre-p8-2-restart-*` / `pre-p8-4-20261017-232148` / `pre-p8-6-20261018-100443`） |
-| 検証の道具 | `tools/gui_smoke.mjs` / `tools/gui_layout.mjs` / **`tools/gui_layout_seed.py`** / `tools/probe_p4.py` / `tools/probe_p6_1a.py` / `tools/probe_p6_2.py` / **`tools/probe_p8.py`** / **`tools/probe_p9.py`（P9 の性能）** / **`tools/make_synthetic_db.py`（1 万枚の合成 DB）** / `tools/gui_shot.mjs` / `tools/check_contract_p6.py` / **`tools/check_contract_p8.py`** |
+| 検証の道具 | `tools/gui_smoke.mjs` / `tools/gui_layout.mjs` / **`tools/gui_layout_seed.py`** / `tools/probe_p4.py` / `tools/probe_p6_1a.py` / `tools/probe_p6_2.py` / **`tools/probe_p8.py`** / **`tools/probe_p9.py`（P9 の性能）** / **`tools/make_synthetic_db.py`（1 万枚の合成 DB）** / **`tools/probe_deletions_advance.py`（P10。複製を作って 14 件の線・`--serve` で gui_layout 用のサーバ）** / `tools/gui_shot.mjs` / `tools/check_contract_p6.py` / **`tools/check_contract_p8.py`** |
 
 ---
 
@@ -621,5 +752,10 @@ uv run --no-sync python -X utf8 tools/probe_p9.py --all --replica <実データ�
 
 次のセッションが作業を進めたら、**このファイルを更新**してください（§1 の状態・§3 の次の手順・§7 の判断待ち）。
 `docs/p6-morning-report.md` は「利用者に読ませる」用途、**この引継書は「次のエージェントに読ませる」用途**です。
-- **未解決（2026-10-18）**: **アプリのプロセスから %USERPROFILE% に書けない**（C:\Users\yukse\image-reviewer-backups を WinError 5 で作れない。**同じ持ち主のシェルからは作れる**。CFA は無効・ACL も正常・系譜は Explorer → cmd → uv → exe）。**回避策として settings.backup_dir を C:\work\image-reviwer\.backup\daily\ にした**（利用者の決定）。**別ドライブにしたい場合はこの謎を先に解く**（#/settings から戻せる）。
+- **未解決（2026-10-18。2026-10-19 も未解決）**: **アプリのプロセスから %USERPROFILE% に書けない**（C:\Users\yukse\image-reviewer-backups を WinError 5 で作れない。**同じ持ち主のシェルからは作れる**。CFA は無効・ACL も正常・系譜は Explorer → cmd → uv → exe）。**回避策として settings.backup_dir を C:\work\image-reviwer\.backup\daily\ にした**（利用者の決定）。**別ドライブにしたい場合はこの謎を先に解く**（#/settings から戻せる）。**診断には利用者の許可が要る**（§3 の 4・§7 の新 5）。
 - **利用者の判断（2026-10-18 夜）**: **193 枚を削除した（意図どおり）**。内訳: ファイルは **20:01 にエクスプローラでゴミ箱へ**（元は `C:\ai\...\ComfyUI\Anima\20261010`）→ **20:04〜20:12 にアプリで段 1 の印**（`deletion_log` 193 行・`delete_request` 30 回・`actor='human'`）。**アプリはファイルを 1 枚も動かしていない**（段 2/3 の記録 0・`trash` / `pending-delete` は空・`missing_at` 0）。**そのあと ComfyUI が同じフォルダに同じ名前で生成中**（20:27 時点 37 枚・**台帳の size と一致しない**＝別の絵）。**利用者は「そのまま」を選択**（**戻さない**）。**`#/pending-deletes` の「戻す」は `stuck` で止まる**（元の場所に別のファイルがあるため）＝**正しい動作**。`asset` 455（うち 193 が `deleted_at` で隠れている）
+- **2026-10-19 の実データ（P10 の文書反映のときに `mode=ro` で読んだだけ。1 バイトも書いていない）**:
+  **`asset` 461 行・生きた 267 枚・`deletion_log` 194 行（全部が段 1 で生きたまま）**。
+  **段 1 の 194 行のうち、実体が在るのは 7 行・実体が無いのは 187 行**（実体が在る 7 行のうち **6 行**は
+  台帳の `asset_id` が古い形＝§6 の罠）。**`closed_at` / `close_reason` の列はまだ無い**。
+  **次の 1 操作は利用者の再起動 → 「まとめて片付ける」**（→ §3 の 5・§7 の新 3）。

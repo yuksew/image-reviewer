@@ -28,11 +28,21 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def real_data_signature(root: Path) -> list[tuple[str, int, int]]:
-    """実データの中身の署名（**名前・大きさ・mtime**）。無ければ空。"""
+    """実データの中身の署名（**名前・大きさ・mtime**）。無ければ空。
+
+    **`-shm` だけは mtime を数えない**: SQLite の共有メモリは **`mode=ro` で開くだけでも
+    mtime が動く**（並行して別の担当が読むと揺れる）ので、**書き込みの証拠にならない**。
+    大きさは見る（消えたり増えたりは捕まえる）。
+    """
     if not root.exists():
         return []
-    return sorted((str(p.relative_to(root)), p.stat().st_size, p.stat().st_mtime_ns)
-                  for p in root.rglob("*") if p.is_file())
+    out = []
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        mtime = 0 if p.name.endswith("-shm") else p.stat().st_mtime_ns
+        out.append((str(p.relative_to(root)), p.stat().st_size, mtime))
+    return sorted(out)
 
 
 def child_env(*, with_data: Path | None) -> dict:

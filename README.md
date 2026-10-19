@@ -11,17 +11,23 @@
 > 手順は [`docs/design.md`](docs/design.md) §16.2 の 1 を参照。文書内の名前は既に `image-reviewer` にしてある。
 
 - 状態: **P5（判断と比較）・P6（要求と注記）・P4（タグと語釈）・P8（重複・削除・バックアップ）・
-  P8-6（参照切れの再リンク）・P9（仕上げ）まで動く。**
+  P8-6（参照切れの再リンク）・P9（仕上げ）・P10（段 1 の行を後から進める・実体が無い行を片付ける）まで動く。**
 - **`docs/design.md` §12.1 の性能の目標は全部実測で埋めた**（未計測 0）。届かなかったのは一覧 API の
   1 行だけで、理由と必要な条件は [`docs/design.md`](docs/design.md) §12.1 と
   [`docs/p9-implementation.md`](docs/p9-implementation.md) にある。
-- **テスト 520 件**（`uv run --no-sync pytest -q` を自分で **4 回**回して実測。**4 回とも緑**）。
-- **`gui_smoke` 343 検査**（ok / NG 0。**ワーディング監査の直しを入れた時点**）。
-- **`gui_layout` 10 画面＋`pending --ids` の 11 本**もすべて ok。実データで測る画面は**複製**で回す。
+- **テスト 547 件**（`uv run --no-sync pytest -q` を自分で回して実測。**547 passed・0 failed**、40.3 秒）。
+  **並行して誰かが実データを `mode=ro` で読んでいると `test_data_dir_guard.py` の 1 件が落ちうる**
+  （署名に使う `db.sqlite3-shm` の `mtime_ns` が動くため。**中身は変わっていない**。`docs/handoff.md` §6）。
+- **`gui_smoke` 395 検査**（ok / NG 0。**自分で回して実測**）。
+- **`gui_layout` 10 画面 × 4 幅**（`VIEWPORTS` は 1400・1024・1200・1920。＋`pending --ids` の 11 本目）を
+  **複製で回して実測**（2026-10-19）。**`--screen tags` は語が 0 件だと必ず NG** なので
+  `gui_layout_seed.py --tags` を当てた複製で回す。**`--screen pending --ids` の「段 2 の結果の 1 行」だけは
+  4 幅とも NG**——`gui_layout.mjs` の `WANT_STAGE[2]` が「2 枚をゴミ箱へ移しました。」のままで、画面は
+  「2 枚をアプリのゴミ箱へ移しました。」（`frontend-design.md` §6 が正）。**検査の 1 行を直せば通る**。
 - **P8 の小段（P8-0〜P8-5）は全部通り、監査はどれも「合格（条件つき）」**（P8-3 の再確認は「合格（条件なし）」）。
-  **P8-5（設定と文言の仕上げ）の条件 3 件だけは未反映**——「段 3 を許す」ボタンが二度押しで 2 回 POST される・
-  `gui_layout --screen asset` が許可の無い置き場で必ず NG・版が新しい DB で設定の書き込みボタンが押せるまま
-  （[`docs/p8-5-audit-report.md`](docs/p8-5-audit-report.md)。直し方は [`docs/handoff.md`](docs/handoff.md) §3 の 0）。
+  **P8-5 の条件 3 件も 2026-10-18 に直した**（[`docs/p8-5-audit-triage.md`](docs/p8-5-audit-triage.md)——
+  印のボタンの二度押し・`gui_layout --screen asset` の段の期待値を API から組む形・読み取り専用の DB で
+  書き込むボタンを置かない。**段 3 の許可が無い置き場の枚で 4 幅とも ok を 2026-10-19 に実測**）。
 - **参照切れの再リンク（P8 の合格の線 9）は P8-6 で作った**（2026-10-18）。P8 の途中で P8-3 が「重複と削除の
   画面」の段に置き換わり、線 9 だけが残っていた。`POST /api/locations/relink`（**人だけ**）と
   `GET /api/locations/missing`（**読むだけ**）の 2 つの口で、**中身の `sha256` が一致したときだけ繋ぐ**
@@ -41,8 +47,8 @@ uv sync
 uv sync --extra tagger                      # 内蔵タガー（onnxruntime。任意。入れると `auto` が内蔵を選ぶ）
 uv run image-reviewer scan --root 'C:\work\illust-authoring\.store\anima-dev'
 uv run image-reviewer serve --port 8790     # → http://127.0.0.1:8790
-uv run --no-sync pytest -q                  # 520 件（P9 の監査の直しで 518 → 520。4 回回して緑）
-node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。343 検査）
+uv run --no-sync pytest -q                  # 547 件（P10 の 27 件が入った数。2026-10-19 に実測）
+node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。395 検査）
 # 画面の計測（本物の Chrome）は**複製で立てたサーバ**へ。実データの 8790 では回さない（§「gui_layout は…」）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --count 8          # 比較（3 窓）
 node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen requests  # 要求の一覧
@@ -109,6 +115,10 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 - **削除と取り消し**（`#/pending-deletes`。**段 1 カタログから外す / 段 2 アプリのゴミ箱 / 段 3 ファイルを消す**の 3 段階。
   **ファイルを消した後も 5 分以内なら戻せる**。一括削除は**凍結 → 実行**。**誰が消したか**を残し、
   **エージェントも消せるが 1 回 200 枚まで**）。
+- **外した後の後始末（P10）**: **一度カタログから外した物を、後からアプリのゴミ箱へ移せます。実体が無い物は片付けられます**
+  （`#/pending-deletes` の段 1 の行に「アプリのゴミ箱へ移す」と「ファイルが無いので片付ける」、段 2 の行にも
+  「ファイルが無いので片付ける」。まとめて選べる。**1 回 200 件まで**。**片付けてもファイルは 1 つも消さない・動かさない**。
+  **片付けた後は戻せない**＝`docs/deletions-advance.md`）。
 - **バックアップと復元**（`#/settings` と上部バーの 1 行。日次バックアップ・7 世代・
   `backup` / `restore` / `rebuild-metadata`）。
 - **参照切れの再リンク**（**口だけ**。`POST /api/locations/relink` は**人だけ**で、
@@ -132,6 +142,12 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
     1 万枚が現実になるまで困らないので、入れる段を別に立てる。`docs/design.md` §12.1）。
   - **一覧の仮想グリッドとページ送り**（いまは `limit=2000` で 1 回引いて全部描く。1 万枚では
     2000 枚で切れるので「先頭 2000 枚を表示」と出している）。
+  - **段 1 の行から段 3 へ直行する道**（**P10 では作らないと決めた**。段 3 は置き場ごとの許可
+    （`root.allow_stage3`。Q8 の利用者の意思表示）と凍結が要る既存の道のまま。`docs/design.md` §16.7）。
+  - **実データの `deletion_log.closed_at` / `close_reason`**（**P10 の列は実データにまだ無い**。
+    `TOP_UP_COLUMNS` なので、**利用者がアプリを立ち上げ直した時点**で `pre-topup-<日時>/` の控えが付いてから
+    足される。**それまでは「ファイルが無いので片付ける」も「アプリのゴミ箱へ移す」も押せない**——
+    新しい口は**再起動後**に使える）。
 - **exe 化（PyInstaller）は「今は作らない」**（P9 の推奨）。**作れることは実測した**
   （PyInstaller 6.22.3 が Python 3.14 で動き、`--onedir` が 23.7 秒で 131.9 MB。
   起動は 0.53 秒で、いまの `uv` 経由（1.05 秒）より速い）が、**`apps/gui` の解決が 1 か所足りず
@@ -186,12 +202,13 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/p8-2-implementation.md`](docs/p8-2-implementation.md)、[`docs/p8-3-implementation.md`](docs/p8-3-implementation.md)、[`docs/p8-4-implementation.md`](docs/p8-4-implementation.md)、[`docs/p8-5-implementation.md`](docs/p8-5-implementation.md) | **P8-2〜P8-5 の実装の記録**（削除の 3 段階と凍結 / 重複と削除の画面 / バックアップと復元 / 設定と文言の仕上げ） | — |
 | [`docs/p8-6-relink.md`](docs/p8-6-relink.md) | **P8-6（参照切れの再リンク）の実装の記録**（`POST /api/locations/relink` と `GET /api/locations/missing`・`location_history` の 3 列・`create_app()` の硬化・**事故 3 件目**・設計の穴 6 件・申し送り） | — |
 | [`docs/p8-audit-brief-p8-0.md`](docs/p8-audit-brief-p8-0.md)（1・2・4 も同形） | P8 の監査の指示書 | — |
-| [`docs/p8-0-audit-report.md`](docs/p8-0-audit-report.md)、[`docs/p8-1-audit-report.md`](docs/p8-1-audit-report.md)、[`docs/p8-2-audit-report.md`](docs/p8-2-audit-report.md)、[`docs/p8-3-audit-report.md`](docs/p8-3-audit-report.md)、[`docs/p8-4-audit-report.md`](docs/p8-4-audit-report.md)、[`docs/p8-5-audit-report.md`](docs/p8-5-audit-report.md) | **P8 の監査報告**（**実行込み**。判定はどれも「合格（条件つき）」→ 指摘は全部反映。**P8-5 の条件 3 件だけ未反映**） | — |
+| [`docs/p8-0-audit-report.md`](docs/p8-0-audit-report.md)、[`docs/p8-1-audit-report.md`](docs/p8-1-audit-report.md)、[`docs/p8-2-audit-report.md`](docs/p8-2-audit-report.md)、[`docs/p8-3-audit-report.md`](docs/p8-3-audit-report.md)、[`docs/p8-4-audit-report.md`](docs/p8-4-audit-report.md)、[`docs/p8-5-audit-report.md`](docs/p8-5-audit-report.md) | **P8 の監査報告**（**実行込み**。判定はどれも「合格（条件つき）」→ 指摘は全部反映済み。**P8-5 の条件 3 件も 2026-10-18 に反映**） | — |
 | [`docs/p8-2-audit-recheck.md`](docs/p8-2-audit-recheck.md)、[`docs/p8-3-audit-recheck.md`](docs/p8-3-audit-recheck.md)、[`docs/p8-4-audit-recheck.md`](docs/p8-4-audit-recheck.md) | 監査の**再確認**（直した物が実行で直っているか。P8-3 は「合格（条件なし）」） | — |
 | [`docs/p8-0-audit-triage.md`](docs/p8-0-audit-triage.md)、[`docs/p8-1-audit-triage.md`](docs/p8-1-audit-triage.md)、[`docs/p8-2-audit-triage.md`](docs/p8-2-audit-triage.md)、[`docs/p8-3-audit-triage.md`](docs/p8-3-audit-triage.md)、[`docs/p8-4-audit-triage.md`](docs/p8-4-audit-triage.md)、[`docs/p8-2-audit-recheck-triage.md`](docs/p8-2-audit-recheck-triage.md) | 監査の指摘の仕分け（1 行ずつ理由つき） | — |
 | [`docs/p8-3-band-miss.md`](docs/p8-3-band-miss.md) | **帯の取りこぼしの調査**（8bit × 8 本 → **4bit × 16 本**に作り直した根拠。距離 0〜64 の総当たりとの一致） | — |
 | [`docs/p9-implementation.md`](docs/p9-implementation.md)、[`docs/p9-audit-report.md`](docs/p9-audit-report.md)、[`docs/p9-audit-triage.md`](docs/p9-audit-triage.md) | **P9 の記録**（§12.1 の実測・exe 化の判断）と、その**監査報告**（C-1〜C-3・D 10 件・G 6 件）と**仕分け**（指摘ごとに 1 行。C-1 は新しい読み取り専用の接続で `quick_check`） | — |
 | [`docs/wording-audit-report.md`](docs/wording-audit-report.md)、[`docs/wording-fix.md`](docs/wording-fix.md) | **ワーディング監査**（利用者に見える日本語 約 1,200 行を 1 行ずつ見た報告。判定は「自然」で、原因は中国語ではなく**癖 3 つ**）と、その**修正の記録**（規則 3 つ・直した 141 件・食い違い 24 行の裁定・用語の対応表・残した物） | — |
+| [`docs/deletions-advance.md`](docs/deletions-advance.md) | **P10 の実装の記録**（段 1 の行を後からアプリのゴミ箱へ移す・実体が無い行を片付ける。口 4 つ・決めた 8 点・**設計の穴 4 件**・複製で通した線 14 件・壊し試験 13 件） | — |
 | [`docs/duplicates-keep-button.md`](docs/duplicates-keep-button.md) | **重複の整理の「残す 1 枚以外を削除する…」**（利用者の要望の追い足し。ラジオに「残す」の語・群ごとのボタン・**渡す直前に `keep` を除く**二重の守り・本物の Chrome 25 検査） | — |
 | [`docs/japanese-ui-audit-report.md`](docs/japanese-ui-audit-report.md)、[`docs/japanese-ui-fix.md`](docs/japanese-ui-fix.md) | **日本語 UI の監査**（「日本語のシステムとして自然か」の軸。判定は**「一部に不揃い」**で、規約 A〜F・違反 A16/B11/C30/D17/E11/F9・用語 27 語の判定・質問 G-1〜G-10）と、その**修正の記録**（**§6.1 を規約 A〜F＝通し番号 1〜6 に振り直した**・分類ごとの件数・直す前→後・残した物と理由・1024×700 の検査を足した話） | §6.1, §17 |
 | [`schemas/backup-manifest.schema.json`](schemas/backup-manifest.schema.json) | **日次スナップショットの `manifest.json` の契約**（`restore` が復元の前に読む。`abi: 0.1`） | — |
@@ -281,6 +298,12 @@ uv run image-reviewer serve --port 8790
 ## 次にすること
 
 **P9（仕上げ）は完了**（2026-10-18。[`docs/p9-implementation.md`](docs/p9-implementation.md)）。
+**P10（段 1 の行を後から進める・実体が無い行を片付ける）も完了**（2026-10-19。
+[`docs/deletions-advance.md`](docs/deletions-advance.md)）。**利用者の要望**（一度カタログから外した物を
+ゴミ箱へ／実体が無い物を片付ける）で、**段 1 が行き止まりだった**のを塞いだ。**P10 の監査はこれから**
+（Fable が `docs/p10-audit-report.md` を書く）。**実データは 461 行（生きた 267 枚）・段 1 の生きた行 194・
+うち実体が在るのは 7 行**（187 行が実体なし）で、**利用者がアプリを立ち上げ直して「まとめて片付ける」を
+押す番**（`pre-topup-<日時>/` の控えが付いてから列が足される。**押すと 187 件が閉じ、7 件は断られる**）。
 **P9 の監査（[`docs/p9-audit-report.md`](docs/p9-audit-report.md)。判定「合格（条件つき）」）の
 指摘も全部直した**（2026-10-19。[`docs/p9-audit-triage.md`](docs/p9-audit-triage.md)）——
 **C-1**（走ったまま壊れた DB の入口が、**書き込んだ接続のページキャッシュ**越しに見ていて

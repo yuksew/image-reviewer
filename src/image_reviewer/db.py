@@ -20,7 +20,10 @@
   （ハミング距離はマイクロ秒で出るので、書き込む方が高い）。`ix_comparison_a` も作らない
   （主キー `(a_id, b_id)` の前置と重なる）。`algo_version` を持ち、**引くときも必ず条件に入れる**
 - `changed_at` / `exported_at` は `stamp()`（マイクロ秒）。秒までだと同じ秒の 2 件を取りこぼす（点検 B1）
-- **v4（P6-0）** は要求と注記、**v5（P4-0）** はタグとジョブ（それぞれ `V4_REQUEST_DDL` / `V5_TAG_DDL`）。
+- **v4（P6-0）** は要求と注記、**v5（P4-0）** はタグとジョブ（それぞれ `V4_REQUEST_DDL` / `V5_TAG_DDL`）、
+  **v6（P8-0）** は削除とバックアップ（`V6_DELETE_DDL`）、**v7（P2-0）** はカタログと取り込み元
+  （`V7_CATALOG_DDL` と `asset.source` / `source_url` / `ref_tags`）。
+  **v4〜v7 はどれも「表と列だけ」で機能は足さない**（P6-0 / P4-0 / P8-0 / P2-0 の流儀）。
 """
 
 from __future__ import annotations
@@ -34,8 +37,9 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 6       # v6 = P8（重複・削除・バックアップ）。**P7 の v6（条件の記録）は
-                         # 2026-10-17 に廃止したので、番号が空いていた**（`docs/p7-decision.md`）
+SCHEMA_VERSION = 7       # v6 = P8（重複・削除・バックアップ）、v7 = P2（取り込みとカタログ）。
+                         # **P7 の v6（条件の記録）は 2026-10-17 に廃止したので、番号が空いていた**
+                         # （`docs/p7-decision.md`）。v7 は `docs/design.md` §5.3 / §5.1 の表と列だけ
 
 # Cronford の base32（ULID）
 _B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -304,6 +308,15 @@ def migrate(con: sqlite3.Connection) -> int:
         _migrate_v5(con)
     if current < 6:
         _migrate_v6(con)
+    elif current == 6:
+        # **（P8-0 の監査 C-1 を v7 でも守る）** 版だけ 6 を名乗る DB（P7 の v6。控えの
+        # `.backup/pre-p7-*` が該当）は `current < 6` を通らない。v7 に上げるこの道でも
+        # **P8 の表・列を補う**（`_migrate_v6` は全部 `IF NOT EXISTS` と `PRAGMA table_info` なので
+        # 何度呼んでも同じ）。**ここを外すと、P7 の v6 は v7 になったのに `deletion_log` を
+        # 一生持たない**（`test_v6_tables_are_added_to_a_p7_style_v6_database` が守る）。
+        _migrate_v6(con)
+    if current < 7:
+        _migrate_v7(con)
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -821,6 +834,138 @@ def missing_top_ups(con: sqlite3.Connection) -> list[str]:
     return out
 
 
+# ---- v7（P2-0: 取り込みとカタログ。**機能は足さない＝表と列だけ**）----
+#
+# 出所: `docs/design.md` §5.3（カタログの表）・§6.1（カタログの口）・§10.1〜§10.2（仮想フォルダと
+# スマートフォルダ）・§5.1（取り込み元）。**P2 の設計書は無い**（`docs/p2-design.md` は作られていない）ので、
+# 本文の `design.md` が正。
+#
+# - **表の名前は `folder` と `folder_member`。** 指示書の `folder_item` / `smart_folder` は設計に無い。
+#   スマートフォルダは**別の表ではなく `folder.kind='smart'` の行**で、条件は `smart_query` に持つ
+#   （§5.3 の DDL・§10.2）。**`sort_key` / `note` も設計に無い**（並びは `position`）。
+# - **`folder.deleted_at` は §5.3 の DDL に無いが、§6.1 が「既定は論理削除（`deleted_at`）」と決めている**
+#   ので足した（**設計の穴**。この列が無いと P2-1 の `DELETE /api/folders/{id}` が作れない）。
+# - **`folder.name` に UNIQUE は付けない。** 設計 §5.3 は名前の一意を要求していない（`parent_id` の
+#   階層があり、別の親の下の同名は普通にある）。同名を作らせない規則が要るなら**サービス層**（親の中で一意）
+#   にする（`UNIQUE(parent_id, name)` は根（`parent_id IS NULL`）の重複を SQLite が許すので、
+#   そのままでは「一意」にならない。NULL を含む一意性の罠。`p8-design.md` §2.2）。
+# - **`folder_member` の `asset_id` は論理削除（`asset.deleted_at`）では消さない。** 行が消えるのは
+#   `asset` の行を**物理で消した**とき（`ON DELETE CASCADE`）。論理削除した枚をカタログに出さないのは
+#   **読む側**（`deleted_at IS NULL`）の仕事（P2-1）。
+# - **取り込み元の列は `asset` に足す**（§5.1 の `source` / `source_url` / `ref_tags`）。設計の
+#   `source_ref` は **`review_group` の列**（要求 ID など）で、取り込みとは別物。**取り込みの履歴の表は
+#   設計に無い**ので作らない（`asset.source` と `asset.source_url` がその記録）。
+#   **実装はいま `asset_meta.source` を「出所」として返している**（`store._asset_dict`）。値は全行
+#   `'scan'` で、上の `DEFAULT 'scan'` と同じ。P2-1 で**読み書きを `asset.source` に寄せる**（申し送り）。
+V7_CATALOG_DDL = """
+-- 仮想フォルダ（設計 §5.3）。**実ファイルは動かさない**（§10.1）。`kind='smart'` は条件で貯まる
+CREATE TABLE IF NOT EXISTS folder (
+  id              TEXT PRIMARY KEY,                          -- ULID
+  parent_id       TEXT REFERENCES folder(id) ON DELETE CASCADE,   -- NULL = 根
+  name            TEXT NOT NULL,                             -- **一意ではない**（親が違えば同名可）
+  kind            TEXT NOT NULL CHECK (kind IN ('manual', 'smart')),
+  smart_query     TEXT,                                      -- kind='smart' の条件（JSON。§10.2）
+  position        INTEGER NOT NULL DEFAULT 0,                -- 同じ親の中の並び
+  count_cache     INTEGER,                                   -- 中の枚数（概算のキャッシュ。§10.2）
+  count_cached_at TEXT,
+  created_at      TEXT NOT NULL,
+  -- **§5.3 の DDL には無いが、§6.1 が論理削除を要求する**（設計の穴。P2-1 で使う）
+  deleted_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_folder_parent ON folder(parent_id, position);
+
+-- 多対多（設計 §5.3・§10.1）。同じ画像を複数のフォルダに置ける。**主キーは 2 つ**
+CREATE TABLE IF NOT EXISTS folder_member (
+  folder_id TEXT NOT NULL REFERENCES folder(id) ON DELETE CASCADE,
+  asset_id  TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+  position  INTEGER NOT NULL DEFAULT 0,                      -- フォルダの中の並び
+  added_at  TEXT NOT NULL,
+  PRIMARY KEY (folder_id, asset_id)
+);
+CREATE INDEX IF NOT EXISTS ix_folder_member_asset ON folder_member(asset_id);
+"""
+
+#: v7 で `asset` に足す列（設計 §5.1 の取り込み元）。
+#: `ALTER TABLE ADD COLUMN` は `IF NOT EXISTS` を持たないので、**列を見てから足す**（v2〜v6 と同じ流儀）。
+#: `source` は **NOT NULL DEFAULT 'scan'**。実データの 463 枚はすべて走査で入ったので、その値が正しい
+#: （`asset_meta.source` も全行 `'scan'` だった）。`drop` / `clipboard` / `url` / `watch` は P2-1 以降が書く。
+V7_ASSET_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("source", "ALTER TABLE asset ADD COLUMN source TEXT NOT NULL DEFAULT 'scan'"
+               " CHECK (source IN ('scan', 'drop', 'clipboard', 'url', 'watch'))"),
+    ("source_url", "ALTER TABLE asset ADD COLUMN source_url TEXT"),
+    ("ref_tags", "ALTER TABLE asset ADD COLUMN ref_tags TEXT"),   # 「何の参考か」の JSON 配列（§5.1）
+)
+
+#: v7 で作る表 → 必ずある列。**`CREATE TABLE IF NOT EXISTS` は同じ名前の別の表を変えない**ので、
+#: 移行の後に見て、違う形なら落とす（「版は 7 なのに表が違う」という静かな穴を作らない）
+V7_COLUMNS: dict[str, tuple[str, ...]] = {
+    "folder": ("id", "parent_id", "name", "kind", "smart_query", "position",
+               "count_cache", "count_cached_at", "created_at", "deleted_at"),
+    "folder_member": ("folder_id", "asset_id", "position", "added_at"),
+}
+
+#: v7 で作る索引 → **その索引があるべき表**。**索引名は DB 全体で一意**なので、
+#: 同じ名前が他の表にあると `CREATE INDEX IF NOT EXISTS` は**黙って何もしない**
+#: （P8-0 の監査 C-0 で `ux_request_token` が実際に踏んだ）。移行の後にここで確かめる
+V7_INDEXES: tuple[tuple[str, str], ...] = (
+    ("ix_folder_parent", "folder"),
+    ("ix_folder_member_asset", "folder_member"),
+)
+
+
+def _migrate_v7(con: sqlite3.Connection) -> None:
+    """v7: カタログ（仮想フォルダ・スマートフォルダ）と取り込み元の列を足す（P2-0）。
+
+    **機能は足さない**（表と列だけ。P2-1 が口、P2-2 以降が画面）。設計は `design.md` §5.3・§6.1・
+    §10.1〜§10.2・§5.1。表の名前と形は**設計の字**に合わせた（`folder` / `folder_member`。
+    `folder_item` / `smart_folder` は作らない。上の `V7_CATALOG_DDL` の注記）。
+
+    **実データ（v6）は 1 回で正しい形の v7 になる。** `migrate()` の早期 return 側には何も足していない——
+    v7 は**版を上げて**足すので、`user_version = 7` を名乗る DB に v7 の表が無い形は作れない
+    （途中で落ちた DB は版が 6 のままなので、次の起動でこの関数をもう一度通る。P8-0 の `_top_up_v6` は
+    P7 が**同じ 6 を名乗って別の表を作った**事故の手当てで、v7 にはその事情が無い）。
+    """
+    con.executescript(V7_CATALOG_DDL)
+    have = {row[1] for row in con.execute("PRAGMA table_info(asset)")}
+    if have:                                    # `asset` は v1 から在る（無ければ v1 の DDL から作る）
+        for column, ddl in V7_ASSET_COLUMNS:
+            if column not in have:
+                con.execute(ddl)
+    _check_v7_shape(con)
+
+
+def _check_v7_shape(con: sqlite3.Connection) -> None:
+    """v7 の表・列・索引が**狙った形で**在ることを確かめる（黙って無効にならないように）。
+
+    なぜ要るか（2 つとも実際に踏んだ型）:
+
+    - `CREATE TABLE IF NOT EXISTS` は**同じ名前の別の表**があると黙って何もしない
+    - `CREATE INDEX IF NOT EXISTS` は**索引名が DB 全体で一意**なので、同じ名前が他の表にあると
+      黙って何もしない（P8-0 の監査 C-0。`ux_request_token` が `review_request` に在ったため
+      `delete_request` の一意索引が作られず、**再送の二重削除**が通った）
+
+    どちらも「版は 7・名前は在るのに中身が違う」という**静かな穴**になるので、ここで落とす
+    （`sqlite3.DatabaseError` ではなく `RuntimeError`。呼び手は起動を止めるので、人はログで気づく）。
+    **何度呼んでも同じ**（読むだけ）。
+    """
+    for table, columns in V7_COLUMNS.items():
+        have = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+        if not have:
+            raise RuntimeError(
+                f"v7 の表 {table} がありません（同じ名前の別の物が使っています）")
+        missing = [column for column in columns if column not in have]
+        if missing:
+            raise RuntimeError(
+                f"v7 の表 {table} の列が足りません: {', '.join(missing)}")
+    for name, table in V7_INDEXES:
+        row = con.execute("SELECT tbl_name FROM sqlite_master WHERE type = 'index'"
+                          " AND name = ?", (name,)).fetchone()
+        if row is None or row[0] != table:
+            where = row[0] if row is not None else "どこにも無い"
+            raise RuntimeError(
+                f"v7 の索引 {name} を {table} に作れませんでした（同じ名前が {where} にあります）")
+
+
 def _seed_settings(con: sqlite3.Connection) -> None:
     rows = [
         ("undo_window_sec", "300"),
@@ -885,7 +1030,7 @@ def open_db(data_dir: str | Path, *, read_only: bool = False,
     """接続してマイグレーションまで済ませる（通常はこれを使う）。
 
     **（P8-4）`read_only=True` ではマイグレーションを走らせない。** 読み取り専用の接続で
-    `PRAGMA user_version = 6` や `CREATE TABLE` を流すと `attempt to write a readonly
+    `PRAGMA user_version = 7` や `CREATE TABLE` を流すと `attempt to write a readonly
     database` で落ちる（壊れた DB を「読み取り専用で起動」する道そのものが開かなくなる）。
     """
     con = connect(data_dir, read_only=read_only, check_same_thread=check_same_thread)

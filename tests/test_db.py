@@ -624,7 +624,7 @@ def test_v6_adds_the_delete_tables_and_columns(tmp_path: Path):
     """P8-0: v6 で 5 表と 2 列が入る（設計 §2.1）。**v5 から 1 回で**。"""
     con = db.open_db(tmp_path)
     try:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 6
+        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
         names = {r["name"] for r in con.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'")}
         for t in V6_TABLES:
@@ -647,10 +647,10 @@ def test_v6_migration_is_idempotent_and_the_version_does_not_move(tmp_path: Path
         con.executescript(db.DDL)
         con.execute("PRAGMA user_version = 4")
         db.migrate(con)
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
         before = _dump(con)
         for _ in range(3):
-            assert db.migrate(con) == 6
+            assert db.migrate(con) == db.SCHEMA_VERSION
         assert _dump(con) == before, "3 回呼びで形が変わった"
     finally:
         con.close()
@@ -694,11 +694,11 @@ def test_v6_topps_up_a_database_that_was_made_before_the_columns(tmp_path: Path)
         con.execute("ALTER TABLE asset DROP COLUMN deleted_at")
         assert "deleted_at" not in {r["name"] for r in con.execute("PRAGMA table_info(asset)")}
 
-        assert db.migrate(con) == 6                       # 版は上がらない（早期 return の道）
+        assert db.migrate(con) == db.SCHEMA_VERSION       # 版は上がらない（早期 return の道）
         assert "deleted_at" in {r["name"] for r in con.execute("PRAGMA table_info(asset)")}
         assert "allow_stage3" in {r["name"] for r in con.execute("PRAGMA table_info(root)")}
         assert con.execute("SELECT 1 FROM sqlite_master WHERE name = 'ix_asset_del'").fetchone()
-        assert db.migrate(con) == 6                       # 二度足さない
+        assert db.migrate(con) == db.SCHEMA_VERSION       # 二度足さない
     finally:
         con.close()
 
@@ -850,7 +850,7 @@ def test_v6_tables_are_added_to_a_p7_style_v6_database(tmp_path: Path):
             con.execute(f"DROP TABLE {table}")
         con.execute("PRAGMA user_version = 6")
         assert not con.execute("SELECT 1 FROM sqlite_master WHERE name = 'deletion_log'").fetchone()
-        assert db.migrate(con) == 6
+        assert db.migrate(con) == db.SCHEMA_VERSION
         names = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         for table in ("delete_request", "deletion_log", "duplicate_exclusion",
                       "phash_band", "pending_delete_preview"):

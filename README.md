@@ -16,8 +16,8 @@
 - **`docs/design.md` §12.1 の性能の目標は全部実測で埋めた**（未計測 0）。届かなかったのは一覧 API の
   1 行だけで、理由と必要な条件は [`docs/design.md`](docs/design.md) §12.1 と
   [`docs/p9-implementation.md`](docs/p9-implementation.md) にある。
-- **テスト 577 件**（`uv run --no-sync pytest -q` を自分で回して実測。**577 passed・0 failed**。
-  **トレイの契約 15 件＋振る舞い 1 件**が入った数）。
+- **テスト 591 件**（`uv run --no-sync pytest -q` を自分で回して実測。**591 passed・0 failed**。
+  **P2-0（スキーマ v7）で 14 件足した**。**トレイの契約 15 件＋振る舞い 1 件**も入っている）。
   **並行して誰かが実データを `mode=ro` で読んでいると `test_data_dir_guard.py` の 1 件が落ちうる**
   （署名に使う `db.sqlite3-shm` の `mtime_ns` が動くため。**中身は変わっていない**。`docs/handoff.md` §6）。
 - **`gui_smoke` 406 検査**（ok / NG 0。**自分で回して実測**）。
@@ -74,7 +74,7 @@ uv sync
 uv sync --extra tagger                      # 内蔵タガー（onnxruntime。任意。入れると `auto` が内蔵を選ぶ）
 uv run image-reviewer scan --root 'C:\work\illust-authoring\.store\anima-dev'
 uv run image-reviewer serve --port 8790     # → http://127.0.0.1:8790
-uv run --no-sync pytest -q                  # 577 件（2026-10-20 に実測）
+uv run --no-sync pytest -q                  # 591 件（2026-10-20 に実測。P2-0 の 14 件を含む）
 node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。406 検査）
 # **トレイの検査**（別のポートと、合成した複製だけで回す。**8790 は使わない**。
 # 使う 4 ポート（-Port〜+3）の 1 つでも埋まっていれば、1 つも起動せずに exit 2 で止まる）
@@ -257,6 +257,7 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/japanese-ui-audit-report.md`](docs/japanese-ui-audit-report.md)、[`docs/japanese-ui-fix.md`](docs/japanese-ui-fix.md) | **日本語 UI の監査**（「日本語のシステムとして自然か」の軸。判定は**「一部に不揃い」**で、規約 A〜F・違反 A16/B11/C30/D17/E11/F9・用語 27 語の判定・質問 G-1〜G-10）と、その**修正の記録**（**§6.1 を規約 A〜F＝通し番号 1〜6 に振り直した**・分類ごとの件数・直す前→後・残した物と理由・1024×700 の検査を足した話） | §6.1, §17 |
 | [`schemas/backup-manifest.schema.json`](schemas/backup-manifest.schema.json) | **日次スナップショットの `manifest.json` の契約**（`restore` が復元の前に読む。`abi: 0.1`） | — |
 | [`docs/move-failed-message.md`](docs/move-failed-message.md) | **移動できなかったときの案内**（利用者の依頼。**パスで判定しない**・2 文＋詳細・`code` は `move_failed` のまま。段 2・後から進める・まとめての 4 経路が**同じ 1 か所**。壊すと落ちる 6 本・三点セット 576 / 406 / 11 本） | §6.1 |
+| [`docs/p2-0-implementation.md`](docs/p2-0-implementation.md) | **P2-0 の実装の記録**（**スキーマ v7**。`folder` / `folder_member`・`asset` の取り込み元 3 列・控えを取ってから上げる道・**指示書のスケッチと設計が食い違った 4 点**・設計の穴 5 件・壊し試験 10 通り・実データは v6 のまま） | — |
 
 - P5 の点検・監査の**生ログ（`docs/p5-review-run.jsonl` / `p5-audit-run.jsonl` / `p5-2-audit-run.jsonl` /
   `p5-3-audit-run.jsonl`。計 約 11.7 MB）は文書表に数えない**。本文は各 `*-report.md` と `*-run-note.md`

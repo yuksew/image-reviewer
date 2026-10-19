@@ -1242,7 +1242,7 @@ def test_the_v6_columns_are_topped_up_on_an_old_database(tmp_path):
 
     実データの v6 は `executed_at` / `result_json` / `request_id` の**無い形**で先に作ってある。
     足さないと**一括削除が `no such column: executed_at` で丸ごと落ちる**（`migrate()` は
-    `current >= 6` で早期に戻るので、`_migrate_v6` は通らない）。
+    `current >= SCHEMA_VERSION` で早期に戻るので、`_migrate_v6` は通らない）。
     """
     con = db.open_db(tmp_path)
     try:
@@ -1253,10 +1253,10 @@ def test_the_v6_columns_are_topped_up_on_an_old_database(tmp_path):
         for name in ("executed_at", "result_json", "request_id"):
             con.execute(f"ALTER TABLE pending_delete_preview DROP COLUMN {name}")
         con.execute("ALTER TABLE delete_request DROP COLUMN payload_json")
-        assert db.migrate(con) == 6                      # 早期 return の道で補う
+        assert db.migrate(con) == db.SCHEMA_VERSION      # 早期 return の道で補う
         cols = {r["name"] for r in con.execute("PRAGMA table_info(pending_delete_preview)")}
         assert {"executed_at", "result_json", "request_id"} <= cols
-        assert db.migrate(con) == 6                      # 二度足さない（何度でも同じ）
+        assert db.migrate(con) == db.SCHEMA_VERSION      # 二度足さない（何度でも同じ）
         db.integrity(con)
     finally:
         con.close()
@@ -1290,7 +1290,7 @@ def test_the_stuck_reason_column_is_topped_up_on_an_old_database(tmp_path):
 
     実データの v6 はこの列が無い形で先に作ってある。足さないと `_mark_unrestorable` が
     `no such column: stuck_reason` で落ち、**取り消しの失敗が 409 ではなく 500 になる**
-    （`migrate()` は `current >= 6` で早期に戻るので `_migrate_v6` は通らない）。
+    （`migrate()` は `current >= SCHEMA_VERSION` で早期に戻るので `_migrate_v6` は通らない）。
     **`CHECK` も DDL と同じ物を付ける**（新規の DB と形が揃う＝語彙は表でも守る）。
     """
     con = db.open_db(tmp_path)
@@ -1299,7 +1299,7 @@ def test_the_stuck_reason_column_is_topped_up_on_an_old_database(tmp_path):
         con.executescript(OLD_LOG_DDL)
         assert "stuck_reason" not in {r["name"] for r in con.execute(
             "PRAGMA table_info(deletion_log)")}
-        assert db.migrate(con) == 6                      # 早期 return の道で補う
+        assert db.migrate(con) == db.SCHEMA_VERSION      # 早期 return の道で補う
         assert "stuck_reason" in {r["name"] for r in con.execute(
             "PRAGMA table_info(deletion_log)")}
         con.execute("INSERT INTO deletion_log(id, stage, actor, at)"
@@ -1307,7 +1307,7 @@ def test_the_stuck_reason_column_is_topped_up_on_an_old_database(tmp_path):
         with pytest.raises(sqlite3.IntegrityError):
             con.execute("UPDATE deletion_log SET stuck_reason = 'nope' WHERE id = 'x'")
         con.execute("UPDATE deletion_log SET stuck_reason = 'target_exists' WHERE id = 'x'")
-        assert db.migrate(con) == 6                      # 二度足さない（何度でも同じ）
+        assert db.migrate(con) == db.SCHEMA_VERSION      # 二度足さない（何度でも同じ）
         db.integrity(con)
     finally:
         con.close()

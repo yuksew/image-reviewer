@@ -405,3 +405,4 @@ uv run image-reviewer serve --port 8790
   `GET /api/backup` の `count` が 1 以上になることを確かめてある。
   **以前ここに書いていた「日次が 0 個である（`WinError 5`）」は古い事実**（P8-4 の再確認 B-1' の時点の話）。
   利用者が自分の端末から 8790 を立て直した後、**日次が取れていることを確かめた**。
+- **この環境の制約**: **アプリは自分のフォルダ（`C:\work\image-reviwer`）の中だけに書けます**（`python.exe` が外に書くと `WinError 5`）。**バックアップは `.backup\daily`**・**外のファイルを消すときはエクスプローラで**（消した後に「ファイルが無いので片付ける」）・**`%TEMP%` は使えないので `PRAGMA temp_store = MEMORY`**。詳細は `docs/design.md` の §16.7。

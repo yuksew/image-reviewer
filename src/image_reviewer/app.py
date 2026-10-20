@@ -30,6 +30,7 @@ from .api import compare as compare_api
 from .api import deletions as deletions_api
 from .api import duplicates as duplicates_api
 from .api import export as export_api
+from .api import folders as folders_api
 from .api import groups as groups_api
 from .api import requests as requests_api
 from .api import reviews as reviews_api
@@ -42,6 +43,7 @@ from .backup import BackupService, backup_before_migrate, inspect_db
 from .deletions import DeletionService
 from .duplicates import DuplicatesService
 from .export import ExportService
+from .folders import FolderService
 from .gloss import GlossService
 from .jobs import JobService
 from .relink import RelinkService
@@ -143,6 +145,9 @@ def create_app() -> FastAPI:
     # P8-6: 参照切れの再リンク（`GET /api/locations/missing` と `POST /api/locations/relink`）。
     # **タイマーも背景の仕事も無い**（人が押したときだけ、ファイルを動かさず登録を直す）
     relink_svc = RelinkService(store)
+    # P2-1: 仮想フォルダ（カタログ）。**実ファイルは動かさない**（`folder_member` の行だけ）。
+    # 件数は毎回数える（`count_cache` は使わない。`GET` は書かない）
+    folders_svc = FolderService(store)
     if not read_only:
         exporter.flush_dirty()
 
@@ -198,6 +203,8 @@ def create_app() -> FastAPI:
     app.state.backup = backup_svc
     #: P8-6: 参照切れの再リンク（**人だけ**。`GET` の一覧は人もエージェントも読める）
     app.state.relink = relink_svc
+    #: P2-1: 仮想フォルダ（カタログ）。**人の口だけが書く**（`require_human`）
+    app.state.folders = folders_svc
     #: P8-4: 起動の前に見た DB の状態（`GET /api/health/db` と middleware が見る）
     app.state.db_state = db_state
     app.add_exception_handler(ReviewError, review_error_handler)
@@ -276,6 +283,8 @@ def create_app() -> FastAPI:
     # P8-6: 参照切れ（`GET /api/locations/missing` と `POST /api/locations/relink`）。
     # **載せ忘れると守り（Host / Origin / Content-Type）が効かない**ので `tests/test_relink.py` で見る
     app.include_router(relink_api.router)
+    # P2-1: カタログ（`/api/folders`）。**載せ忘れると守りが効かない**ので試験で見る
+    app.include_router(folders_api.router)
 
     def _asset_or_404(asset_id: str) -> dict:
         asset = store.asset(asset_id)

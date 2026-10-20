@@ -946,3 +946,99 @@ body.settings #settings { display: flex; flex-direction: column; flex: 1; min-he
 /* 走査中の 1 行（`#/pending-deletes`。§4.6） */
 .pd-scan { font-size: 12px; color: var(--warn); padding: 6px 12px; border-bottom: 1px solid var(--line); }
 .pd-warn a, .pd-scan a, .pd-help a, .st-note a { color: var(--accent); margin-left: 6px; }
+
+/* ---- フォルダ（カタログ。`#/folders`）。P2-1 ---- */
+/* 設計: docs/frontend-design.md §3（画面の一覧 14）・§6（文言）・§11（フォルダの画面）。
+   **実ファイルは動かさない**（`folder_member` の行だけ。`design.md` §10.1）。
+   左に木・右に中身の 2 列。罫線で囲まず、面と余白で分ける（§2.5 の原則 1）。 */
+#folders { display: none; }
+body.foldering #app > .proto, body.foldering #app > .topbar,
+body.foldering #app > .body, body.foldering #app > .bottombar { display: none; }
+body.foldering #folders { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#folders .topbar .back {
+  font-size: 12px; color: var(--ink-muted); text-decoration: none;
+  border: 1px solid var(--line); padding: 2px 8px; border-radius: 2px;
+}
+#folders .topbar .back:hover { color: var(--accent); border-color: var(--accent); }
+.fl-body { display: flex; flex: 1 1 auto; min-height: 0; }
+.fl-side {
+  width: 280px; flex: 0 0 280px; display: flex; flex-direction: column;
+  min-height: 0; border-right: 1px solid var(--line); background: var(--surface);
+}
+.fl-new {
+  display: flex; gap: 6px; align-items: center; padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.fl-new input {
+  font: inherit; font-size: 12px; color: var(--ink); background: var(--paper);
+  border: 1px solid var(--line); padding: 3px 6px; flex: 1 1 auto; min-width: 0;
+}
+.fl-new button, .fl-actions button, .fl-row button, .fl-item button {
+  font-size: 11px; padding: 1px 8px; background: transparent; color: var(--ink);
+  border: 1px solid var(--line); border-radius: 2px; cursor: pointer; flex: 0 0 auto;
+}
+.fl-new button:hover:not(:disabled), .fl-actions button:hover:not(:disabled),
+.fl-row button:hover:not(:disabled), .fl-item button:hover:not(:disabled) {
+  color: var(--accent); border-color: var(--accent);
+}
+.fl-new button:disabled, .fl-actions button:disabled, .fl-row button:disabled,
+.fl-item button:disabled { color: var(--ink-muted); opacity: .6; cursor: default; }
+.fl-banner {
+  font-size: 12px; color: var(--accent); padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.fl-tree { flex: 1 1 auto; overflow: auto; min-height: 0; }
+.fl-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 4px 12px 4px 8px; font-size: 12px; cursor: pointer;
+  border-left: 2px solid transparent;
+}
+.fl-row:hover { background: var(--paper); }
+.fl-row.on { border-left-color: var(--accent); color: var(--accent); }
+.fl-row .fl-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fl-row .fl-count { color: var(--ink-muted); font-size: 11px; white-space: nowrap; }
+.fl-row.smart .fl-name { color: var(--ink-muted); }
+.fl-kind {
+  font-size: 10px; color: var(--ink-muted); border: 1px solid var(--line);
+  padding: 0 4px; border-radius: 2px; white-space: nowrap;
+}
+.fl-main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.fl-sub {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; font-weight: 700; background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.fl-sub .stat { font-weight: 400; font-size: 11px; color: var(--ink-muted); }
+.fl-actions {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 12px; border-bottom: 1px solid var(--line);
+}
+.fl-actions input {
+  font: inherit; font-size: 12px; color: var(--ink); background: var(--paper);
+  border: 1px solid var(--line); padding: 3px 6px; width: 18em; max-width: 50vw;
+}
+.fl-ask { font-size: 12px; color: var(--warn); padding: 6px 12px; overflow-wrap: anywhere; }
+.fl-bad { font-size: 12px; color: var(--drop); padding: 4px 12px; overflow-wrap: anywhere; }
+.fl-ok { color: var(--accent); }
+.fl-note { font-size: 12px; color: var(--ink-muted); padding: 10px 12px; }
+.fl-items {
+  flex: 1 1 auto; overflow: auto; min-height: 0; padding: 10px 12px;
+  display: flex; flex-wrap: wrap; align-content: flex-start; gap: 10px;
+}
+.fl-item {
+  width: 150px; display: flex; flex-direction: column; gap: 3px;
+  border: 1px solid var(--line); padding: 4px; background: var(--surface);
+}
+.fl-item.kept { border-color: var(--keep); }
+.fl-item.rejected { opacity: .6; }
+.fl-item img { width: 100%; height: 110px; object-fit: contain; background: var(--paper); }
+.fl-item-path {
+  font-size: 10px; color: var(--ink-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fl-item button { align-self: flex-start; }
+.fl-msg { font-size: 12px; color: var(--accent); padding: 6px 12px; overflow-wrap: anywhere; }
+.fl-help {
+  font-size: 11px; color: var(--ink-muted); padding: 8px 12px;
+  border-top: 1px solid var(--line); line-height: 1.7;
+}

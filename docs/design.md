@@ -382,6 +382,12 @@ CREATE TABLE folder (
 );
 CREATE INDEX ix_folder_parent ON folder(parent_id, position);
 
+-- **同じ親の中で名前は一意**（P2-1。§16.9 の G-2 (b)）。`UNIQUE(parent_id, name)` は
+-- **根（`parent_id IS NULL`）の重複を許す**（NULL は互いに等しくない）ので、`coalesce` の**式索引**にする。
+-- **`deleted_at IS NULL` の行だけ**を対象にする**部分索引**（論理削除したフォルダの名前は作り直せる）
+CREATE UNIQUE INDEX ux_folder_name
+  ON folder(coalesce(parent_id, ''), name) WHERE deleted_at IS NULL;
+
 -- 多対多。同じ画像を複数のフォルダに置ける
 CREATE TABLE folder_member (
   folder_id TEXT NOT NULL REFERENCES folder(id) ON DELETE CASCADE,
@@ -392,6 +398,11 @@ CREATE TABLE folder_member (
 );
 CREATE INDEX ix_folder_member_asset ON folder_member(asset_id);
 ```
+
+**`ux_folder_name` は式索引なので、列名では形を見られない**（`PRAGMA index_info` は式の列を
+`None` で返す）。`db._check_v7_shape()` は **`sqlite_master.sql` を空白を詰めて比べ**（列の並び・
+`coalesce`・`WHERE deleted_at IS NULL`・`UNIQUE` が 1 度に見える）、**式の列（`cid = -2`）も見る**
+（`ON folder(parent_id, name)` に化けると根の同名が通る）。**期待値は試験にリテラルで書く**。
 
 **v7 の形は、移行のあとに `db._check_v7_shape()` が「名前」ではなく「形」で見る**（P2-0 の監査 B-1）。
 `PRAGMA table_info` の**型・`NOT NULL`・既定・主キー**、`PRAGMA foreign_key_list` の **`ON DELETE CASCADE`**、

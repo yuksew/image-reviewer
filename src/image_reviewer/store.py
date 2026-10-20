@@ -38,6 +38,11 @@ SCHEMA_VERSION = db.SCHEMA_VERSION
 
 REVIEW_STATES = ("unreviewed", "kept", "rejected")
 
+#: 取り込みの出所（`asset.source`。設計 §5.1 の 5 語。**表の `CHECK` と同じ語彙**）。
+#: **P2-1 で `_asset_dict` が返す欄を `asset_meta.source` から `asset.source` に寄せた**
+#: （P2-0 の申し送り）。`asset_meta.source` は「来歴をどの経路で取ったか」で、別の意味。
+SOURCES = ("scan", "drop", "clipboard", "url", "watch")
+
 
 def normalize_path(path) -> str:
     """パスの鍵。大小文字・区切り・ジャンクションを揃える（点検 I1）。
@@ -296,7 +301,13 @@ class Store:
 
         **1 トランザクション**で、asset / asset_meta / asset_location /
         location_history のどこまで進んでも半端な状態を外に出さない。
+
+        **（P2-1）`source` は `asset.source` に書く**（`scan|drop|clipboard|url|watch`。§5.1）。
+        既に在る画像の `source` は**上書きしない**（最初に入った経路がその画像の出所）。
+        語彙の外は **`ValueError`**（表の `CHECK` に当てて 500 にしない）。
         """
+        if source not in SOURCES:
+            raise ValueError(f"source は {SOURCES} のいずれか: {source!r}")
         key = normalize_path(path)
         display = str(Path(path))
         now = db.now()
@@ -309,9 +320,11 @@ class Store:
             created = row is None
             if created:
                 asset_id = db.ulid()
+                # **（P2-1。P2-0 の申し送り）取り込みの出所は `asset.source`**（v7 の列）。
+                # `asset_meta.source` は「来歴をどの経路で取ったか」で、別の意味。
                 self._con.execute(
                     "INSERT INTO asset(id, sha256, kind, kind_source, width, height, format,"
-                    " first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    " source, first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (
                         asset_id,
                         sha256,
@@ -321,6 +334,7 @@ class Store:
                         width,
                         height,
                         fmt,
+                        source,
                         now,
                         now,
                     ),
@@ -552,7 +566,15 @@ class Store:
     def _asset_dict(row, locations: list[dict], meta_row) -> dict:
         meta = _parse_meta(meta_row["meta_json"]) if meta_row is not None else None
         note = meta_row["note"] if meta_row is not None else None
-        source = meta_row["source"] if meta_row is not None else "scan"
+        keys = row.keys()
+        # **（P2-1。P2-0 の申し送り）出所は `asset.source`**（v7 の列。`scan|drop|clipboard|url|watch`）。
+        # 前は `asset_meta.source`（来歴を取った経路。実データは全行 `'scan'`）を返していたので、
+        # 取り込みの 4 経路を作ると**どれも `'scan'` に見えた**。`asset_meta.source` は
+        # 来歴の出所として残す（`meta_json` の中身ではない）。
+        source = row["source"] if "source" in keys else (
+            meta_row["source"] if meta_row is not None else "scan")
+        source_url = row["source_url"] if "source_url" in keys else None
+        ref_tags = _parse_ref_tags(row["ref_tags"] if "ref_tags" in keys else None)
         return {
             "id": row["id"],
             "sha256": row["sha256"],
@@ -565,8 +587,8 @@ class Store:
             "format": row["format"],
             "source": source,
             # ここから下は JSON 版の形を保つための置き場。P5-0 では持たない列
-            "source_url": None,
-            "ref_tags": [],
+            "source_url": source_url,
+            "ref_tags": ref_tags,
             # P8-2（段 1 の論理削除。v6 の列）。**行は消さない**ので、ここは印をそのまま返す
             # （一覧の既定から外すのは `app.py` の側。`review.json` は外さない＝§6.3）
             "deleted_at": (row["deleted_at"] if "deleted_at" in row.keys() else None),
@@ -612,6 +634,20 @@ def _parse_meta(raw: str | None) -> dict | None:
     except ValueError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _parse_ref_tags(raw: str | None) -> list:
+    """`asset.ref_tags` は **JSON 配列の文字列**（§5.1）。読めなければ空の配列。
+
+    JSON 版の形（`ref_tags: []`）を保つ（`GET /api/assets` の 1 枚の形）。
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def _count(items: list, key) -> dict:

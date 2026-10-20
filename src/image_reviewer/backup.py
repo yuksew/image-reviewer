@@ -635,6 +635,13 @@ def guidance_for(mode: str, reason: str | None, *, backup_dir=None) -> str | Non
     if reason == "unreadable":
         return ("DB を開けません（ファイルが壊れています）。読み取り専用で起動しています。"
                 "バックアップから戻してください: " + RESTORE_HINT + where)
+    if reason == "schema_conflict":
+        # **（P2-1。P2-0 の監査 C-2）** 版を上げる前に見つけた「名前の取り合い」。
+        # **1 バイトも書かずに**読み取り専用で起動している（半端な DB を残さない）
+        return ("DB に、このアプリが使う名前（フォルダの表と索引）と違う形の物が入っています。"
+                "壊さないように、読み取り専用で起動しています。"
+                "バックアップから戻すか、その名前の物を退けてから起動し直してください: "
+                + RESTORE_HINT + where)
     return ("DB が壊れています。読み取り専用で起動しています（書き込みの口は 503）。"
             "バックアップから戻してください: " + RESTORE_HINT + where)
 
@@ -661,6 +668,8 @@ def inspect_db(data_dir, *, expected_version: int | None = None,
         "quick_check": None, "quick_check_ok": None, "quick_check_rows": [],
         "error": None, "schema_version": None, "expected_version": expected,
         "read_only": False, "guidance": None, "checked_at": db.now(),
+        #: **（P2-1）** v7 の名前の取り合い（`reason=schema_conflict` のときだけ埋まる）
+        "conflicts": None,
     }
     if not path.exists():
         out["reason"] = "fresh"                      # 新規。migrate が作る
@@ -702,6 +711,23 @@ def inspect_db(data_dir, *, expected_version: int | None = None,
             return _finish(out, "read_only", "malformed", backup_dir=backup_dir)
         if version is not None and version > expected:
             return _finish(out, "read_only", "version_ahead", backup_dir=backup_dir)
+        # **（P2-1。P2-0 の監査 C-2）名前の取り合いを、書く前に見る。**
+        #
+        # v7 の名前（索引 `ix_folder_parent` / `ix_folder_member_asset` / `ux_folder_name`、
+        # 表 `folder` / `folder_member`）を**別の形の物が先に使っている**と、移行は
+        # `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` が黙って効かないまま進み、
+        # 最後の `_check_v7_shape` で落ちる。**そのとき版は 6 のまま・v7 の物が半分在る** DB と、
+        # 取ってしまった控えが残る（`docs/p2-0-audit-triage.md` §5-1）。
+        # ここは `mode=ro` の接続で**読むだけ**（`db.v7_conflicts`）なので、1 バイトも書かない。
+        # 違えば**読み取り専用で起動**して、人はログと `health/db` の案内で気づける。
+        try:
+            conflicts = db.v7_conflicts(con)
+        except sqlite3.DatabaseError as exc:          # 壊れている側は上で判定済み
+            conflicts = []
+            out["error"] = out["error"] or str(exc)
+        if conflicts:
+            out["conflicts"] = conflicts
+            return _finish(out, "read_only", "schema_conflict", backup_dir=backup_dir)
         return _finish(out, "ok", "ok", backup_dir=backup_dir)
     finally:
         con.close()

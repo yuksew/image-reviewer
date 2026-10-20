@@ -9,10 +9,11 @@
 <body>
 <div id="app">
   <!-- **（E-1・G-8）上部の注意書きは 2 文**。1 文は 40 字まで（§6.1 の規約 5）。
+       **（P2-1）「フォルダ」を足すと 1 文が 46 字になったので 3 文に分けた**（規約 5 の 40 字が正）。
        **工程の番号（P7）と設計書の所在を画面に出さない**（規約 4）。廃止の記録は README に置く。
        **ソースの途中で改行しない**（改行が空白になって文の途中に隙間が出る。規約 6） -->
   <div class="proto">
-    <strong>プロトタイプです。</strong>閲覧・判断・比較・要求・注記・タグ・重複の整理・削除・バックアップが入っています。
+    <strong>プロトタイプです。</strong>閲覧・判断・比較・要求・注記・タグが入っています。フォルダ・重複の整理・削除・バックアップも入っています。
   </div>
 
   <div class="topbar">
@@ -41,6 +42,10 @@
          `#/duplicates` への入口が画面に 1 つも無く、URL を打たないと入れなかった。
          **出る条件は無い**（いつでも押せる）。押すと道が変わるだけ（`GET` も `POST` もしない） -->
     <a class="back set-open" id="stat-duplicates" href="#/duplicates">重複の整理</a>
+    <!-- P2-1: **フォルダ（カタログ）の常設の入口**（`frontend-design.md` §3・§4.5.1・§11）。
+         バッジの列（要求・ジョブ・最近の削除）の **4 つ目は作らない**（点検 B5）。
+         **押すと道が変わるだけ**（`GET` も `POST` もしない） -->
+    <a class="back set-open" id="stat-folders" href="#/folders">フォルダ</a>
     <!-- P8-5: 設定（`#/settings`。バックアップの詳細とフォルダの段 3 の許可） -->
     <a class="back set-open" id="stat-settings" href="#/settings">設定</a>
     <button id="btn-provenance" title="来歴のある画像だけ / ない画像だけ / すべて を切り替える">来歴: すべて</button>
@@ -89,6 +94,9 @@
     <!-- **（C-5・C-22・G-9）** 削除の確認へ渡す入口。**「回す」を使わない**。
          0 枚のときは枚数を書かない（`renderDeleteEntry` が組み立てる） -->
     <button id="btn-delete" title="Ctrl / Shift + クリックで選んだ画像を削除の確認へ渡す">選んだ画像を削除する…</button>
+    <!-- P2-1: **フォルダへ入れる入口**（`frontend-design.md` §3・§11）。**ここでは入れない**＝
+         `#/folders?add=` へ渡すだけ（入れる先を選んでから入れる）。0 枚のときは枚数を書かない（C-22） -->
+    <button id="btn-folder" title="Ctrl / Shift + クリックで選んだ画像を、入れるフォルダを選んでから入れます">選んだ画像をフォルダに入れる…</button>
     <span id="bar-hint">クリックで来歴を表示 / Ctrl + クリックで比較に選ぶ</span>
   </div>
 
@@ -282,6 +290,37 @@
          「置き場」→「フォルダ」、「実体」→「ファイル」、「人の意思表示」→「人の合図」 -->
     <div class="st-help">
       <b>バックアップ</b>は 30 秒ごとに、今日の分がまだなら取ります。段 3 の許可は、そのフォルダのファイルを消してよいという<b>人の合図</b>です。許可の無いフォルダでは段 1・2 だけが使えます。
+    </div>
+  </div>
+
+  <!-- フォルダ（カタログ。P2-1）。`#/folders?folder=<id>&add=<id,id>`。
+       **左に木・右に中身**。作る・名前を変える・消す・画像を入れる/外す。
+       **実ファイルは動かさない**（`folder_member` の行だけ。`design.md` §10.1） -->
+  <div id="folders">
+    <div class="topbar">
+      <a class="back" href="#" id="fl-back">一覧へ</a>
+      <span class="name">フォルダ</span>
+      <span class="stat" id="fl-brief">—</span>
+      <span class="spacer"></span>
+      <button id="fl-again" title="サーバから読み直す">再読込する</button>
+    </div>
+    <div class="fl-body">
+      <div class="fl-side">
+        <div class="fl-new">
+          <input id="fl-new-name" type="text" placeholder="新しいフォルダ名" autocomplete="off" maxlength="120">
+          <button id="fl-create" title="選んでいるフォルダの下に作ります（選んでいなければ一番上）">作る</button>
+        </div>
+        <div id="fl-add-banner"></div>
+        <div id="fl-tree" class="fl-tree"></div>
+      </div>
+      <div class="fl-main">
+        <div id="fl-head"></div>
+        <div id="fl-items" class="fl-items"></div>
+      </div>
+    </div>
+    <div class="fl-msg" id="fl-msg"></div>
+    <div class="fl-help">
+      フォルダはアプリの中の分類で、ファイルは動きません。画像は複数のフォルダに入れられます。
     </div>
   </div>
 

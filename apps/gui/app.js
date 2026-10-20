@@ -18,6 +18,9 @@ import { hidePending, renderDeleteEntry, showPending, toDelete, wireDeleteEntry,
          wirePending } from './pending.js';
 // P8-5: 設定（`#/settings`。バックアップの詳細とフォルダの段 3 の許可）
 import { hideSettings, showSettings, wireSettings } from './settings.js';
+// P2-1: フォルダ（カタログ。`#/folders`）
+import { hideFolders, renderFolderEntry, showFolders, wireFolderEntry,
+         wireFolders } from './folders.js';
 // P9 の監査 C-2: 画面に出す「枚」の規則は 1 か所（`counts.js`）
 import { briefText, fmtCount, liveTotal, provenanceCounts } from './counts.js';
 // ワーディング監査 G-12 / W-3: 絞り込みの軸と 0 枚のときの文は 1 か所（`filters.js`）
@@ -416,6 +419,8 @@ function renderPickBar() {
   $('btn-compare').disabled = state.picked.length < 2;
   // P8-3: **削除の入口**（下部バー。監査 C-1）。1 枚も選んでいなければ押せない
   renderDeleteEntry($('btn-delete'), state.picked.length);
+  // P2-1: **フォルダへ入れる入口**（下部バー）。同じく 0 枚なら押せない
+  renderFolderEntry($('btn-folder'), state.picked.length);
 }
 
 function openCompare() {
@@ -427,7 +432,7 @@ function openCompare() {
 // ---- 道（ハッシュ）----
 
 // `#/compare` / `#/requests` / `#/group/<id>` / `#/asset/<id>` / `#/tags` / `#/jobs` /
-// `#/duplicates` / `#/pending-deletes` / `#/settings` の 9 つ。
+// `#/duplicates` / `#/pending-deletes` / `#/settings` / `#/folders` の 10 個。
 // **要求が来ても画面を切り替えない**（`#/requests` を開いたときだけ出す。§5.1）
 function route() {
   const hash = location.hash || '';
@@ -447,6 +452,8 @@ function route() {
   const deleting = hash.startsWith('#/pending-deletes');
   // P8-5: 設定（`frontend-design.md` §3 の 10。バックアップと段 3 の許可）
   const setting = hash.startsWith('#/settings');
+  // P2-1: フォルダ（`frontend-design.md` §3 の 14。カタログの木と中身）
+  const foldering = hash.startsWith('#/folders');
   document.body.classList.toggle('comparing', comparing);
   document.body.classList.toggle('requests', requesting);
   document.body.classList.toggle('grouping', grouping);
@@ -458,6 +465,7 @@ function route() {
     hideDuplicates();
     hidePending();
     hideSettings();
+    hideFolders();
     showCompare(queryOf(hash));
     return;
   }
@@ -469,6 +477,7 @@ function route() {
     hideDuplicates();
     hidePending();
     hideSettings();
+    hideFolders();
     showRequests(queryOf(hash));
     return;
   }
@@ -479,6 +488,7 @@ function route() {
     hideDuplicates();
     hidePending();
     hideSettings();
+    hideFolders();
     showGroup(pathOf(hash, '#/group/'));
     return;
   }
@@ -489,6 +499,7 @@ function route() {
     hideDuplicates();
     hidePending();
     hideSettings();
+    hideFolders();
     showTags(queryOf(hash)).catch(() => {});
     return;
   }
@@ -499,6 +510,7 @@ function route() {
     hideDuplicates();
     hidePending();
     hideSettings();
+    hideFolders();
     showJobs().catch(() => {});
     return;
   }
@@ -510,6 +522,7 @@ function route() {
     hideJobs();
     hidePending();
     hideSettings();
+    hideFolders();
     showDuplicates(queryOf(hash)).catch(() => {});
     return;
   }
@@ -521,6 +534,7 @@ function route() {
     hideJobs();
     hideDuplicates();
     hideSettings();
+    hideFolders();
     showPending(queryOf(hash)).catch(() => {});
     return;
   }
@@ -532,7 +546,20 @@ function route() {
     hideJobs();
     hideDuplicates();
     hidePending();
+    hideFolders();
     showSettings().catch(() => {});
+    return;
+  }
+  // P2-1: フォルダ（`#/folders?folder=<id>&add=<id,id>`）。**画像は消さない・動かさない**
+  if (foldering) {
+    hideRequests();
+    hideGroup();
+    hideTags();
+    hideJobs();
+    hideDuplicates();
+    hidePending();
+    hideSettings();
+    showFolders(queryOf(hash)).catch(() => {});
     return;
   }
   hideRequests();
@@ -542,6 +569,7 @@ function route() {
   hideDuplicates();
   hidePending();
   hideSettings();
+  hideFolders();
   // 拡大（`#/asset/<id>`。まとまりレビューの「選んだ 1 枚を拡大で開く」の行き先）。
   // **注記の入口**（点検 C5）: ここで印を付けてから決める。
   // `?group=<id>` が付いていれば、そのまとまりの注記として記録する（要求の応答に出る）
@@ -592,6 +620,8 @@ $('btn-capture').addEventListener('click', capture);
 $('btn-compare').addEventListener('click', openCompare);
 // P8-3: 下部バーの「選んだ N 枚を削除する…」（**渡すだけ**。監査 C-1。C-5 で「回す」をやめた）
 wireDeleteEntry($('btn-delete'), () => state.picked);
+// P2-1: 下部バーの「選んだ N 枚をフォルダに入れる…」（**渡すだけ**＝`#/folders?add=`）
+wireFolderEntry($('btn-folder'), () => state.picked);
 window.addEventListener('hashchange', route);
 
 wireCompare();
@@ -605,6 +635,8 @@ wireDuplicates();
 wirePending();
 // P8-5: 設定（バックアップの詳細と段 3 の許可）
 wireSettings();
+// P2-1: フォルダ（カタログ。`#/folders`）
+wireFolders();
 // 戻る（`← 一覧`）はハッシュを消すだけ（`#/duplicates` / `#/pending-deletes` から）
 for (const [id, back] of [['dup-back', ''], ['pd-back', '']]) {
   const el = $(id);

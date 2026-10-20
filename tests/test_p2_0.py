@@ -243,6 +243,10 @@ def test_the_catalog_shape_is_the_design_not_the_sketch(tmp_path: Path):
     別表ではなく `folder.kind='smart'` の行**（条件は `smart_query`）と決めている。
     ここを取り違えると、P2-1 が設計 §6.1 の口（`POST /api/folders {parent_id,name,kind}`）を
     作れなくなる。**設計の字を固定する**ための試験。
+
+    **（P2-1 で 1 か所だけ直した）** 名前の一意は設計 §16.9 の G-2 (b) で
+    **「同じ親の中で一意」**（部分一意索引 `ux_folder_name`）に決まった。ここは
+    **別の親の下の同名は通る**ことと、**同じ親の下の同名は表が拒む**ことを固定する。
     """
     con = db.open_db(tmp_path)
     try:
@@ -257,11 +261,15 @@ def test_the_catalog_shape_is_the_design_not_the_sketch(tmp_path: Path):
                     " VALUES ('f2', 'f1', '気に入った', 'manual', 1, 't')")
         con.execute("INSERT INTO folder(id, name, kind, smart_query, created_at)"
                     " VALUES ('f3', '1girl だけ', 'smart', '{\"all\": []}', 't')")
-        # **名前は一意ではない**（設計 §5.3 は UNIQUE を要求していない。親が違えば同名は普通）
-        con.execute("INSERT INTO folder(id, name, kind, created_at)"
-                    " VALUES ('f4', '2026-10 生成', 'manual', 't')")
+        # **名前は「同じ親の中で一意」**（P2-1 で部分一意索引 `ux_folder_name` を足した。
+        # 設計 §16.9 の G-2 (b)。**別の親の下の同名は普通**にある）
+        con.execute("INSERT INTO folder(id, parent_id, name, kind, created_at)"
+                    " VALUES ('f4', 'f2', '2026-10 生成', 'manual', 't')")
         assert con.execute("SELECT count(*) FROM folder WHERE name = '2026-10 生成'"
                            ).fetchone()[0] == 2
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO folder(id, parent_id, name, kind, created_at)"
+                        " VALUES ('f5', 'f2', '2026-10 生成', 'manual', 't')")
     finally:
         con.close()
 
@@ -697,7 +705,8 @@ def test_get_endpoints_write_nothing_on_a_v7_database(tmp_path: Path, monkeypatc
 
     P2-0 は口を足さないので、既存の GET が v7 の DB でも書かないことを確かめる
     （**ファイルの中身と全表の中身**を前後で比べる。P8-4 の監査 F(e) と同じ物差し）。
-    ついでに **`/api/folders` は 404**（P2-1 で作る口。この段では作らない）。
+    **（P2-1）`GET /api/folders` は 200 になった**（404 の固定を外した）。その前後でも
+    1 バイトも書かないことは `tests/test_p2_1.py` が単独で見る。
     """
     from image_reviewer.app import create_app
 
@@ -730,8 +739,8 @@ def test_get_endpoints_write_nothing_on_a_v7_database(tmp_path: Path, monkeypatc
                      "/api/review.json"):
             resp = client.get(path, headers=HUMAN)
             assert resp.status_code < 500, f"{path}: {resp.status_code} {resp.text[:200]}"
-        # v7 の口（P2-1）はまだ無い
-        assert client.get("/api/folders", headers=HUMAN).status_code == 404
+        # v7 の口（P2-1）も GET は書かない（P2-0 の時点では 404 だった口）
+        assert client.get("/api/folders", headers=HUMAN).status_code == 200
         with app.state.store.locked() as con:
             assert _rows_digest(con) == before_rows, "GET が行の中身を変えた"
         assert _files(data) == before_files, "GET がファイルの中身を変えた"

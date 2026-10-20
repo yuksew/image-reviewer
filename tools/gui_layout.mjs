@@ -13,6 +13,7 @@
 //   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen pending --ids a,b  # 削除の確認つき
 //   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen library          # 下部バーの削除の入口（P8-3）
 //   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen settings         # 設定（バックアップと段 3 の印。P8-5）
+//   node tools/gui_layout.mjs --base http://127.0.0.1:8791 --screen folders          # フォルダ（カタログ。P2-1）
 //   オプション: --viewport 1200x800 / --dump / --rows 2 / --min-used 0.6 / --chrome <path> / --help
 //
 // なぜ要るか（監査 B1・実行込みのやり直し）:
@@ -43,6 +44,10 @@
 //     API の `stage` と `closeable` から期待する**（画面のボタンの数から作らない。監査 B-2 で
 //     **段 1 の行のボタンを消しても 4 幅 ok** だった）
 //     （`--ids a,b` を渡すと削除の確認も押す。POST は差し替えた `fetch` が飲む）
+//   - フォルダ（`--screen folders`。P2-1）: 木の行と件数／横に溢れない／**作ると選んだフォルダの
+//     操作がスクロール無しで見える**／**消すのは名前を打ち込むまで押せない**（本物の入力で）／
+//     **作るは POST 1 回**／**`add=` のときだけ「ここに入れる」が出て、押すと POST 1 回**
+//     （POST は差し替えた `fetch` が飲む）
 //   - 設定（`--screen settings`。P8-5）: 横に溢れない／**最後の失敗（`last_error`）の全文が
 //     スクロール無しで見える**／置き場ごとの「段 3 を許す」印／**押すと POST が 1 回だけ**
 //     （印の付け外し・「取り直す」・置き場を変える。**二度押しでも 1 回**＝C-1）／
@@ -76,7 +81,7 @@ const MIN_USED = Number(argOf('min-used', '0'));    // 舞台の使われ方の�
 // 日付と時刻が 2 行に割れたのは 1024 だった）
 const VIEWPORTS = [[1400, 900], [1024, 700], [1200, 800], [1920, 1080]];
 const ONLY = argOf('viewport', null);       // 例: --viewport 1200x800
-const SCREEN = argOf('screen', 'compare');  // compare | requests | tags | jobs
+const SCREEN = argOf('screen', 'compare');  // compare | requests | tags | jobs | folders
                                             // | duplicates / pending / library（P8-3）| group（P6-1b）
                                             // | settings（P8-5）
 const GROUP = argOf('group', null);         // --screen group のまとまり id
@@ -107,6 +112,7 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   node tools/gui_layout.mjs --base <url> --screen pending --ids a,b    最近の削除（削除の確認つき）
   node tools/gui_layout.mjs --base <url> --screen library              下部バーの削除の入口（P8-3）
   node tools/gui_layout.mjs --base <url> --screen settings             設定（バックアップと段 3 の印。P8-5）
+  node tools/gui_layout.mjs --base <url> --screen folders              フォルダ（カタログ。P2-1）
 オプション:
   --viewport 1200x800   1 つの窓だけ見る
   --rows 2              行数を合否に使う（既定は窓次第で見ない）
@@ -481,7 +487,11 @@ const MEASURE_LIBRARY = `(() => {
   const btn = document.getElementById('btn-delete');
   const bar = document.querySelector('.bottombar');
   const frames = document.querySelectorAll('#rows .frame');
-  const de = document.documentElement;
+  // **documentElement は移動の途中で null になる**（実測: この画面で
+  // Cannot read properties of null (reading scrollWidth)）。0 に落として計り続ける
+  const de = document.documentElement || {};
+  const deWidth = Number(de.scrollWidth) || 0;
+  const deClient = Number(de.clientWidth) || 0;
   return {
     frames: frames.length,
     barVisible: (() => {
@@ -497,7 +507,7 @@ const MEASURE_LIBRARY = `(() => {
       return !btn.hidden && r.width > 0 && r.height > 0 && r.top >= 0 && r.top < innerHeight;
     })(),
     picked: document.querySelectorAll('#rows .frame.picked').length,
-    pageOverflow: Math.max(0, de.scrollWidth - de.clientWidth),
+    pageOverflow: Math.max(0, deWidth - deClient),
     // **（P8-5）上部バーの印**: バックアップの失敗（last_error）と走査中（§4.5.1）
     backupBadge: (() => {
       const el = document.getElementById('stat-backup');
@@ -721,7 +731,9 @@ const MEASURE_ENTRIES = `(() => {
       inTopbar: !!br && r.top >= br.top - 1 && r.bottom <= br.bottom + 1,
     };
   };
-  return { duplicates: read('stat-duplicates'), deletes: read('stat-deletes') };
+  return { duplicates: read('stat-duplicates'), deletes: read('stat-deletes'),
+           // **（P2-1）フォルダの常設の入口**（frontend-design.md §3・§4.5.1）
+           folders: read('stat-folders') };
 })()`;
 
 // 「重複の整理」を押す（**常設の入口**）。押すと `#/duplicates` へ行き、重複の整理の画面が出る
@@ -747,6 +759,33 @@ const PRESS_LIBRARY_DELETES = `(async () => {
   const root = document.getElementById('pending');
   out.shown = !!root && root.getBoundingClientRect().height > 0;
   out.bodyClass = document.body.className;
+  return out;
+})()`;
+
+// **（P2-1）「フォルダ」を押す**（常設の入口）。押すと `#/folders` へ行き、画面が出る。
+// **押すだけで `GET` しか出さない**ことも数える（入口は道を変えるだけ。`frontend-design.md` §4.5.1）。
+const PRESS_LIBRARY_FOLDERS = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = { pressed: false, hash: '', shown: false, bodyClass: '', writes: 0, rows: 0 };
+  const real = window.fetch;
+  const writes = [];
+  window.fetch = (url, opt = {}) => {
+    const method = (opt.method || 'GET').toUpperCase();
+    if (method !== 'GET') writes.push(method + ' ' + String(url));
+    return real(url, opt);
+  };
+  try {
+    const link = document.getElementById('stat-folders');
+    if (link) { link.click(); out.pressed = true; await wait(1600); }
+    out.hash = location.hash;
+    const root = document.getElementById('folders');
+    out.shown = !!root && root.getBoundingClientRect().height > 0;
+    out.rows = document.querySelectorAll('#fl-tree .fl-row').length;
+    out.bodyClass = document.body.className;
+  } finally {
+    window.fetch = real;
+  }
+  out.writes = writes.length;
   return out;
 })()`;
 
@@ -986,6 +1025,168 @@ const PRESS_DECIDE = `(async () => {
   await new Promise((r) => setTimeout(r, 400));
   window.fetch = real;
   return { pressed: true, posts: window.__posts };
+})()`;
+
+
+// ---- P2-1: フォルダ（カタログ。`#/folders`）----
+//
+// 設計: docs/frontend-design.md §3（画面の一覧 14）・§6（文言）・§11（フォルダの画面）。
+// 見るもの: 木の行が出る／件数が出る／横に溢れない／**上部バーの入口がスクロール無しで見える**／
+// **フォルダを選ぶと中身と操作が出る**（`名前を変える` と `フォルダを消す…`）／
+// **消すのは名前を打ち込むまで押せない**／**作るは POST 1 回**（POST は差し替えた `fetch` が飲む）。
+// 見ないもの: 見た目（字の大きさ・色）。それは人の目で見る。
+const MEASURE_FOLDERS = `(() => {
+  const rows = [...document.querySelectorAll('#fl-tree .fl-row')];
+  const side = document.querySelector('#folders .fl-side');
+  const items = [...document.querySelectorAll('#fl-items .fl-item')];
+  const note = document.querySelector('#fl-items .fl-note');
+  const head = document.getElementById('fl-head');
+  // document.documentElement は移動の途中で null になることがある（実測: この画面で
+  // Cannot read properties of null (reading scrollWidth)）。0 に落として計り続ける
+  const de = document.documentElement || {};
+  const deWidth = Number(de.scrollWidth) || 0;
+  const deClient = Number(de.clientWidth) || 0;
+  const first = rows[0] || null;
+  const inView = (el) => {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.top >= 0 && r.top < innerHeight
+      && r.right <= innerWidth + 1;
+  };
+  return {
+    rows: rows.length,
+    names: rows.slice(0, 5).map((r) => (r.querySelector('.fl-name') || {}).textContent || ''),
+    counts: rows.map((r) => (r.querySelector('.fl-count') || {}).textContent || ''),
+    items: items.length,
+    note: (note || {}).textContent || '',
+    brief: (document.getElementById('fl-brief') || {}).textContent || '',
+    headText: (head || {}).textContent || '',
+    headVisible: inView(head),
+    createVisible: inView(document.getElementById('fl-create')),
+    entryVisible: inView(document.getElementById('stat-folders')),
+    rowVisible: inView(first),
+    actionsVisible: inView(document.querySelector('#fl-head .fl-delete')),
+    hasPut: document.querySelectorAll('#fl-tree .fl-put').length,
+    addBanner: (document.getElementById('fl-add-banner') || {}).textContent || '',
+    sideOverflow: side ? Math.max(0, side.scrollWidth - side.clientWidth) : 0,
+    pageOverflow: Math.max(0, deWidth - deClient),
+    topbarOverflow: (() => {
+      const bar = document.querySelector('#app > .topbar');
+      return bar ? Math.max(0, bar.scrollWidth - bar.clientWidth) : 0;
+    })(),
+  };
+})()`;
+
+// **押す検査**（フォルダの画面）: 選ぶ → 名前を変える（やめる）→ 消す（名前を打ち込むまで押せない）
+// → 作る（POST 1 回。**POST は差し替えた `fetch` が飲む**のでサーバは書かない）。
+const PRESS_FOLDERS = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = { rows: 0, hash: '', headActions: false, renameInput: false, renameCancelled: false,
+                askShown: false, goDisabled: true, goEnabledAfterTyping: false,
+                deleteCancelled: false, createPosts: 0, createMsg: '', createBody: null };
+  const real = window.fetch;
+  const posts = [];
+  const json = (body) => new Response(JSON.stringify(body),
+    { status: 200, headers: { 'Content-Type': 'application/json' } });
+  window.fetch = (url, opt = {}) => {
+    const method = (opt.method || 'GET').toUpperCase();
+    if (method === 'GET') return real(url, opt);
+    const u = String(url);
+    posts.push({ url: u, method, body: opt.body || null });
+    if (method === 'POST' && u === '/api/folders') {
+      let name = '';
+      try { name = JSON.parse(opt.body || '{}').name || ''; } catch (error) { name = ''; }
+      return Promise.resolve(json({ created: true, id: 'gui-folder', name: name }));
+    }
+    if (method === 'PATCH') return Promise.resolve(json({ updated: true }));
+    if (method === 'DELETE') return Promise.resolve(json({ deleted: true, purged: false }));
+    return Promise.resolve(json({ folder_id: 'gui', added: [], already: [], count: 0 }));
+  };
+  try {
+    // 木の最初の行を押す（選択。GET だけ）
+    const row = document.querySelector('#fl-tree .fl-row');
+    if (row) { row.click(); await wait(900); }
+    out.hash = location.hash;
+    out.headActions = !!document.querySelector('#fl-head .fl-rename')
+      && !!document.querySelector('#fl-head .fl-delete');
+    // 名前を変える → 入力が出る → やめる
+    const rename = document.querySelector('#fl-head .fl-rename');
+    if (rename) { rename.click(); await wait(200);
+      out.renameInput = !!document.querySelector('#fl-rename-name');
+      const cancel = document.querySelector('#fl-rename-cancel');
+      if (cancel) { cancel.click(); await wait(200); }
+      out.renameCancelled = !document.querySelector('#fl-rename-name');
+    }
+    // 消す → 確認が出る → 名前を打ち込むまで押せない → やめる
+    const del = document.querySelector('#fl-head .fl-delete');
+    if (del) {
+      del.click();
+      await wait(250);
+      const ask = document.querySelector('#fl-head .fl-ask');
+      out.askShown = !!ask && (ask.textContent || '').includes('画像は消えません');
+      const go = document.querySelector('#fl-del-go');
+      out.goDisabled = !!go && go.disabled === true;
+      const name = (document.querySelector('#fl-head .fl-sub') || {}).textContent || '';
+      const typed = name.replace(/\\s*\\d+\\s*枚\\s*$/, '').trim();
+      const input = document.querySelector('#fl-del-name');
+      if (input && typed) {
+        input.value = typed;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        await wait(150);
+        const now = document.querySelector('#fl-del-go');
+        out.goEnabledAfterTyping = !!now && now.disabled === false;
+      }
+      const cancel = document.querySelector('#fl-del-cancel');
+      if (cancel) { cancel.click(); await wait(200); }
+      out.deleteCancelled = !document.querySelector('#fl-del-name');
+    }
+    // 作る（1 回の POST）
+    const input = document.getElementById('fl-new-name');
+    if (input) {
+      input.value = '共通の確認用';
+      const make = document.getElementById('fl-create');
+      if (make) { make.click(); await wait(700); }
+      const made = posts.filter((p) => p.method === 'POST' && p.url === '/api/folders');
+      out.createPosts = made.length;
+      out.createBody = made.length ? JSON.parse(String(made[0].body || '{}')) : null;
+      out.createMsg = (document.getElementById('fl-msg') || {}).textContent || '';
+    }
+  } finally {
+    window.fetch = real;
+  }
+  out.posts = posts.length;
+  return out;
+})()`;
+
+// **`add=` の道**（ライブラリで選んだ画像を、フォルダを選んで入れる）。
+// **ここでは入れない**（画面が `#/folders?add=` で受けて、`ここに入れる` を押したときに 1 回だけ送る）。
+const PRESS_FOLDERS_ADD = (folderId, assetId) => `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = { banner: '', puts: 0, posts: 0, body: null, hash: '' };
+  location.hash = '#/folders?add=${assetId}';
+  await wait(1500);
+  out.banner = (document.getElementById('fl-add-banner') || {}).textContent || '';
+  out.puts = document.querySelectorAll('#fl-tree .fl-put').length;
+  const real = window.fetch;
+  const posts = [];
+  window.fetch = (url, opt = {}) => {
+    const method = (opt.method || 'GET').toUpperCase();
+    if (method === 'GET') return real(url, opt);
+    posts.push({ url: String(url), method, body: opt.body || null });
+    return Promise.resolve(new Response(JSON.stringify({
+      folder_id: '${folderId}', added: ['${assetId}'], already: [], count: 1,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+  };
+  try {
+    const put = document.querySelector('#fl-tree .fl-row[data-id="${folderId}"] .fl-put');
+    if (put) { put.click(); await wait(900); }
+  } finally {
+    window.fetch = real;
+  }
+  out.posts = posts.length;
+  out.body = posts.length ? JSON.parse(String(posts[0].body || '{}')) : null;
+  out.hash = location.hash;
+  return out;
 })()`;
 
 // どこがはみ出しているかを見るための詳細（`--dump`）
@@ -1780,7 +1981,8 @@ try {
       await send('Page.navigate', { url: `${BASE}/#/` });
       let got = null;
       for (let i = 0; i < 60; i++) {
-        got = await evaluate(MEASURE_LIBRARY);
+        // **移動の途中の実行文脈では式が落ちる**（documentElement が null）。その回は飛ばす
+        try { got = await evaluate(MEASURE_LIBRARY); } catch (error) { got = null; }
         if (got && got.frames > 0) break;
         await sleep(250);
       }
@@ -1884,6 +2086,33 @@ try {
         }
         if (toDel && toDel.pressed) bad.push('0 件なのに「最近の削除」を押せてしまう');
       }
+      // ---- P2-1: 上部バーの「フォルダ」の入口 ----
+      // **常設**（出る条件は無い）。**バッジの列（要求・ジョブ・最近の削除）の 4 つ目ではない**
+      // （点検 B5。`frontend-design.md` §4.5.1）。**スクロール無しで見え**、押すと画面が出て、
+      // **入口では 1 つも書かない**（道が変わるだけ）ことを押して確かめる。
+      await send('Page.navigate', { url: 'about:blank' });
+      await sleep(200);
+      await send('Page.navigate', { url: `${BASE}/#/` });
+      await sleep(1200);
+      const flEntry = (await evaluate(MEASURE_ENTRIES) || {}).folders;
+      if (!flEntry) bad.push('上部バーに「フォルダ」の入口がある');
+      else {
+        if (flEntry.href !== '#/folders') bad.push(`フォルダの行き先（${flEntry.href}）`);
+        if (flEntry.text !== 'フォルダ') bad.push(`フォルダの文言（${flEntry.text}）`);
+        if (flEntry.hidden) bad.push('フォルダの入口は常設（隠さない）');
+        if (!flEntry.visible) bad.push('フォルダの入口がスクロール無しで見える');
+        if (!flEntry.inTopbar) bad.push('フォルダの入口が上部バーの中にある');
+      }
+      const toFolders = await evaluate(PRESS_LIBRARY_FOLDERS);
+      if (!toFolders || !toFolders.pressed) bad.push('「フォルダ」を押せない');
+      else {
+        if (!String(toFolders.hash).startsWith('#/folders')) {
+          bad.push(`フォルダの道（${toFolders.hash}）`);
+        }
+        if (!toFolders.shown) bad.push(`フォルダの画面が出る（${toFolders.bodyClass}）`);
+        if (toFolders.rows <= 0) bad.push('フォルダの画面に木が出る');
+        if (toFolders.writes !== 0) bad.push(`入口では書かない（${toFolders.writes} 回）`);
+      }
       if (bad.length) failures++;
       console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} ライブラリ: `
         + `frames=${got.frames} 下部バー=${got.barVisible} 入口=${got.buttonVisible} `
@@ -1897,7 +2126,138 @@ try {
         + `押す=${JSON.stringify((toDup || {}).hash)} 画面=${(toDup || {}).shown} `
         + `削除の入口=${JSON.stringify((delEntryNow || {}).text)} visible=${(delEntryNow || {}).visible} `
         + `押す=${JSON.stringify((toDel || {}).hash)} 画面=${(toDel || {}).shown} `
+        + `フォルダの入口=${JSON.stringify((flEntry || {}).text)} visible=${(flEntry || {}).visible} `
+        + `押す=${JSON.stringify((toFolders || {}).hash)} 画面=${(toFolders || {}).shown} `
         + `(API の行数=${wantDeletes})`
+        + (bad.length ? `  ← ${bad.join(', ')}` : ''));
+    }
+    ws.close();
+    console.log(failures ? `${failures} 件 NG` : 'すべて ok');
+    process.exit(failures ? 1 : 0);
+  }
+
+
+  // フォルダ（カタログ。`#/folders`。P2-1 / `frontend-design.md` §3 の 14・§11）
+  //
+  // 見るもの: 木の行が出る／**件数**が出る／横に溢れない／**作る・選んだフォルダの操作が
+  // スクロール無しで見える**／**消すのは名前を打ち込むまで押せない**（本物の入力で確かめる）／
+  // **作るは POST 1 回**／**`add=` のときだけ「ここに入れる」が出て、押すと POST 1 回**。
+  // POST は差し替えた `fetch` が飲むので、**サーバのデータは書かない**。
+  if (SCREEN === 'folders') {
+    // 期待値は API から引く（木の最初のフォルダと、その中身の 1 枚）
+    let wantFolders = null;
+    try {
+      wantFolders = await (await fetch(`${BASE}/api/folders`)).json();
+    } catch (error) {
+      console.log(`注意: API からフォルダを取れませんでした: ${error.message}`);
+    }
+    const allFolders = [];
+    const walk = (items, depth = 0) => {
+      for (const node of items || []) { allFolders.push({ ...node, depth }); walk(node.children, depth + 1); }
+    };
+    walk(wantFolders && wantFolders.items);
+    if (!allFolders.length) {
+      console.log('注意: フォルダが 1 つもありません（--screen folders は空の案内だけを見ます。'
+        + '前提は複製にフォルダを作ってください: `manage_folders.py`）');
+    }
+    const firstFolder = allFolders[0] || null;
+    let wantContents = null;
+    if (firstFolder) {
+      try {
+        wantContents = await (await fetch(
+          `${BASE}/api/folders/${encodeURIComponent(firstFolder.id)}/assets`)).json();
+      } catch (error) {
+        console.log(`注意: 中身を取れませんでした（中身の数は見ない）: ${error.message}`);
+      }
+    }
+    let someAsset = (wantContents && wantContents.items && wantContents.items[0]) || null;
+    if (!someAsset) {
+      try {
+        const body = await (await fetch(`${BASE}/api/assets?limit=1`)).json();
+        someAsset = (body.items || [])[0] || null;
+      } catch (error) { someAsset = null; }
+    }
+    for (const [width, height] of VIEWPORTS) {
+      if (ONLY && ONLY !== `${width}x${height}`) continue;
+      await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      const url = firstFolder
+        ? `${BASE}/#/folders?folder=${encodeURIComponent(firstFolder.id)}`
+        : `${BASE}/#/folders`;
+      await send('Page.navigate', { url: 'about:blank' });
+      await sleep(180);
+      await send('Page.navigate', { url });
+      let got = null;
+      for (let i = 0; i < 60; i++) {
+        // **移動の途中の実行文脈では式が落ちる**（`documentElement` が null）。その回は飛ばす
+        try { got = await evaluate(MEASURE_FOLDERS); } catch (error) { got = null; }
+        if (got && (got.rows > 0 || !firstFolder)) break;
+        await sleep(250);
+      }
+      if (got) { await sleep(400); got = await evaluate(MEASURE_FOLDERS); }
+      if (!got) {
+        failures++;
+        console.log(`NG   ${width}x${height} フォルダ: 計測できません`);
+        continue;
+      }
+      const pressed = await evaluate(PRESS_FOLDERS);
+      const added = someAsset && firstFolder
+        ? await evaluate(PRESS_FOLDERS_ADD(firstFolder.id, someAsset.id)) : null;
+      const bad = [];
+      if (firstFolder && got.rows !== allFolders.length) {
+        bad.push(`木の行が API と同じ（${got.rows}/${allFolders.length}）`);
+      }
+      if (!firstFolder && !got.note.includes('フォルダがまだありません')) bad.push('空の案内');
+      if (got.brief && !/^フォルダ \d/.test(got.brief)) bad.push(`見出し（${got.brief}）`);
+      if (firstFolder && !got.headText.includes(firstFolder.name)) {
+        bad.push(`選んだフォルダの名前（${got.headText}）`);
+      }
+      if (firstFolder && !got.actionsVisible) bad.push('「フォルダを消す…」がスクロール無しで見える');
+      if (!got.createVisible) bad.push('「作る」がスクロール無しで見える');
+      if (wantContents && got.items !== wantContents.total) {
+        bad.push(`中身の枚数が API と同じ（${got.items}/${wantContents.total}）`);
+      }
+      if (got.hasPut !== 0) bad.push('add= が無いのに「ここに入れる」を出す');
+      if (got.pageOverflow !== 0) bad.push('画面が横に溢れない');
+      if (got.sideOverflow !== 0) bad.push('左の列が横に溢れない');
+      if (got.topbarOverflow !== 0) bad.push('上部バーが横に溢れない');
+      if (firstFolder) {
+        if (!pressed.headActions) bad.push('選ぶと「名前を変える」「フォルダを消す…」が出る');
+        if (!pressed.renameInput) bad.push('名前を変えるの入力が出る');
+        if (!pressed.renameCancelled) bad.push('「やめる」で名前を変えるの欄が閉じる');
+        if (!pressed.askShown) bad.push('消す前の確認が出る');
+        if (!pressed.goDisabled) bad.push('名前を打ち込むまで消すボタンは押せない');
+        if (!pressed.goEnabledAfterTyping) bad.push('名前を打ち込むと消すボタンが押せる');
+        if (!pressed.deleteCancelled) bad.push('「やめる」で確認が閉じる');
+        if (pressed.posts !== pressed.createPosts) {
+          bad.push(`やめた操作は送らない（POST ${pressed.posts} 回）`);
+        }
+        if (pressed.createPosts !== 1) bad.push(`「作る」は POST 1 回（${pressed.createPosts} 回）`);
+        if (pressed.createBody && pressed.createBody.parent_id !== firstFolder.id) {
+          bad.push(`作るのは選んだフォルダの下（${JSON.stringify(pressed.createBody)}）`);
+        }
+        if (!String(pressed.createMsg).includes('作りました')) bad.push(`作った後の 1 行（${pressed.createMsg}）`);
+        if (added) {
+          if (!String(added.banner).includes('入れるフォルダを選んでください')) {
+            bad.push(`add= の帯（${added.banner}）`);
+          }
+          if (added.puts !== got.rows) bad.push(`add= のときは全行に入れる口（${added.puts}/${got.rows}）`);
+          if (added.posts !== 1) bad.push(`「ここに入れる」は POST 1 回（${added.posts} 回）`);
+          if (added.body && (added.body.asset_ids || []).join(',') !== someAsset.id) {
+            bad.push(`選んだ枚を送る（${JSON.stringify(added.body)}）`);
+          }
+        }
+      }
+      if (bad.length) failures++;
+      console.log(`${bad.length ? 'NG  ' : 'ok  '}${width}x${height} フォルダ: `
+        + `rows=${got.rows}(${got.names.slice(0, 3).join('/')}) items=${got.items} `
+        + `brief=${JSON.stringify(got.brief)} 作る=${got.createVisible} `
+        + `操作=${got.actionsVisible} overflow=${got.pageOverflow}/${got.sideOverflow}/${got.topbarOverflow} `
+        + `押す=${JSON.stringify({ renameInput: pressed.renameInput, ask: pressed.askShown,
+                                    goDisabled: pressed.goDisabled,
+                                    goEnabled: pressed.goEnabledAfterTyping,
+                                    create: pressed.createPosts })} `
+        + `add=${JSON.stringify(added && { puts: added.puts, posts: added.posts,
+                                          body: added.body, hash: added.hash })}`
         + (bad.length ? `  ← ${bad.join(', ')}` : ''));
     }
     ws.close();

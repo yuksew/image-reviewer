@@ -97,6 +97,9 @@ export function readOnlyHtml() {
     unopenable: 'DB を開けませんでした。',
     version_ahead: 'DB の版がこのアプリより新しいものです。',
     pre_migrate_backup_failed: '版を上げる前のバックアップを取れませんでした。',
+    // **（P2-1）** v7 の名前（フォルダの表と索引）を**別の形の物が先に使っている**。
+    // 1 バイトも書かずに読み取り専用で起動している（半端な DB を残さない。P2-0 の監査 C-2）
+    schema_conflict: 'DB に、このアプリが使う名前（フォルダの表と索引）と違う形の物が入っています。',
   }[reason] || 'DB に書き込めない状態です。';
   // 案内（`guidance`）は **API の物をそのまま**出す（正しい説明は API が持っている。D-3）
   const guidance = info.guidance || got.guidance || got.detail || '';

@@ -2442,5 +2442,277 @@ check(filtersUi.isFiltering('all', 'all') === false && filtersUi.isFiltering('al
 check(filtersUi.visibleAssets(FILTER_ITEMS, { filter: 'all', provenance: 'all' }).length === 3,
   '軸が全部「すべて」なら全枚');
 
+﻿
+// ---- P2-1: フォルダ（カタログ。`#/folders`）----
+//
+// 設計: docs/frontend-design.md §3（画面の一覧 14）・§6（文言）・§11（フォルダの画面）。
+// **見る**: 木の順と深さ・枚数・空の案内・確認の語（名前を打ち込むまで送らない）・
+// 押したら 1 回だけ叩くこと（作る／入れる／外す／名前を変える／消す）・
+// `add=` がある間だけ「ここに入れる」が出ること・**画像は消えないと言うこと**。
+// **見ない**: 見た目（CSS）・本物のブラウザの焦点（`gui_layout` が見る）。
+const FL_TREE = { total: 3, items: [
+  { id: 'f1', parent_id: null, name: '旅行', kind: 'manual', count: 1, children: [
+    { id: 'f2', parent_id: 'f1', name: '海', kind: 'manual', count: 0, children: [] }] },
+  { id: 'f3', parent_id: null, name: '1girl だけ', kind: 'smart', count: 0, children: [] },
+] };
+const FL_ITEMS = {
+  folder: { id: 'f1', name: '旅行', kind: 'manual', count: 1 },
+  total: 1, cursor: 0, limit: 200, next_cursor: null,
+  items: [{ id: 'a1', path: 'D:\\lib\\a.png', review_state: 'kept', width: 16, height: 16,
+            position: 0, added_at: '2026-10-20T00:00:00Z' }],
+};
+const FL_SMART = {
+  folder: { id: 'f3', name: '1girl だけ', kind: 'smart', count: 0 },
+  total: 0, cursor: 0, limit: 200, next_cursor: null, items: [], smart: true,
+  note: 'スマートフォルダの条件はまだ使えません。この段では、手で入れた画像だけが出ます。',
+};
+let flAsked = [];
+let flWrites = [];
+globalThis.fetch = async (url, options) => {
+  const method = String(options?.method || 'GET').toUpperCase();
+  const path = String(url);
+  flAsked.push(`${method} ${path}`);
+  if (method !== 'GET') flWrites.push({ url: path, method, body: options?.body });
+  const asJson = (body, status = 200) => ({
+    ok: status < 400, status,
+    text: async () => JSON.stringify(body), json: async () => JSON.parse(JSON.stringify(body)),
+  });
+  if (path === '/api/folders' && method === 'GET') return asJson(FL_TREE);
+  if (path === '/api/folders' && method === 'POST') {
+    const body = JSON.parse(String(options.body || '{}'));
+    if (body.name === '旅行') {
+      return asJson({ detail: '同じ親の下に「旅行」があります（別の名前を付けてください）',
+                      code: 'folder_name_taken' }, 422);
+    }
+    return asJson({ created: true, id: 'f9', name: body.name, parent_id: body.parent_id || null });
+  }
+  if (path.startsWith('/api/folders/f1/assets')) return asJson(FL_ITEMS);
+  if (path.startsWith('/api/folders/f3/assets')) return asJson(FL_SMART);
+  if (path.startsWith('/api/folders/f2/assets')) {
+    return asJson({ ...FL_ITEMS, folder: { id: 'f2', name: '海', count: 0 },
+                    total: 0, items: [] });
+  }
+  if (method === 'POST' && path.endsWith('/members')) {
+    return asJson({ folder_id: 'f1', added: ['a1', 'a2'], already: ['a3'], count: 3 });
+  }
+  if (method === 'DELETE' && path.endsWith('/members')) {
+    return asJson({ folder_id: 'f1', removed: ['a1'], not_member: [], count: 0 });
+  }
+  if (method === 'PATCH') return asJson({ updated: true, id: 'f1', name: '海' });
+  if (method === 'DELETE') {
+    return asJson({ deleted: true, purged: false, folder_id: 'f1', folders: 1, members: 1,
+                    assets_deleted: 0 });
+  }
+  return asJson({});
+};
+const flUi = await import('../apps/gui/folders.js');
+
+// 33a. 木の形（**親の直後に子**。深さで字下げ）
+const flat = flUi.flattenTree(FL_TREE.items);
+check(flat.map((row) => row.node.id).join(',') === 'f1,f2,f3',
+  `木は前順に平らにする: ${flat.map((row) => row.node.id).join(',')}`);
+check(flat.map((row) => row.depth).join(',') === '0,1,0',
+  `深さが付く（子は 1）: ${flat.map((row) => row.depth).join(',')}`);
+check(flUi.briefText(FL_TREE) === 'フォルダ 3 個、画像 1 枚',
+  `見出しはフォルダ数と画像の枚数（片付け済みは数えない）: ${flUi.briefText(FL_TREE)}`);
+check(flUi.briefText({ total: 2, items: [] }) === 'フォルダ 2 個、画像 0 枚',
+  '木が空でも数える（total を使う）');
+
+// 33b. 空の案内は「いまの状態＋次に押す物」の 2 文（規則 3）
+check(flUi.emptyTreeText().includes('フォルダがまだありません')
+  && flUi.emptyTreeText().includes('「作る」を押すと'),
+  `空の案内（フォルダ無し）: ${flUi.emptyTreeText()}`);
+check(flUi.emptyFolderText(0).includes('このフォルダには画像がありません')
+  && flUi.emptyFolderText(0).includes('選んだ画像をフォルダに入れる…'),
+  `空の案内（中身無し）: ${flUi.emptyFolderText(0)}`);
+check(flUi.emptyFolderText(3).includes('選んだ 3 枚を'),
+  `枚数があるときはその数を出す: ${flUi.emptyFolderText(3)}`);
+
+// 33c. 木の 1 行（枚数・選んだ印・`add=` のときだけ「ここに入れる」）
+const f1Row = flUi.rowHtml({ node: FL_TREE.items[0], depth: 0 },
+  { addCount: 0, selectedId: 'f1' });
+check(f1Row.includes('旅行') && f1Row.includes('1 枚'),
+  `行に名前と枚数: ${f1Row}`);
+check(f1Row.includes('class="fl-row on"'), '選んでいる行に印を付ける');
+check(!f1Row.includes('ここに入れる'), 'add= が無いときは「ここに入れる」を出さない');
+const f1Add = flUi.rowHtml({ node: FL_TREE.items[0], depth: 0 }, { addCount: 2 });
+check(f1Add.includes('ここに入れる'), `add= があるときだけ入れる口を出す: ${f1Add}`);
+check(flUi.rowHtml({ node: { id: 'x', name: '深い', kind: 'manual', count: 0 }, depth: 2 })
+  .includes('padding-left:36px'), '深さ 2 は 36px 字下げする');
+check(flUi.treeHtml(FL_TREE, { addCount: 1 }).includes('海')
+  && flUi.treeHtml(FL_TREE, { addCount: 1 }).includes('1girl だけ'),
+  '木の HTML に子とスマートフォルダも出る');
+check(flUi.treeHtml({ items: [], total: 0 }).includes('フォルダがまだありません'),
+  '木が空なら案内の 1 行を出す');
+
+// 33d. URL の形（`?folder=` / `?add=`）
+const flSearch = flUi.parseSearch('folder=f1&add=a1,a2');
+check(flSearch.folder === 'f1' && flSearch.add.join(',') === 'a1,a2',
+  `URL から選んだフォルダと枚を読む: ${JSON.stringify(flSearch)}`);
+check(flUi.folderHref(['a1', 'a2']) === '#/folders?add=a1,a2',
+  `入口の行き先: ${flUi.folderHref(['a1', 'a2'])}`);
+check(flUi.folderHref([]) === '#/folders', '0 枚ならフォルダの画面だけ開く');
+
+// 33e. 入口（下部バー）の文言。**0 枚のときは枚数を書かない**（C-22）
+check(flUi.folderEntryLabel(0) === '選んだ画像をフォルダに入れる…',
+  `0 枚の文言: ${flUi.folderEntryLabel(0)}`);
+check(flUi.folderEntryLabel(3) === '選んだ 3 枚をフォルダに入れる…',
+  `3 枚の文言: ${flUi.folderEntryLabel(3)}`);
+const flBtn = new El('button', 'btn-folder');
+flUi.renderFolderEntry(flBtn, 0);
+check(flBtn.disabled === true && !flBtn.textContent.includes('0 枚'),
+  '0 枚なら押せない（枚数も書かない）');
+flUi.renderFolderEntry(flBtn, 2);
+check(flBtn.disabled === false && flBtn.textContent === '選んだ 2 枚をフォルダに入れる…',
+  `2 枚なら押せる: ${flBtn.textContent}`);
+
+// 33f. 消す前の確認（**名前を打ち込むまで送らない**）
+check(flUi.deleteAskText('旅行').includes('下にフォルダ名を打ち込むと消せます')
+  && flUi.deleteAskText('旅行').includes('画像は消えません'),
+  `消す前の確認の文: ${flUi.deleteAskText('旅行')}`);
+check(flUi.deleteTypedOk('旅行', ' 旅行 ') === true
+  && flUi.deleteTypedOk('旅行', '海') === false,
+  '打ち込んだ名前は前後の空白を落として比べる');
+check(flUi.deletedText('旅行').includes('画像は消えていません'),
+  `消した後の 1 行: ${flUi.deletedText('旅行')}`);
+const askHtml = flUi.headHtml(FL_TREE.items[0], { confirming: true, typed: '' });
+check(askHtml.includes('このフォルダを消す') && /id="fl-del-go"[^>]*disabled/.test(askHtml),
+  `名前を打ち込むまで消すボタンは押せない: ${askHtml}`);
+check(flUi.headHtml(FL_TREE.items[0], { confirming: true, typed: '旅行' })
+  .includes('id="fl-del-go"'), '名前が合えば送れる形になる');
+check(!/disabled/.test((flUi.headHtml(FL_TREE.items[0], { confirming: true, typed: '旅行' })
+  .match(/<button id="fl-del-go"[^>]*>/) || [''])[0]), '名前が合えば disabled を付けない');
+check(flUi.headHtml(FL_TREE.items[0], { renaming: true }).includes('保存する')
+  && flUi.headHtml(FL_TREE.items[0], { renaming: true }).includes('やめる'),
+  '名前を変える欄は「保存する」「やめる」を出す');
+check(flUi.headHtml(null).includes('フォルダを選ぶと'),
+  '選んでいないときは案内を出す');
+check(flUi.addBannerHtml(3).includes('選んだ 3 枚を入れるフォルダを選んでください'),
+  `add= の帯の文: ${flUi.addBannerHtml(3)}`);
+check(flUi.addBannerHtml(0) === '', 'add= が無ければ帯を出さない');
+
+// 33g. **押す検査**: 一覧を開く（GET 2 本。書かない）
+location.hash = '';
+await flUi.showFolders('folder=f1&add=a1,a2');
+check(flAsked.includes('GET /api/folders')
+  && flAsked.includes('GET /api/folders/f1/assets?limit=200'),
+  `開くと木と中身を引く（書かない）: ${flAsked.join(' / ')}`);
+check(flWrites.length === 0, `開いただけでは 1 つも書かない: ${JSON.stringify(flWrites)}`);
+check(String(el('fl-tree').innerHTML).includes('旅行')
+  && String(el('fl-tree').innerHTML).includes('ここに入れる'),
+  'add= があるので木に入れる口が出る');
+check(String(el('fl-items').innerHTML).includes('/api/assets/a1/thumb?size=256'),
+  '中身はサムネイルつきで出る');
+check(String(el('fl-items').innerHTML).includes('>外す<'), '中身の行に「外す」がある');
+check(el('fl-brief').textContent === 'フォルダ 3 個、画像 1 枚',
+  `画面の見出し: ${el('fl-brief').textContent}`);
+check(String(el('fl-add-banner').innerHTML).includes('選んだ 2 枚'),
+  '入れる先を選ぶ帯を出す');
+check(String(el('fl-head').innerHTML).includes('名前を変える')
+  && String(el('fl-head').innerHTML).includes('フォルダを消す…'),
+  '選んだフォルダの操作が出る');
+
+// 33h. **押す検査**: 木の行を押すと中身が変わる（GET だけ）
+flAsked = [];
+await flUi.onClick({ target: hitOf('.fl-row', { id: 'f2' }) });
+check(location.hash === '#/folders?folder=f2' || location.hash === '#/folders?folder=f2&add=a1,a2',
+  `行を押すと選ぶ: ${location.hash}`);
+check(flAsked.includes('GET /api/folders/f2/assets?limit=200'), `中身を引き直す: ${flAsked.join(' / ')}`);
+check(flAsked.every((line) => line.startsWith('GET')), '行を押しても書かない');
+
+// 33i. **押す検査**: 「ここに入れる」（`add=` の 2 枚を 1 回の POST で入れる）
+flAsked = [];
+flWrites = [];
+flUi.selectFolder('f1');
+await flUi.showFolders('folder=f1&add=a1,a2');
+const putHit = hitOf('.fl-put', { id: 'f1' });
+putHit.closest = (sel) => (sel === '.fl-put' || sel === '.fl-row' ? putHit : null);
+await flUi.onClick({ target: putHit });
+const addWrites = flWrites.filter((w) => w.method === 'POST' && w.url.endsWith('/members'));
+check(addWrites.length === 1, `入れるのは 1 回だけ: ${addWrites.length} 回`);
+check(JSON.parse(String(addWrites[0]?.body || '{}')).asset_ids.join(',') === 'a1,a2',
+  `選んだ 2 枚を送る: ${String(addWrites[0]?.body)}`);
+check(String(el('fl-msg').innerHTML).includes('2 枚をフォルダ「旅行」に入れました。')
+  && String(el('fl-msg').innerHTML).includes('1 枚は既に入っていました。'),
+  `既に入っていた枚も言う: ${String(el('fl-msg').innerHTML)}`);
+
+// 33j. **押す検査**: 「外す」（`folder_member` の 1 行だけ。**画像は消さない**と言う）
+flWrites = [];
+await flUi.onClick({ target: hitOf('.fl-remove', { id: 'a1' }) });
+const rmWrites = flWrites.filter((w) => w.method === 'DELETE' && w.url.endsWith('/members'));
+check(rmWrites.length === 1, `外すのは 1 回だけ: ${rmWrites.length} 回`);
+check(JSON.parse(String(rmWrites[0]?.body || '{}')).asset_ids.join(',') === 'a1',
+  '外す 1 枚を送る');
+check(String(el('fl-msg').innerHTML).includes('1 枚をこのフォルダから外しました。画像は消していません。'),
+  `外した後の 1 行: ${String(el('fl-msg').innerHTML)}`);
+
+// 33k. **押す検査**: 作る（1 回の POST。同じ親の同名はサーバの文をそのまま出す）
+flWrites = [];
+el('fl-new-name').value = '  大阪  ';
+await flUi.createFolder();
+const madePost = flWrites.filter((w) => w.method === 'POST' && w.url === '/api/folders');
+check(madePost.length === 1, `作るのは 1 回だけ: ${madePost.length} 回`);
+const madeBody = JSON.parse(String(madePost[0]?.body || '{}'));
+check(madeBody.name === '大阪', `前後の空白を落として送る: ${JSON.stringify(madeBody)}`);
+check(madeBody.parent_id === 'f1', `選んでいるフォルダの下に作る: ${JSON.stringify(madeBody)}`);
+check(String(el('fl-msg').innerHTML).includes('フォルダ「大阪」を作りました。'),
+  `作った後の 1 行: ${String(el('fl-msg').innerHTML)}`);
+flWrites = [];
+el('fl-new-name').value = '旅行';
+await flUi.createFolder();
+check(String(el('fl-msg').innerHTML).includes('同じ親の下に「旅行」があります'),
+  `断られた理由はサーバの文: ${String(el('fl-msg').innerHTML)}`);
+check(String(el('fl-msg').innerHTML).includes('fl-bad'), '断られたら失敗の見た目にする');
+flWrites = [];
+el('fl-new-name').value = '   ';
+await flUi.createFolder();
+check(flWrites.length === 0 && String(el('fl-msg').innerHTML).includes('フォルダ名を入れてください'),
+  '空の名前は送らない');
+
+// 33l. **押す検査**: 名前を変える（1 回の PATCH）
+await flUi.showFolders('folder=f1');
+flUi.startRename();
+el('fl-rename-name').value = '海';
+flWrites = [];
+await flUi.onClick({ target: hitOf('.fl-rename-go', {}) });
+const patchWrites = flWrites.filter((w) => w.method === 'PATCH');
+check(patchWrites.length === 1, `名前を変えるのは 1 回だけ: ${patchWrites.length} 回`);
+check(JSON.parse(String(patchWrites[0]?.body || '{}')).name === '海', '新しい名前を送る');
+check(String(el('fl-msg').innerHTML).includes('名前を変えました。'),
+  `変えた後の 1 行: ${String(el('fl-msg').innerHTML)}`);
+
+// 33m. **押す検査**: 消す（**名前が違えば送らない**。合っていれば 1 回）
+await flUi.showFolders('folder=f1');
+flUi.startDelete();
+check(String(el('fl-head').innerHTML).includes('下にフォルダ名を打ち込むと消せます'),
+  '確認の欄を出す');
+flUi.setTyped('違う名前');
+flWrites = [];
+await flUi.deleteFolder();
+check(flWrites.length === 0, `名前が違えば消さない: ${flWrites.length} 回`);
+check(String(el('fl-msg').innerHTML).includes('フォルダ名が違います'),
+  `違う名前のときの 1 行: ${String(el('fl-msg').innerHTML)}`);
+flUi.setTyped('旅行');
+await flUi.deleteFolder();
+const delWrites = flWrites.filter((w) => w.method === 'DELETE' && w.url === '/api/folders/f1');
+check(delWrites.length === 1, `名前が合えば 1 回だけ消す: ${delWrites.length} 回`);
+check(JSON.parse(String(delWrites[0]?.body || '{}')).confirm === '旅行',
+  '確認の名前を送る（サーバでも確かめる）');
+check(String(el('fl-msg').innerHTML).includes('画像は消えていません'),
+  `消した後の 1 行: ${String(el('fl-msg').innerHTML)}`);
+
+// 33n. スマートフォルダは**黙って空にしない**（1 行でそう言う）
+await flUi.showFolders('folder=f3');
+check(String(el('fl-items').innerHTML).includes('スマートフォルダの条件はまだ使えません'),
+  `スマートフォルダの中身の注記: ${String(el('fl-items').innerHTML)}`);
+
+// 33o. 押している間は押せない（二度押しで POST を 2 回出さない。P8-5 の監査 C-1）
+const busyRow = flUi.rowHtml({ node: FL_TREE.items[0], depth: 0 },
+  { addCount: 1, busy: true });
+check(/<button class="fl-put"[^>]*disabled/.test(busyRow),
+  'busy の間は「ここに入れる」を押せない');
+check(flUi.treeHtml({ items: [], total: 0 }).includes('fl-note'),
+  '木が空のときは案内を 1 行（行を作らない）');
+
 console.log(failures.length ? `\n${failures.length} 件 NG` : '\nすべて ok');
 process.exit(failures.length ? 1 : 0);

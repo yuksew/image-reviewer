@@ -1339,12 +1339,21 @@ def test_restore_refuses_a_snapshot_whose_bytes_changed(tmp_path, clock, backups
     finally:
         store.close()
     snap_db = Path(snap["dir"]) / "db.sqlite3"
-    # 構造は壊さず**中身だけ**変える（末尾の 1 バイト）
-    with open(snap_db, "r+b") as fh:
-        fh.seek(-1, os.SEEK_END)
-        last = fh.read(1)
-        fh.seek(-1, os.SEEK_END)
-        fh.write(bytes([last[0] ^ 0xFF]))
+    # 構造は壊さず**中身だけ**変える（設定の値を 1 つ書き換える）。
+    # **（P2-1）前は末尾の 1 バイトを反転していた。** そのバイトが「構造として見ない場所」
+    # （空きページの余り）に在ることに依存していて、**v7 に索引を 1 本足しただけで**
+    # 前提の `integrity_check` が落ちた（実際に踏んだ）。値の書き換えなら配置に依らない
+    # **`with sqlite3.connect(...)` は閉じない**（commit するだけ）。Windows では
+    # 開いたままだと一時フォルダを消せない（conftest が落とす。実際に踏んだ）
+    changed = sqlite3.connect(snap_db)
+    try:
+        row = changed.execute("SELECT key, value FROM settings ORDER BY key LIMIT 1").fetchone()
+        assert row is not None, "前提: settings に 1 行は在る"
+        changed.execute("UPDATE settings SET value = ? WHERE key = ?",
+                        (f"{row[1]}x", row[0]))
+        changed.commit()
+    finally:
+        changed.close()
     assert check_db_file(snap_db, full=True)["ok"] is True, "前提: 構造は壊れていない"
     assert backup.sha256_file(snap_db) != snap["manifest"]["db_sha256"][len("sha256:"):]
 

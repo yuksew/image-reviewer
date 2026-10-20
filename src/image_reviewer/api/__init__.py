@@ -77,6 +77,11 @@ def relink_of(request: Request):
     return request.app.state.relink
 
 
+def folders_of(request: Request):
+    """仮想フォルダ（カタログ。P2-1）。`app.state` から取る（閉包で掴まない）。"""
+    return request.app.state.folders
+
+
 def require_human(actor: str, *, what: str = "この操作") -> str:
     """**人が要る口の検査を 1 か所に置く**（家風。P4 の §0.14 Q3 から続く流儀）。
 

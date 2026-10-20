@@ -2570,6 +2570,20 @@ check(flBtn.disabled === false && flBtn.textContent === '選んだ 2 枚をフ�
 check(flUi.deleteAskText('旅行').includes('下にフォルダ名を打ち込むと消せます')
   && flUi.deleteAskText('旅行').includes('画像は消えません'),
   `消す前の確認の文: ${flUi.deleteAskText('旅行')}`);
+// **子も一緒に消えることを言う**（P2-1 の監査 B-2。`dry_run` の `folders` / `names` から）
+const askWithKids = flUi.deleteAskText('旅行', { folders: 3, names: ['旅行', '海', '山'] });
+check(askWithKids.includes('下のフォルダ 2 個（海、山）も一緒に消えます'),
+  `子を持つフォルダの確認文に数と名前: ${askWithKids}`);
+check(!askWithKids.includes('下のフォルダ 2 個も一緒に'), '名前も出す（数だけにしない）');
+const askNoKids = flUi.deleteAskText('旅行', { folders: 1, names: ['旅行'] });
+check(askNoKids === '「旅行」を消します。下にフォルダ名を打ち込むと消せます。画像は消えません。',
+  `子が無いときは子のことを言わない: ${askNoKids}`);
+const askManyKids = flUi.deleteAskText('旅行', { folders: 5, names: ['旅行', 'あ', 'い', 'う', 'え'] });
+check(askManyKids.includes('下のフォルダ 4 個（あ、い、う ほか 1 個）も一緒に消えます'),
+  `名前が多いときは「ほか N 個」でまとめる: ${askManyKids}`);
+check(flUi.childFolders({ folders: 2, names: ['旅行', '旅行'] }, '旅行').count === 1
+  && flUi.childFolders({ folders: 2, names: ['旅行', '旅行'] }, '旅行').names.join(',') === '旅行',
+  '同名の子がいても自分の名前は 1 つだけ除く');
 check(flUi.deleteTypedOk('旅行', ' 旅行 ') === true
   && flUi.deleteTypedOk('旅行', '海') === false,
   '打ち込んだ名前は前後の空白を落として比べる');
@@ -2683,7 +2697,10 @@ check(String(el('fl-msg').innerHTML).includes('名前を変えました。'),
 
 // 33m. **押す検査**: 消す（**名前が違えば送らない**。合っていれば 1 回）
 await flUi.showFolders('folder=f1');
-flUi.startDelete();
+flAsked = [];
+await flUi.startDelete();
+check(flAsked.includes('DELETE /api/folders/f1?dry_run=true'),
+  `消える範囲を先に読む（子の数と名前。dry_run は消さない）: ${flAsked.join(' / ')}`);
 check(String(el('fl-head').innerHTML).includes('下にフォルダ名を打ち込むと消せます'),
   '確認の欄を出す');
 flUi.setTyped('違う名前');

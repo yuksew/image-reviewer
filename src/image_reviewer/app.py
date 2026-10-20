@@ -349,10 +349,18 @@ def create_app() -> FastAPI:
         tag: str | None = Query(None, description="語で絞る（P4-1。§3.6）"),
         known: str = Query("1", description="1（語彙にある語・既定）| 0 | all"),
         include_deleted: str = Query("0", description="1 で段 1〜3 で外した画像も出す（P8-2）"),
+        folder: str | None = Query(None, description="未実装（P2-2 まで 422。§6.1）"),
         limit: int = 100,
         cursor: int = 0,
         sort: str = "path",
     ):
+        # **P2-1 の監査 E-2 / G-4**: §6.1 は `?folder=` を書いているが、P2-1 は中身を
+        # `GET /api/folders/{id}/assets` で返す。知らないクエリは黙って無視されるので、
+        # **絞れていないのに全件を返す**と「フォルダの中身」と読み違える。P2-2 で実装するまで 422。
+        if folder is not None:
+            raise ReviewError(422, "フォルダでの絞り込みはまだ使えません（GET /api/folders/{id}/assets で取れます）",
+                              code="folder_filter_not_implemented",
+                              details={"folder": folder})
         items = [_summary(a) for a in store.assets()]
         # P8-2（設計 §4.1・§8.1 の 25）: **段 1〜3 で外した画像は既定で一覧に出さない**。
         # `include_deleted=1` のときだけ出す（外した物が消えないと段 1 の意味が無い）

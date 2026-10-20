@@ -11,7 +11,10 @@
 - **同じ親の中で名前は一意**（`ux_folder_name` の部分一意索引）。**別の親の下の同名は通る**。
   表の索引は最後の砦で、**読める文にするのはここ**（422 `folder_name_taken`）。
 - **フォルダの削除は既定で論理削除**（`folder.deleted_at`。§6.1）。**子も一緒に**隠す（親だけ隠すと
-  木から子が消えて見えなくなる）。隠したフォルダの `folder_member` は消す（名前を作り直せる）。
+  木から子が消えて見えなくなる）。**`folder_member` は 1 行も消さない**（`deleted_at` の印だけ）。
+  **消えるのは `purge` のときだけ**（CASCADE）。隠したフォルダの中身は木にも件数にも中身にも出ないが、
+  **行は残る**ので、戻せば見える——仮想フォルダは**再生成できない分類**なので、消したら戻せない形に
+  しない（P2-1 の監査 B-1。前は隠すたびに `DELETE` していて、所属が永久に消えていた）。
   **画像は 1 枚も消さない**（`asset` も `asset_location` も触らない）。実削除は `purge=true` のときだけ。
 - **`deleted_at IS NOT NULL` の画像はカタログに出さない**（片付け済みの枚を出さない）。
 - **件数は毎回数える**（`count_cache` は使わない）。**正しさ優先**——`count_cache` の無効化の規則が
@@ -29,6 +32,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import unicodedata
 
 from . import db
 from .review import ReviewError
@@ -78,20 +82,27 @@ def _row(con: sqlite3.Connection, folder_id: str, *, allow_deleted: bool = False
 
 
 def _clean_name(value) -> str:
-    """名前を整える。**空・長すぎ・制御文字は 422**（画面の 1 行に入らない名前を作らせない）。"""
+    """名前を整える。**空・長すぎ・制御文字・見えない文字は 422**（画面の 1 行に入らない名前を作らせない）。
+
+    正規化は **NFC**（P2-1 の監査 C-5・G-3 (a)）。`ガ`（NFC）と `ガ`（NFD）が**別の名前として
+    同じ親に 2 つ並ぶ**のを防ぐ（見た目が同じで区別できない）。**大文字小文字は区別する**
+    （`Cat` と `cat` は別。Windows のフォルダと違うが、仮想フォルダなので区別してよい）。
+    見えない文字は `unicodedata.category` で拒む（`Cc` 制御・`Cf` 書式・`Zl`/`Zp` 行区切り。
+    幅 0 の空白・DEL・行区切りで「同じに見える別名」を作らせない）。
+    """
     if not isinstance(value, str):
         raise ReviewError(422, "name は文字列で指定してください",
                           details={"name": "1〜" + str(MAX_NAME) + " 文字"})
-    name = value.strip()
+    name = unicodedata.normalize("NFC", value.strip())
     if not name:
         raise ReviewError(422, "フォルダ名を入れてください",
                           details={"name": "1〜" + str(MAX_NAME) + " 文字"})
     if len(name) > MAX_NAME:
         raise ReviewError(422, f"フォルダ名は {MAX_NAME} 文字までです",
                           details={"name": f"{MAX_NAME} 文字まで", "length": len(name)})
-    if any(ord(ch) < 32 for ch in name):
-        raise ReviewError(422, "フォルダ名に改行や制御文字は使えません",
-                          details={"name": "制御文字を使わない"})
+    if any(unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") for ch in name):
+        raise ReviewError(422, "フォルダ名に改行や見えない文字は使えません",
+                          details={"name": "制御文字・見えない文字を使わない"})
     return name
 
 
@@ -142,6 +153,22 @@ def _depth_of(con: sqlite3.Connection, parent_id: str | None) -> int:
         current = row["parent_id"]
         depth += 1
     return depth
+
+
+def _height_of(con: sqlite3.Connection, folder_id: str) -> int:
+    """そのフォルダから下の**最大の段数**（自分だけなら 1）。**循環していても止まる**（64 で打ち切る）。
+
+    「移す」は**枝ごと**動くので、親の深さだけでは足りない（P2-1 の監査 D-7。31 段目の下へ
+    3 段の枝を移すと 34 段になった）。
+    """
+    row = con.execute(
+        "WITH RECURSIVE sub(id, depth) AS ("
+        "  SELECT id, 1 FROM folder WHERE id = ?"
+        "  UNION ALL"
+        "  SELECT f.id, sub.depth + 1 FROM folder f JOIN sub ON f.parent_id = sub.id"
+        "  WHERE sub.depth < 64)"
+        " SELECT max(depth) AS n FROM sub", (folder_id,)).fetchone()
+    return int(row["n"] or 1)
 
 
 def _parent_or_422(con: sqlite3.Connection, parent_id) -> str | None:
@@ -245,9 +272,15 @@ def _folder_dict(row, *, count: int, children: list[dict] | None = None) -> dict
 
 
 def _count_of(con: sqlite3.Connection, folder_id: str) -> int:
-    """そのフォルダの**生きた画像の枚数**（毎回数える。`count_cache` は使わない）。"""
+    """そのフォルダの**生きた画像の枚数**（毎回数える。`count_cache` は使わない）。
+
+    **親（フォルダ）が生きている行だけ**を数える（隠したフォルダの `folder_member` は残るので、
+    ここで `folder.deleted_at IS NULL` を見ないと、隠したはずの所属を数えてしまう。監査 B-1）。
+    """
     row = con.execute(
-        "SELECT count(*) AS n FROM folder_member m JOIN asset a ON a.id = m.asset_id"
+        "SELECT count(*) AS n FROM folder_member m"
+        " JOIN folder f ON f.id = m.folder_id AND f.deleted_at IS NULL"
+        " JOIN asset a ON a.id = m.asset_id"
         " WHERE m.folder_id = ? AND a.deleted_at IS NULL", (folder_id,)).fetchone()
     return int(row["n"])
 
@@ -259,12 +292,14 @@ def tree(con: sqlite3.Connection) -> dict:
     """**木の形**（§6.1）。`kind` と**生きた画像の枚数**つき。**書かない**。
 
     並びは `position`、同じなら名前。隠れたフォルダ（`deleted_at`）と、その子孫は出さない。
+    **件数も生きたフォルダの行だけ**を数える（隠したフォルダの `folder_member` は残る。監査 B-1）。
     """
     rows = con.execute(
         "SELECT * FROM folder WHERE deleted_at IS NULL"
         " ORDER BY coalesce(parent_id, ''), position, name, id").fetchall()
     counts = {row["folder_id"]: int(row["n"]) for row in con.execute(
         "SELECT m.folder_id, count(*) AS n FROM folder_member m"
+        " JOIN folder f ON f.id = m.folder_id AND f.deleted_at IS NULL"
         " JOIN asset a ON a.id = m.asset_id WHERE a.deleted_at IS NULL"
         " GROUP BY m.folder_id")}
     nodes: dict[str, dict] = {}
@@ -310,10 +345,14 @@ def assets(con: sqlite3.Connection, folder_id: str, *, cursor: int = 0, limit: i
         "  ORDER BY l.is_primary DESC, l.display_path LIMIT 1) AS size,"
         " (SELECT count(*) FROM asset_meta x WHERE x.asset_id = a.id) AS has_meta,"
         " (SELECT x.meta_json FROM asset_meta x WHERE x.asset_id = a.id) AS meta_json"
-        " FROM folder_member m JOIN asset a ON a.id = m.asset_id"
+        " FROM folder_member m"
+        " JOIN folder f ON f.id = m.folder_id AND f.deleted_at IS NULL"
+        " JOIN asset a ON a.id = m.asset_id"
         " WHERE m.folder_id = ? AND a.deleted_at IS NULL")
     total = con.execute(
-        "SELECT count(*) AS n FROM folder_member m JOIN asset a ON a.id = m.asset_id"
+        "SELECT count(*) AS n FROM folder_member m"
+        " JOIN folder f ON f.id = m.folder_id AND f.deleted_at IS NULL"
+        " JOIN asset a ON a.id = m.asset_id"
         " WHERE m.folder_id = ? AND a.deleted_at IS NULL", (folder_id,)).fetchone()["n"]
     rows = con.execute(f"{base} ORDER BY {order} LIMIT ? OFFSET ?",
                        (folder_id, limit, cursor)).fetchall()
@@ -413,7 +452,9 @@ def update(con: sqlite3.Connection, folder_id: str, payload: dict) -> dict:
         if parent is not None and parent in _subtree(con, folder_id):
             raise ReviewError(422, "子孫のフォルダを親にはできません（循環します）",
                               code="folder_cycle", details={"parent_id": parent})
-        if _depth_of(con, parent) >= 32:
+        if _depth_of(con, parent) + _height_of(con, folder_id) > 32:
+            # **枝の高さも数える**（親の深さだけ見ると、31 段目の下へ 3 段の枝を移せて 34 段になる。
+            # P2-1 の監査 D-7）。1 枚だけの移動では前と同じ判定（height = 1）
             raise ReviewError(422, "フォルダの階層が深すぎます（32 段まで）",
                               code="folder_too_deep", details={"parent_id": parent})
     if "smart_query" in payload:
@@ -461,8 +502,16 @@ def delete(con: sqlite3.Connection, folder_id: str, *, dry_run: bool = False,
       **それでも `asset` は消えない**（`folder_member` だけ）
 
     隠すときは**子孫も一緒に隠す**（親だけ隠すと、木から子が見えなくなる）。
-    **中身（`folder_member`）は消す**（隠したフォルダの名前を作り直せる。画像は残る）。
+    **`folder_member` の行は消さない**（消えるのは `purge` のときだけ）。隠したフォルダの中身は
+    木にも件数にも `GET .../assets` にも出ないが、**行は残る**ので、戻せば見える。
+    前はここで `DELETE FROM folder_member` していたため、**「隠す」で分類が永久に消えていた**
+    （P2-1 の監査 B-1。仮想フォルダは再生成できない分類。§6.1）。
     """
+    if not isinstance(purge, bool):
+        # **文字列の "false" を真にしない**（前は `bool("false")` が True で**実削除**になった。
+        # 監査 C-4。`purge: true` の真偽値だけを実削除にし、他の型は 422）
+        raise ReviewError(422, "purge は true / false で指定してください",
+                          details={"purge": "true か false"})
     row = _row(con, folder_id)
     ids = _subtree(con, folder_id)
     marks = ",".join("?" * len(ids))
@@ -489,12 +538,13 @@ def delete(con: sqlite3.Connection, folder_id: str, *, dry_run: bool = False,
                           details={"confirm": "フォルダの名前", "name": row["name"]})
     now = _now()
     if purge:
+        # **消えるのはここだけ**。`folder_member` は CASCADE で一緒に消える（画像は消えない）
         con.execute("DELETE FROM folder WHERE id = ?", (folder_id,))
         return {"deleted": True, "purged": True, "folder_id": folder_id,
                 "folders": len(ids), "members": int(members), "assets_deleted": 0}
     con.execute(f"UPDATE folder SET deleted_at = ? WHERE id IN ({marks}) AND deleted_at IS NULL",
                 [now, *ids])
-    con.execute(f"DELETE FROM folder_member WHERE folder_id IN ({marks})", ids)
+    # **`folder_member` は触らない**（隠すだけ。戻せば見える。監査 B-1）
     return {"deleted": True, "purged": False, "soft": True, "folder_id": folder_id,
             "folders": len(ids), "members": int(members), "assets_deleted": 0}
 

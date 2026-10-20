@@ -64,12 +64,14 @@ def delete_folder(request: Request, folder_id: str, dry_run: bool = False,
     **`DELETE` に本文を持たせる**のは §6.1 の字（`{confirm:'<フォルダ名>'}`）に従うため。
     `confirm` が名前と違えば **422 `confirm_required`**（仮想フォルダは作り直せない分類なので、
     無警告で消さない。点検 C11）。`purge:true` は実削除（**画像は消えない**）。
+    **`purge` は真偽値だけ**（文字列の `"false"` を真にしない。P2-1 の監査 C-4）。
+    **論理削除は `folder_member` を消さない**（消えるのは `purge` のときだけ。同 B-1）。
     """
     require_human(actor_of(request))
     body = payload or {}
     return folders_of(request).delete(
         folder_id, dry_run=bool(dry_run), confirm=body.get("confirm"),
-        purge=bool(body.get("purge")))
+        purge=body.get("purge", False))
 
 
 @router.post("/folders/{folder_id}/members")

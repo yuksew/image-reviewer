@@ -1090,8 +1090,11 @@ const PRESS_FOLDERS = `(async () => {
     { status: 200, headers: { 'Content-Type': 'application/json' } });
   window.fetch = (url, opt = {}) => {
     const method = (opt.method || 'GET').toUpperCase();
-    if (method === 'GET') return real(url, opt);
     const u = String(url);
+    // 問い合わせの dry_run=true は**読むだけ**の口（サーバは 1 バイトも書かない）。素通しして
+    // 本物の答えを使う（P2-1 の監査 B-2 で画面が dry_run を読むようになった。ここで飲むと
+    // 「書いた」と数えてしまう）
+    if (method === 'GET' || u.includes('dry_run=')) return real(url, opt);
     posts.push({ url: u, method, body: opt.body || null });
     if (method === 'POST' && u === '/api/folders') {
       let name = '';
@@ -1162,7 +1165,7 @@ const PRESS_FOLDERS = `(async () => {
 // **ここでは入れない**（画面が `#/folders?add=` で受けて、`ここに入れる` を押したときに 1 回だけ送る）。
 const PRESS_FOLDERS_ADD = (folderId, assetId) => `(async () => {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-  const out = { banner: '', puts: 0, posts: 0, body: null, hash: '' };
+  const out = { banner: '', puts: 0, posts: 0, body: null, hash: '', msg: '', msgVisible: false };
   location.hash = '#/folders?add=${assetId}';
   await wait(1500);
   out.banner = (document.getElementById('fl-add-banner') || {}).textContent || '';
@@ -1186,6 +1189,14 @@ const PRESS_FOLDERS_ADD = (folderId, assetId) => `(async () => {
   out.posts = posts.length;
   out.body = posts.length ? JSON.parse(String(posts[0].body || '{}')) : null;
   out.hash = location.hash;
+  // **押した後の 1 行が残る**（P2-1 の監査 B-2）。addTo は hash を変えるので、
+  // hashchange → showFolders が 1 行を消していないかを**本物の Chrome で**見る
+  const msg = document.getElementById('fl-msg');
+  if (msg) {
+    const r = msg.getBoundingClientRect();
+    out.msg = msg.textContent || '';
+    out.msgVisible = r.width > 0 && r.height > 0 && getComputedStyle(msg).visibility !== 'hidden';
+  }
   return out;
 })()`;
 
@@ -2244,6 +2255,10 @@ try {
           if (added.posts !== 1) bad.push(`「ここに入れる」は POST 1 回（${added.posts} 回）`);
           if (added.body && (added.body.asset_ids || []).join(',') !== someAsset.id) {
             bad.push(`選んだ枚を送る（${JSON.stringify(added.body)}）`);
+          }
+          // **押した後の 1 行が残る**（P2-1 の監査 B-2。hash を変えた後に `showFolders` が消さない）
+          if (!/入れました/.test(String(added.msg)) || !added.msgVisible) {
+            bad.push(`入れた後の 1 行が残る（${JSON.stringify(added.msg)} visible=${added.msgVisible}）`);
           }
         }
       }

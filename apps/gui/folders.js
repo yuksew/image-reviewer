@@ -123,8 +123,44 @@ export function renamedText() {
 }
 
 /** 消す前の確認の文（**何が起きるか**＋**画像は消えない**）。 */
-export function deleteAskText(name) {
-  return `「${name}」を消します。下にフォルダ名を打ち込むと消せます。画像は消えません。`;
+export function deleteAskText(name, dryRun = null) {
+  const own = String(name || '');
+  const kids = childFolders(dryRun, own);
+  const parts = [`「${own}」を消します。`];
+  if (kids.count > 0) {
+    // **子も一緒に消えることを言う**（P2-1 の監査 B-2。実測で子 2 個が一緒に消えた）。
+    // 数は `DELETE ?dry_run=true` の `folders`、名前は `names`（どちらもサーバが返す）
+    parts.push(`下のフォルダ ${fmtCount(kids.count)} 個${namesNote(kids.names, kids.count)}も一緒に消えます。`);
+  }
+  parts.push('下にフォルダ名を打ち込むと消せます。');
+  parts.push('画像は消えません。');
+  return parts.join('');
+}
+
+/** 確認文のための子の数と名前（`dry_run` の `folders` / `names` から。**数え直さない**）。 */
+export function childFolders(dryRun, own) {
+  const names = Array.isArray(dryRun && dryRun.names) ? dryRun.names.map(String) : [];
+  const folders = Number(dryRun && dryRun.folders);
+  const count = Number.isFinite(folders) && folders > 1 ? folders - 1 : 0;
+  const rest = names.slice();
+  const at = rest.indexOf(String(own || ''));
+  if (at >= 0) rest.splice(at, 1);          // 自分の名前は 1 つだけ除く（子が同名でも数え落とさない）
+  return { count, names: rest };
+}
+
+/** 子の名前の添え書き（1 文 40 字を守るため、3 つまで・長い名前は足さない。規則 5）。 */
+export function namesNote(names, count) {
+  const shown = [];
+  let used = 0;
+  for (const name of names) {
+    if (shown.length >= 3 || used + name.length > 24) break;
+    shown.push(name);
+    used += name.length;
+  }
+  if (!shown.length) return '';
+  const rest = (Number(count) || 0) - shown.length;
+  const tail = rest > 0 ? ` ほか ${fmtCount(rest)} 個` : '';
+  return `（${shown.join('、')}${tail}）`;
 }
 
 /** 打ち込んだ名前が合っているか。**合わなければ送らない**（画面でも確かめる）。 */
@@ -173,7 +209,7 @@ export function headHtml(node, opts = {}) {
   if (opts.confirming) {
     return `<div class="fl-sub">${esc(node.name)}
         <span class="stat">${fmtCount(node.count || 0)} 枚</span></div>
-      <div class="fl-ask">${esc(deleteAskText(node.name))}</div>
+      <div class="fl-ask">${esc(deleteAskText(node.name, opts.dryRun))}</div>
       <div class="fl-actions">
         <input id="fl-del-name" class="fl-del-name" type="text" placeholder="フォルダ名を打ち込む"
                autocomplete="off" value="${esc(opts.typed || '')}">
@@ -237,9 +273,13 @@ const state = {
   renaming: false,
   confirming: false,
   typed: '',
+  //: `DELETE ?dry_run=true` の答え（確認文の「下のフォルダ N 個（…）」の出どころ）
+  dryRun: null,
   busy: false,
   msg: '',
   bad: false,
+  //: フォルダの画面を出しているか（**別の画面から来たときだけ 1 行を消す**。監査 B-2）
+  shown: false,
 };
 
 // ---- 読み込み（`GET` は書かない）----
@@ -307,7 +347,7 @@ function render() {
   if (head) {
     head.innerHTML = state.folderId
       ? headHtml(node, { renaming: state.renaming, confirming: state.confirming,
-                         typed: state.typed, busy: state.busy })
+                         typed: state.typed, busy: state.busy, dryRun: state.dryRun })
       : headHtml(null);
   }
   const items = $('fl-items');
@@ -421,6 +461,7 @@ export async function deleteFolder(typed) {
   const name = node.name;
   state.confirming = false;
   state.typed = '';
+  state.dryRun = null;
   state.folderId = '';
   state.contents = null;
   state.msg = deletedText(name);
@@ -501,16 +542,42 @@ export function cancelRename() {
   render();
 }
 
-export function startDelete() {
+export async function startDelete() {
+  const node = selectedNode();
+  if (!node) return null;
   state.confirming = true;
   state.typed = '';
   state.msg = '';
+  state.bad = false;
+  state.dryRun = null;
+  state.busy = true;
   render();
+  // **何が一緒に消えるかを先に読む**（`dry_run` は消さない。設計 §6.1・点検 C11）。
+  // これを読まずに確認文を出すと、子を持つフォルダで「画像は消えません」しか言わない
+  //（P2-1 の監査 B-2。実測で子 2 個が一緒に消えた）。
+  // 口は `DELETE ?dry_run=true`（§6.1 の字。本文は送らない。`confirm` が無いので消えない）
+  const res = await fetch(`${FOLDERS}/${encodeURIComponent(node.id)}?dry_run=true`, {
+    method: 'DELETE', headers: { 'X-Image-Reviewer-Actor': 'human' },
+  });
+  const got = await res.json().catch(() => ({}));
+  state.busy = false;
+  if (!res.ok) {
+    // **消える範囲が読めないまま消させない**（子の数を言えない確認文を出さない）
+    state.confirming = false;
+    state.msg = `消える範囲を確かめられませんでした。もう一度試してください（詳細: ${res.status}）。`;
+    state.bad = true;
+    render();
+    return null;
+  }
+  state.dryRun = got;
+  render();
+  return got;
 }
 
 export function cancelDelete() {
   state.confirming = false;
   state.typed = '';
+  state.dryRun = null;
   render();
 }
 
@@ -542,7 +609,7 @@ export async function onClick(event) {
   const remove = hit('.fl-remove');
   if (remove) { await removeFrom(remove.dataset.id); return; }
   if (hit('.fl-rename')) { startRename(); return; }
-  if (hit('.fl-delete')) { startDelete(); return; }
+  if (hit('.fl-delete')) { await startDelete(); return; }
   if (hit('.fl-rename-go')) { await renameFolder(); return; }
   if (hit('.fl-rename-cancel')) { cancelRename(); return; }
   if (hit('.fl-del-go')) { await deleteFolder(); return; }
@@ -553,18 +620,28 @@ export async function onClick(event) {
 
 export async function showFolders(search) {
   const params = parseSearch(search == null ? searchNow() : search);
+  // **1 行（`state.msg`）を消すのは「別の画面から来たとき」だけ**。
+  // 押した後に `location.hash` を変えると `hashchange` → ここへ戻ってくるので、
+  // 無条件に消すと「入れました／消しました」が同じミリ秒で消える（監査 B-2 の実測:
+  // `268:1 枚をフォルダ「参考」に入れました。` → `268:`）
+  const fromOther = !state.shown;
+  state.shown = true;
   state.folderId = params.folder || state.folderId || '';
   state.addIds = params.add;
-  state.msg = '';
-  state.bad = false;
+  if (fromOther) {
+    state.msg = '';
+    state.bad = false;
+  }
   state.renaming = false;
   state.confirming = false;
   state.typed = '';
+  state.dryRun = null;
   document.body.classList.add('foldering');
   await load();
 }
 
 export function hideFolders() {
+  state.shown = false;
   document.body.classList.remove('foldering');
 }
 

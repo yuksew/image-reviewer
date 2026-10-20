@@ -399,6 +399,20 @@ CREATE TABLE folder_member (
 CREATE INDEX ix_folder_member_asset ON folder_member(asset_id);
 ```
 
+**論理削除（`folder.deleted_at`）は `folder_member` を消さない**（P2-1 の監査 B-1。2026-10-20）。
+`folder_member` の行が消えるのは **`purge:true` の実削除（`DELETE FROM folder` の CASCADE）のときだけ**。
+隠したフォルダの中身は**木・件数・`GET /api/folders/{id}/assets` のどれにも出さない**（読む側は
+**`folder.deleted_at IS NULL` の親だけ**を見る。`folders.tree()`・`folders.assets()`・`folders._count_of()` の
+3 か所）が、**行は残る**。理由は §10.1 の「仮想フォルダは**再生成できない分類**」で、「隠す」で所属を
+物理で消すと、**戻す口（§6.1 の穴 3。まだ無い）を作っても戻せない**。前の実装は隠すたびに `DELETE` して
+いて、監査の複製で `folder_member` が 3 → 0 になった（`asset` / `asset_location` は無傷）。
+
+**名前は NFC にそろえ、見えない文字を拒む**（422。P2-1 の監査 C-5・G-3 (a)）。`ガ`（NFC）と
+`ガ`（NFD）・幅 0 の空白（`Cf`）・DEL や改行（`Cc`）・行区切り（`Zl` / `Zp`）で、**同じに見える別名**を
+同じ親に 2 つ作らせない。**大小文字は区別する**（`Cat` と `cat` は別の名前。Windows のフォルダと違うが、
+仮想フォルダなので区別してよい）。`ux_folder_name` の式索引は**変えない**（NFC にしてから入れるので、
+索引はそのままで足りる）。
+
 **`ux_folder_name` は式索引なので、列名では形を見られない**（`PRAGMA index_info` は式の列を
 `None` で返す）。`db._check_v7_shape()` は **`sqlite_master.sql` を空白を詰めて比べ**（列の並び・
 `coalesce`・`WHERE deleted_at IS NULL`・`UNIQUE` が 1 度に見える）、**式の列（`cid = -2`）も見る**
@@ -691,6 +705,9 @@ POST   /api/jobs/{id}/cancel
 # 一覧と検索（キーセット改ページ）
 GET    /api/assets                ?folder=&tag=&known=&q=&state=&kind=&cursor=&limit=100&sort=added|seen|name
                                   -- `tag=` は P4 で足した（**既定は `known=1`** に当てる）
+                                  -- **`folder=` は P2-2 まで 422**（知らないクエリを黙って無視して
+                                  -- 「絞れていない全件」をフォルダの中身と読み違えさせない。
+                                  -- P2-1 の監査 E-2 / G-4。中身は `GET /api/folders/{id}/assets`）
 GET    /api/assets/{id}
 GET    /api/assets/{id}/file                                  -- 原本
 GET    /api/assets/{id}/thumb     ?size=256|1024              -- 生成済みサムネイル
@@ -725,11 +742,15 @@ GET    /api/folders                                           -- 木
 POST   /api/folders               {parent_id, name, kind}
 PATCH  /api/folders/{id}          {name?, parent_id?, position?, smart_query?}
 DELETE /api/folders/{id}          ?dry_run=true
-                                  -- dry_run は「中の枚数・子の数・影響」を返すだけ（消さない）
-DELETE /api/folders/{id}          {confirm:'<フォルダ名>'}
+                                  -- dry_run は「中の枚数・子の数・**消える名前（`names`）**」を返すだけ（消さない）
+                                  -- 画面はこれを読んで「下のフォルダ N 個（…）も一緒に消えます」と言う（監査 B-2）
+DELETE /api/folders/{id}          {confirm:'<フォルダ名>', purge?:true}
                                   -- **名前を打ち込ませて確認する**。仮想フォルダは再生成できない分類なので、
-                                  -- 無警告で消さない（点検 C11）。既定は論理削除（`deleted_at`）で、
-                                  -- 実削除は `purge:true` を明示したときだけ
+                                  -- 無警告で消さない（点検 C11）。**大小文字は区別**（`abc` で `ABC` を消さない）。
+                                  -- `confirm` は `purge:true` でも必須（無確認の実削除を許さない）。
+                                  -- `purge` は**真偽値だけ**（文字列 `"false"` は 422。監査 C-4）。
+                                  -- 既定は論理削除（`deleted_at`）で、**`folder_member` の行は消さない**
+                                  -- （消えるのは `purge:true` の CASCADE だけ。監査 B-1）。**画像はどちらでも消えない**
 POST   /api/folders/{id}/members  {asset_ids:[]}
 DELETE /api/folders/{id}/members  {asset_ids:[]}
 GET    /api/folders/{id}/assets   ?cursor=&limit=&sort=
@@ -2276,6 +2297,30 @@ P8-5 で「**常駐の実装が無いので作らない**」と決め（§16.6�
 | 7 | **P7 の控えの `preset` / `watcher_state` は v8 で見る** | その版で足すときに **B-1 と同じ形の検査**を通す。`current == 6` の道で **0 行なら落としてよい**（失う物が無い） | `p2-0-audit-report.md` C-3・G-5 |
 | 8 | **`smart_query` のフィールドと列の対応表は P2-1** | §10.2 の `added_at` / `seen_at` / `reason_code` / `source` は、列では `first_seen_at` / `last_seen_at` / `review_reason_code_id` / `asset.source`。名前が違うので**対応表を P2-1 で書く** | `p2-0-audit-report.md` E-6 |
 | 9 | **実データは v6 のまま** | 利用者が 8790 を立ち上げ直したときに **`.backup/daily/pre-migrate-<日時>/`（v6・463 枚）を取ってから** v7 になる。控えが取れなければ**読み取り専用で起動して版を上げない**（既存の P8-4 の道）。**その控えを掃除しない** | `docs/p2-0-implementation.md` §2.2・§7-7, `p2-0-audit-report.md` 判定 |
+
+#### P2-1（仮想フォルダ）の監査（2026-10-20。判定: 条件つきで使える）で確定したこと
+
+**正は [`p2-1-implementation.md`](p2-1-implementation.md)（実装の記録）と
+[`p2-1-audit-triage.md`](p2-1-audit-triage.md)（指摘の仕分け）**。監査は
+[`p2-1-audit-report.md`](p2-1-audit-report.md)。A（必ず直す）は無し、条件は **B-1〜B-3** で、
+**どれも直した**。**推奨はすべて採用**（今直した物と P2-2 へ送る物は仕分けに 1 行ずつ）。
+B-1 の前のコードは**利用者がフォルダを消すたびに分類（`folder_member`）を物理で消していた**ので、
+**この修正は利用者がフォルダを使い始める前に当てる**（実データは v6・フォルダ 0 なので失う物は無い）。
+
+| # | 決めたこと | 中身 | 根拠 |
+| --- | --- | --- | --- |
+| 1 | **（B-1）論理削除は `folder_member` を消さない** | 消えるのは `purge:true` の CASCADE のときだけ。読みは `folder.deleted_at IS NULL` の親だけ（3 か所）。行が残るので**戻せば中身が見える**（戻す口は §6.1 の穴 3 のまま） | §5.3, `folders.py`, `tests/test_p2_1.py`（3 本） |
+| 2 | **（B-2）画面は `dry_run` を読んで子の数と名前を言う** | 確認文は「下のフォルダ 2 個（気に入った、背景の参考）も一緒に消えます」。`dry_run` が読めないときは**確認を出さない**（子のことを言えない確認文を出さない）。文の正は `frontend-design.md` §11 | `apps/gui/folders.js`, `frontend-design.md` §11 |
+| 3 | **（B-2）押した後の 1 行は、別の画面から来たときだけ消す** | `hashchange` で同じ画面へ戻ったときに `state.msg` を消していた（**同じミリ秒で消える**）。本物の Chrome で「すぐ」と「2 秒後」の両方を見る（`MutationObserver` の記録つき） | `folders.js`, `.tmp-p2-1-fix/realclick.mjs` |
+| 4 | **（B-3）生き残った 12 通りを落とす** | S8・S9・S10・S11・S12・S14・S17・S18・S20・S24・S26・Y6。**期待値はリテラル**（実装から取らない）。変異は自分で作り、**12/12 が落ちる**ことを実測（B-1・C-4・C-5・D-7 の前のコードを足した 17/17 も落ちる） | `tests/test_p2_1.py`（12 本）, `.tmp-p2-1-fix/mut.py` |
+| 5 | **（C-4）`purge` は真偽値だけ** | `{"purge":"false"}` が**実削除**になっていた（`bool("false")` は真）。真偽値以外は 422 | `folders.py`, `api/folders.py` |
+| 6 | **（C-5）名前は NFC・見えない文字は 422** | §5.3 に書いた（`Cc` / `Cf` / `Zl` / `Zp`）。大小文字は区別 | §5.3, `folders.py` |
+| 7 | **（D-7）移す深さは枝の高さも数える** | 31 段目の下へ 3 段の枝を移すと 34 段になっていた。`_depth_of(親) + _height_of(枝) > 32` で 422（1 枚の移動は前と同じ判定） | `folders.py` |
+| 8 | **（E-2 / G-4）`GET /api/assets?folder=` は P2-2 まで 422** | 黙って全件を返していた（「フォルダの中身」と読み違える）。実装は P2-2、それまで 422 `folder_filter_not_implemented` | §6.1, `app.py` |
+| 9 | **送る物（この修正では触らない）** | **C-1**（`gui_layout` が 0 個で NG／空の案内の場所・ライブラリの入口の `rows > 0`。道具の誤り）・**C-2**（`v7_conflicts` に「根・同じ親の同名が既に在る」）・**C-3**（`schema_conflict` の名前を `health` と起動のログに出す・`GET /api/folders` の 500）・**E-4**（キーセット改ページ）・**E-5**（`smart_query` の対応表）・**D-8**（見出しの「画像 N 枚」が重複を数える）→ **P2-2**。**変異 Y2 / M4 は等価**（文の比較・索引が同じ 422 にする） | `p2-1-audit-triage.md` |
+
+**「戻す」の口はまだ無い**（§6.1 の穴 3）。ただし **B-1 で行を残した**ので、後で作れば戻せる。
+そのときは**同名の生きたフォルダが在ると部分索引が `IntegrityError`** になる（D-2）ので、**422 に写す**こと。
 
 ---
 

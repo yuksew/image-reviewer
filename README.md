@@ -17,16 +17,17 @@
 - **`docs/design.md` §12.1 の性能の目標は全部実測で埋めた**（未計測 0）。届かなかったのは一覧 API の
   1 行だけで、理由と必要な条件は [`docs/design.md`](docs/design.md) §12.1 と
   [`docs/p9-implementation.md`](docs/p9-implementation.md) にある。
-- **テスト 622 件**（`uv run --no-sync pytest -q` を自分で回して実測。**622 passed・0 failed**。
-  **P2-0（スキーマ v7）で 17 件**・**P2-1（仮想フォルダ）で 25 件**。**トレイの契約 15 件＋振る舞い 1 件**も入っている）。
+- **テスト 638 件**（`uv run --no-sync pytest -q` を自分で回して実測。**638 passed・0 failed**。
+  **P2-0（スキーマ v7）で 17 件**・**P2-1（仮想フォルダ）で 41 件**。**トレイの契約 15 件＋振る舞い 1 件**も入っている）。
   **並行して誰かが実データを `mode=ro` で読んでいると `test_data_dir_guard.py` の 1 件が落ちうる**
   （署名に使う `db.sqlite3-shm` の `mtime_ns` が動くため。**中身は変わっていない**。`docs/handoff.md` §6）。
-- **`gui_smoke` 482 検査**（ok / NG 0。**自分で回して実測**。**P2-1 で 67 検査**を足した）。
+- **`gui_smoke` 488 検査**（ok / NG 0。**自分で回して実測**。**P2-1 で 67 検査**、
+  **P2-1 の監査の修正で 6 検査**を足した）。
 - **`gui_layout` 11 画面 × 4 幅**（`VIEWPORTS` は 1400・1024・1200・1920。＋`pending --ids` の 12 本目。
   **P2-1 で `--screen folders` を足した**）を
   **複製で回して実測**（2026-10-20）。**`--screen tags` は語が 0 件だと必ず NG** なので
   `gui_layout_seed.py --tags` を当てた複製で回す。
-  **2026-10-20 の実測（P2-1 の後）**: **48 ok / NG 0**（12 本 × 4 幅。比較は 3 窓 × 4 幅＝12 検査）。
+  **2026-10-20 の実測（P2-1 の監査の修正の後）**: **56 ok / NG 0**（12 本 × 4 幅。比較は 3 窓 × 4 幅＝12 検査）。
   `--screen pending` と `--screen pending --ids` が 4 幅とも NG だったのは、`tools/gui_layout.mjs` の
   「**まとめてのチェック**」が「全部選ぶ」で**一覧の全部の行**が選ばれることを期待していたため
   （`apps/gui/pending.js:387` の `canPick()` は**段 1 と `closeable` の行だけ**を選べる形＝P10 の仕様。
@@ -79,8 +80,8 @@ uv sync
 uv sync --extra tagger                      # 内蔵タガー（onnxruntime。任意。入れると `auto` が内蔵を選ぶ）
 uv run image-reviewer scan --root 'C:\work\illust-authoring\.store\anima-dev'
 uv run image-reviewer serve --port 8790     # → http://127.0.0.1:8790
-uv run --no-sync pytest -q                  # 622 件（2026-10-20 に実測。P2-0 の 17 件・P2-1 の 25 件を含む）
-node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。482 検査）
+uv run --no-sync pytest -q                  # 638 件（2026-10-20 に実測。P2-0 の 17 件・P2-1 の 41 件を含む）
+node tools/gui_smoke.mjs                    # 画面の組み立て（CSS を持たない軽い DOM で。488 検査）
 # **トレイの検査**（別のポートと、合成した複製だけで回す。**8790 は使わない**。
 # 使う 4 ポート（-Port〜+3）の 1 つでも埋まっていれば、1 つも起動せずに exit 2 で止まる）
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\tray_selftest.ps1 -Port 8795   # 133 検査
@@ -267,6 +268,7 @@ uv run image-reviewer rebuild-metadata             # PNG と sidecar から来�
 | [`docs/p2-0-implementation.md`](docs/p2-0-implementation.md) | **P2-0 の実装の記録**（**スキーマ v7**。`folder` / `folder_member`・`asset` の取り込み元 3 列・控えを取ってから上げる道・**指示書のスケッチと設計が食い違った 4 点**・設計の穴 5 件・壊し試験 10 通り・実データは v6 のまま） | — |
 | [`docs/p2-0-audit-report.md`](docs/p2-0-audit-report.md)、[`docs/p2-0-audit-triage.md`](docs/p2-0-audit-triage.md) | **P2-0 の監査報告**（**実行込み**。判定は**「条件つきで使える」**。条件は **B-1（ガードが名前しか見ない）**・**B-2（期待値が実装の側にある・6 通りが生き残る）**、ほかに C・D・E・G）と、その**仕分け**（**指摘ごとに 1 行**。B-1 は形（NOT NULL・CASCADE・索引の列・CHECK）まで見るガードに、B-2 は期待値をリテラルにして **6 通り × 2 変種＝12 通りが全部落ちる**ことを実測。`gui_layout` の `pickable` も API から期待する形に） | §5.1, §5.3, §16.9 |
 | [`docs/p2-1-implementation.md`](docs/p2-1-implementation.md) | **P2-1 の実装の記録**（**仮想フォルダ**。v7 に足した `ux_folder_name`（式索引＋部分索引）と形のガード・**口 8 本**・**R2 の線**（1 枚が 2 つに入れる／外しても消えない／フォルダを消しても消えない／**実ファイルの署名が変わらない**）・画面（`#/folders`。入口は上部バー）・`gui_smoke` と `gui_layout` の追加・壊すと落ちる 19 通り・実データは v6 のまま） | §5.3, §6.1, §10.1, §16.9 |
+| [`docs/p2-1-audit-report.md`](docs/p2-1-audit-report.md)、[`docs/p2-1-audit-triage.md`](docs/p2-1-audit-triage.md) | **P2-1 の監査報告**（**実行込み**。判定は**「条件つきで使える」**。条件は **B-1（論理削除が `folder_member` を物理で消す＝分類が永久に消える）**・**B-2（本物の Chrome で押した後の 1 行が出ない・子も消えると言わない）**・**B-3（壊しても落ちない 12 通り）**、ほかに C・D・E・F・G）と、その**仕分け**（**指摘ごとに 1 行**。B-1 は行を残す・B-2 は `dry_run` と 1 行の順序・B-3 は 12 通りを 12 本の試験で落とす。**本物の Chrome で 25 ok / NG 0**・三点セット **638 / 488 / 56**） | §5.3, §6.1, §16.9 |
 
 - P5 の点検・監査の**生ログ（`docs/p5-review-run.jsonl` / `p5-audit-run.jsonl` / `p5-2-audit-run.jsonl` /
   `p5-3-audit-run.jsonl`。計 約 11.7 MB）は文書表に数えない**。本文は各 `*-report.md` と `*-run-note.md`

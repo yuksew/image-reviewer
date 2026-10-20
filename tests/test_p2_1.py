@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import unicodedata
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -203,8 +204,12 @@ def test_removing_from_a_folder_keeps_the_image_and_the_other_folder(env):
 def test_deleting_a_folder_keeps_its_images(env):
     """**R2 の線 3**: フォルダを消しても画像は消えない（既定は論理削除。§6.1）。
 
+    **論理削除は `folder_member` の行も消さない**（消えるのは `purge` のときだけ。監査 B-1。
+    行が残るので、戻せば中身が見える）。
+
     壊すと落ちる: 削除が `asset` を消す（外部キーの CASCADE を `asset` 側から発火させる）／
-    中身を消すときに `asset_location` を消す／`purge` でも画像を消す。
+    中身を消すときに `asset_location` を消す／`purge` でも画像を消す／
+    **論理削除で `folder_member` を `DELETE` する**（B-1。戻しても中身が空になる）。
     """
     client = env.client
     folder = _new(client, "消すフォルダ").json()["id"]
@@ -235,11 +240,118 @@ def test_deleting_a_folder_keeps_its_images(env):
             == asset_ids_before
         assert [tuple(row) for row in con.execute(
             "SELECT * FROM asset_location ORDER BY path")] == location_rows_before
-        assert con.execute("SELECT count(*) FROM folder_member").fetchone()[0] == 0
+        # **`folder_member` の行は残る**（2 フォルダ × 2 枚 = 4 行。監査 B-1）
+        assert con.execute("SELECT count(*) FROM folder_member").fetchone()[0] == 4
+        # 隠れたフォルダの行は `deleted_at` が付いている（物理で消していない）
+        assert con.execute("SELECT count(*) FROM folder WHERE deleted_at IS NOT NULL"
+                           ).fetchone()[0] == 2
     listed = [item["id"] for item in client.get("/api/assets?limit=100").json()["items"]]
     for name in ("a", "b"):
         assert env.ids[name] in listed
     assert _image_signature(env.images.glob("*.png")) == before, "実ファイルが動いた"
+
+
+def test_a_soft_deleted_folder_comes_back_with_its_members(env):
+    """**B-1**: 論理削除で隠した中身は**行として残り**、戻すと見える（仮想フォルダは再生成できない分類）。
+
+    隠している間は、木・件数・`GET /api/folders/{id}/assets` の**どこにも出ない**こと。
+    戻す口はまだ無い（設計の穴 3）ので、ここでは DB を直接戻して「データが残っている」ことを見る。
+    同じ 1 枚を共有する別のフォルダの件数が、隠したフォルダの行で**水増しされない**ことも見る。
+
+    壊すと落ちる: 論理削除で `folder_member` を消す（戻しても空）／
+    隠したフォルダの所属を他のフォルダの件数に数える（読む側の `folder.deleted_at` の検査を外す）／
+    隠したフォルダの中身を `GET .../assets` が返す。
+    """
+    client = env.client
+    parent = _new(client, "隠す親").json()["id"]
+    child = _new(client, "隠す子", parent_id=parent).json()["id"]
+    other = _new(client, "残すフォルダ").json()["id"]
+    assert client.post(f"/api/folders/{parent}/members",
+                       json={"asset_ids": [env.ids["a"], env.ids["b"]]},
+                       headers=HUMAN).status_code == 200
+    assert client.post(f"/api/folders/{child}/members",
+                       json={"asset_ids": [env.ids["c"]]}, headers=HUMAN).status_code == 200
+    assert client.post(f"/api/folders/{other}/members",
+                       json={"asset_ids": [env.ids["a"]]}, headers=HUMAN).status_code == 200
+    before = _image_signature(env.images.glob("*.png"))
+
+    assert client.request("DELETE", f"/api/folders/{parent}", json={"confirm": "隠す親"},
+                          headers=HUMAN).status_code == 200
+    # 隠れている間はどこにも出ない
+    tree = client.get("/api/folders").json()
+    assert [item["name"] for item in tree["items"]] == ["残すフォルダ"]
+    assert tree["items"][0]["count"] == 1, "隠したフォルダの行を他のフォルダの件数に数えた"
+    assert client.get(f"/api/folders/{parent}/assets").status_code == 404
+    assert client.get(f"/api/folders/{child}/assets").status_code == 404
+    assert client.get(f"/api/folders/{other}/assets").json()["total"] == 1
+    # **行は残っている**（親 2 + 子 1 + 残す 1 = 4 行）
+    with env.app.state.store.locked() as con:
+        rows = [tuple(row) for row in con.execute(
+            "SELECT folder_id, asset_id FROM folder_member ORDER BY folder_id, asset_id")]
+        assert len(rows) == 4, rows
+
+    # **戻す**（まだ口が無いので DB を直接。データが残っていることの確認）
+    with env.app.state.store.transaction() as con:
+        con.execute("UPDATE folder SET deleted_at = NULL WHERE id IN (?, ?)", (parent, child))
+        assert con.execute("SELECT count(*) FROM folder_member").fetchone()[0] == 4
+    tree = client.get("/api/folders").json()
+    assert sorted(item["name"] for item in tree["items"]) == ["残すフォルダ", "隠す親"]
+    restored = [item for item in tree["items"] if item["id"] == parent][0]
+    assert restored["count"] == 2, "戻したのに中身の件数が 0（論理削除で行を消していた）"
+    assert [row["id"] for row in restored["children"]] == [child]
+    assert restored["children"][0]["count"] == 1
+    got = client.get(f"/api/folders/{parent}/assets?sort=position").json()
+    assert got["total"] == 2
+    assert [item["id"] for item in got["items"]] == [env.ids["a"], env.ids["b"]]
+    assert client.get(f"/api/folders/{child}/assets").json()["items"][0]["id"] == env.ids["c"]
+    assert _image_signature(env.images.glob("*.png")) == before, "実ファイルが動いた"
+
+
+def test_only_purge_removes_the_membership_rows(env):
+    """**B-1**: `folder_member` の行が消えるのは **`purge` のときだけ**。他のフォルダの行は残る。
+
+    論理削除 → 戻す → `purge` の順に通す（隠したフォルダは `_row` が 404 なので、
+    実削除の口は**生きているフォルダにだけ**打てる。隠したまま実削除する口はまだ無い）。
+
+    壊すと落ちる: 論理削除で `folder_member` を消す／`purge` で行を残す（外部キーの CASCADE が
+    効いていない）／`purge` で他のフォルダの行まで消す／`purge` が画像を消す。
+    """
+    client = env.client
+    hide = _new(client, "実削除する").json()["id"]
+    keep = _new(client, "残す").json()["id"]
+    assert client.post(f"/api/folders/{hide}/members",
+                       json={"asset_ids": [env.ids["a"], env.ids["b"]]},
+                       headers=HUMAN).status_code == 200
+    assert client.post(f"/api/folders/{keep}/members", json={"asset_ids": [env.ids["a"]]},
+                       headers=HUMAN).status_code == 200
+    before = _image_signature(env.images.glob("*.png"))
+    with env.app.state.store.locked() as con:
+        assets_before = [tuple(row) for row in con.execute("SELECT * FROM asset ORDER BY id")]
+
+    # 論理削除：行は残る（3 行）
+    assert client.request("DELETE", f"/api/folders/{hide}", json={"confirm": "実削除する"},
+                          headers=HUMAN).json()["purged"] is False
+    with env.app.state.store.locked() as con:
+        assert con.execute("SELECT count(*) FROM folder_member").fetchone()[0] == 3
+
+    # 戻す（まだ口が無いので DB を直接）
+    with env.app.state.store.transaction() as con:
+        con.execute("UPDATE folder SET deleted_at = NULL WHERE id = ?", (hide,))
+
+    # 実削除：隠したフォルダの行だけが消える（残す側の 1 行は残る）
+    got = client.request("DELETE", f"/api/folders/{hide}",
+                         json={"confirm": "実削除する", "purge": True}, headers=HUMAN)
+    assert got.status_code == 200, got.text
+    assert got.json()["purged"] is True and got.json()["assets_deleted"] == 0
+    with env.app.state.store.locked() as con:
+        assert con.execute("SELECT count(*) FROM folder").fetchone()[0] == 1
+        rows = [tuple(row) for row in con.execute(
+            "SELECT folder_id, asset_id FROM folder_member")]
+        assert rows == [(keep, env.ids["a"])], rows
+        assert [tuple(row) for row in con.execute("SELECT * FROM asset ORDER BY id")] \
+            == assets_before
+    assert client.get(f"/api/folders/{keep}/assets").json()["total"] == 1
+    assert _image_signature(env.images.glob("*.png")) == before, "purge で実ファイルが動いた"
 
 
 def test_the_files_do_not_move_when_folders_change(env):
@@ -876,3 +988,347 @@ def test_register_refuses_an_unknown_source(tmp_path: Path):
                            width=1, height=1, fmt="png", meta=None, note=None, source="ftp")
     finally:
         store.close()
+
+
+# ---- 11. 監査 B-3: 変異 12 通りを落とす（期待値はここにリテラルで書く）----
+#
+# 監査 `docs/p2-1-audit-report.md` の F で「全試験 622 でも生き残った」12 通り
+# （S8・S9・S10・S11・S12・S14・S17・S18・S20・S24・S26・Y6。等価の Y2 を除く）を、
+# **1 通りにつき 1 つ以上の試験**で落とす。**期待値は実装から取らない**（数も順も 422 も
+# ここに書いた字）。壊し方は `.tmp-p2-1-fix/mut.py`（自分で作って全部落ちることを確かめた）。
+
+
+def test_removing_one_image_keeps_the_other_images_in_the_folder(env):
+    """**S8**: 「外す」は**送った 1 枚だけ**を外す（フォルダの中身を全部外さない）。
+
+    監査の S8 は「`asset_ids` を見ずにフォルダの中身を全部消す」で、既存の試験は
+    **1 枚しか入れていなかった**ので生き残った。
+
+    壊すと落ちる: 外す口が `asset_ids` を見ずに `DELETE FROM folder_member WHERE folder_id = ?`
+    にする（1 枚外すつもりで全部外れる）。
+    """
+    client = env.client
+    folder = _new(client, "2 枚のうち 1 枚").json()["id"]
+    assert client.post(f"/api/folders/{folder}/members",
+                       json={"asset_ids": [env.ids["a"], env.ids["b"]]},
+                       headers=HUMAN).status_code == 200
+    got = client.request("DELETE", f"/api/folders/{folder}/members",
+                         json={"asset_ids": [env.ids["a"]]}, headers=HUMAN)
+    assert got.status_code == 200, got.text
+    assert got.json()["removed"] == [env.ids["a"]]
+    assert got.json()["count"] == 1
+    with env.app.state.store.locked() as con:
+        rows = [tuple(row) for row in con.execute(
+            "SELECT folder_id, asset_id FROM folder_member")]
+    assert rows == [(folder, env.ids["b"])], rows
+    body = client.get(f"/api/folders/{folder}/assets").json()
+    assert body["total"] == 1 and [item["id"] for item in body["items"]] == [env.ids["b"]]
+    # 外した側の画像も消えない（一覧に出たまま）
+    assert env.ids["a"] in [item["id"] for item in
+                            client.get("/api/assets?limit=100").json()["items"]]
+
+
+def test_the_folder_assets_list_sort_added_is_newest_first(env):
+    """**S9**: `sort=added` は **`added_at` の新しい順**（古い順にしない）。
+
+    入れた時刻を**リテラルで**入れて、並びそのものを期待値にする（同じ秒だと順が決まらない）。
+
+    壊すと落ちる: `sort=added` の `ORDER BY m.added_at DESC` を `ASC` にする（古い順になる）。
+    """
+    client = env.client
+    folder = _new(client, "入れた順").json()["id"]
+    order = [env.ids["a"], env.ids["b"], env.ids["c"]]
+    assert client.post(f"/api/folders/{folder}/members", json={"asset_ids": order},
+                       headers=HUMAN).status_code == 200
+    with env.app.state.store.transaction() as con:
+        for asset_id, when in ((env.ids["a"], "2026-03-01T00:00:00Z"),
+                               (env.ids["b"], "2026-01-01T00:00:00Z"),
+                               (env.ids["c"], "2026-02-01T00:00:00Z")):
+            con.execute("UPDATE folder_member SET added_at = ? WHERE folder_id = ? AND asset_id = ?",
+                        (when, folder, asset_id))
+    body = client.get(f"/api/folders/{folder}/assets?sort=added").json()
+    assert [item["added_at"] for item in body["items"]] == [
+        "2026-03-01T00:00:00Z", "2026-02-01T00:00:00Z", "2026-01-01T00:00:00Z"]
+    assert [item["id"] for item in body["items"]] == [env.ids["a"], env.ids["c"], env.ids["b"]]
+
+
+def test_the_last_page_has_no_next_cursor(env):
+    """**S10**: 最後のページ（`cursor + limit == total`）の `next_cursor` は **`None`**。
+
+    監査の S10 は「`next_cursor` を 1 つ先まで出す（`<=`）」。既存の試験は
+    **total が limit で割り切れない**（3 枚・limit 2）形だけだったので生き残った。
+
+    壊すと落ちる: `cursor + limit < total` を `<=` にする（最後のページに空の次ページが付く）／
+    `next_cursor` を常に返す。
+    """
+    client = env.client
+    folder = _new(client, "改ページ").json()["id"]
+    assert client.post(f"/api/folders/{folder}/members",
+                       json={"asset_ids": [env.ids["a"], env.ids["b"], env.ids["c"]]},
+                       headers=HUMAN).status_code == 200
+    # 3 枚を 3 枚で引く＝最後のページ（ちょうど割り切れる）
+    full = client.get(f"/api/folders/{folder}/assets?limit=3").json()
+    assert full["total"] == 3 and len(full["items"]) == 3
+    assert full["next_cursor"] is None, "最後のページに next_cursor を出した"
+    # 途中のページは次の位置を返す（1 枚目 → 1）
+    first = client.get(f"/api/folders/{folder}/assets?limit=1").json()
+    assert first["next_cursor"] == 1
+    # 2 枚目から 2 枚＝最後のページ（1 + 2 == 3）
+    tail = client.get(f"/api/folders/{folder}/assets?limit=2&cursor=1").json()
+    assert tail["next_cursor"] is None
+    # 3 枚目（最後の 1 枚）も None
+    last = client.get(f"/api/folders/{folder}/assets?limit=1&cursor=2").json()
+    assert last["next_cursor"] is None
+
+
+def test_the_confirm_name_is_compared_exactly(env):
+    """**S11**: 確認の名前は**大小文字を区別して**比べる（`abc` で `ABC` を消さない）。
+
+    壊すと落ちる: 比べる前に `lower()` / `casefold()` を通す（違う名前で消える）。
+    """
+    client = env.client
+    folder = _new(client, "ABC").json()["id"]
+    wrong = client.request("DELETE", f"/api/folders/{folder}", json={"confirm": "abc"},
+                           headers=HUMAN)
+    assert wrong.status_code == 422, wrong.text
+    assert wrong.json()["code"] == "confirm_required"
+    # 実削除でも同じ（`purge` は確認を飛ばさない）
+    wrong_purge = client.request("DELETE", f"/api/folders/{folder}",
+                                 json={"confirm": "abc", "purge": True}, headers=HUMAN)
+    assert wrong_purge.status_code == 422
+    assert client.get("/api/folders").json()["total"] == 1, "違う名前で消した"
+    ok = client.request("DELETE", f"/api/folders/{folder}", json={"confirm": "ABC"},
+                        headers=HUMAN)
+    assert ok.status_code == 200, ok.text
+
+
+def test_purge_still_needs_the_confirmed_name(env):
+    """**S12**: `purge:true` でも**名前の確認は要る**（実削除を無確認で通さない）。
+
+    監査の S12 は「`purge:true` なら `confirm` を見ない」。既存の試験は正しい名前しか
+    送っていなかった。**C-4**（`purge:"false"` の文字列）もここで固定する。
+
+    壊すと落ちる: `purge` のときに `confirm` の検査を飛ばす（無確認で実削除）／
+    `purge` を `bool()` で受ける（`"false"` が真になって実削除）。
+    """
+    client = env.client
+    folder = _new(client, "実削除の確認").json()["id"]
+    assert client.post(f"/api/folders/{folder}/members", json={"asset_ids": [env.ids["a"]]},
+                       headers=HUMAN).status_code == 200
+    for body in ({"purge": True}, {"purge": True, "confirm": "違う名前"},
+                 {"confirm": "実削除の確認", "purge": "false"}):
+        got = client.request("DELETE", f"/api/folders/{folder}", json=body, headers=HUMAN)
+        assert got.status_code == 422, f"{body}: {got.status_code} {got.text[:120]}"
+    assert client.get("/api/folders").json()["total"] == 1, "確認していないのに実削除した"
+    with env.app.state.store.locked() as con:
+        assert con.execute("SELECT count(*) FROM folder_member").fetchone()[0] == 1
+    ok = client.request("DELETE", f"/api/folders/{folder}",
+                        json={"confirm": "実削除の確認", "purge": True}, headers=HUMAN)
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["purged"] is True
+    with env.app.state.store.locked() as con:
+        assert con.execute("SELECT count(*) FROM folder").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM folder_member").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM asset").fetchone()[0] == 3
+
+
+def test_folder_names_refuse_control_and_invisible_characters(env):
+    """**S14 / C-5**: 改行・制御文字・**見えない文字**は 422。見た目が同じ名前は NFC にそろえる。
+
+    壊すと落ちる: `unicodedata` の分類（`Cc` / `Cf` / `Zl` / `Zp`）の検査を外す（改行入りの名前が
+    通る）／NFC にそろえない（`ガ` と `ガ`（NFD）が同じ親に 2 つ並ぶ）。
+    """
+    client = env.client
+    bad = ["改行\n入り", "制御\x01文字", "幅 0\u200b文字", "行区切り\u2028x", "先頭\ufeff"]
+    for name in bad:
+        got = _new(client, name)
+        assert got.status_code == 422, f"{name!r}: {got.status_code} {got.text[:120]}"
+    assert client.get("/api/folders").json()["total"] == 0, "見えない文字の名前が通った"
+    # **NFC**: 同じに見える名前は 1 つだけ（2 つ目は同じ親の同名として 422）
+    nfc = unicodedata.normalize("NFC", "ガ")
+    nfd = unicodedata.normalize("NFD", "ガ")
+    assert nfc != nfd, "試験の前提: NFC と NFD は別の文字列"
+    assert _new(client, nfc).status_code == 200
+    dup = _new(client, nfd)
+    assert dup.status_code == 422, dup.text
+    assert dup.json()["code"] == "folder_name_taken"
+    assert client.get("/api/folders").json()["items"][0]["name"] == nfc
+
+
+def _chain(client, depth: int) -> list[str]:
+    """根から `depth` 段の鎖を作る（作れなくなったらその時点で止めて返す）。"""
+    ids: list[str] = []
+    parent = None
+    for at in range(depth):
+        got = _new(client, f"段 {at}", parent_id=parent)
+        if got.status_code != 200:
+            break
+        parent = got.json()["id"]
+        ids.append(parent)
+    return ids
+
+
+def test_a_folder_cannot_be_created_too_deep(env):
+    """**S18**: 33 段目は作れない（上限は 32 段。根を 1 段目と数える）。
+
+    壊すと落ちる: `create()` の `_depth_of(...) >= 32` を外す（33 段目が 200 でできる）。
+    """
+    client = env.client
+    ids = _chain(client, 32)
+    assert len(ids) == 32, f"32 段作れなかった（上限の判定が違う）: {len(ids)}"
+    deep = _new(client, "33 段目", parent_id=ids[-1])
+    assert deep.status_code == 422, deep.text
+    assert deep.json()["code"] == "folder_too_deep"
+
+
+def test_a_folder_cannot_be_moved_below_the_depth_limit(env):
+    """**S17**: 深すぎる親の下へは**移せない**（`PATCH {parent_id}` の深さの検査）。
+
+    壊すと落ちる: `update()` の `_depth_of(...) >= 32` を外す（32 段目の下へ移せて 33 段になる）。
+    """
+    client = env.client
+    ids = _chain(client, 32)
+    assert len(ids) == 32
+    # 鎖の外にあるフォルダを、一番深いフォルダの下へ移す（循環ではない。深さだけが問題）
+    loose = _new(client, "移す枝").json()["id"]
+    moved = client.patch(f"/api/folders/{loose}", json={"parent_id": ids[-1]}, headers=HUMAN)
+    assert moved.status_code == 422, moved.text
+    assert moved.json()["code"] == "folder_too_deep"
+    assert client.get("/api/folders").json()["total"] == 33
+    # 深さの範囲内の移動は通る（検査が全部を止めていない）
+    assert client.patch(f"/api/folders/{ids[1]}", json={"parent_id": ids[0]},
+                        headers=HUMAN).status_code == 200
+
+
+def test_a_deep_branch_cannot_be_moved_below_the_depth_limit(env):
+    """**D-7**: 移すのは**枝ごと**なので、親の深さだけでなく**枝の高さ**も数える。
+
+    監査の D-7（「31 段目の下へ 3 段の枝を移すと 34 段」）を、上限の 32 段で止める。
+    壊すと落ちる: 移動の深さの検査で `_height_of()` を足さない（枝ごと移すと 33 段以上になる）。
+    """
+    client = env.client
+    chain = _chain(client, 31)                  # 根を 1 段目として 31 個
+    assert len(chain) == 31
+    top = _new(client, "枝の上").json()["id"]
+    leaf = _new(client, "枝の下", parent_id=top).json()["id"]
+    assert leaf
+    got = client.patch(f"/api/folders/{top}", json={"parent_id": chain[-1]}, headers=HUMAN)
+    assert got.status_code == 422, got.text
+    assert got.json()["code"] == "folder_too_deep"
+    assert client.get("/api/folders").json()["total"] == 33
+    # 1 段手前（30 段目）の下なら、枝 2 段でちょうど 32 段目まで。通る
+    ok = client.patch(f"/api/folders/{top}", json={"parent_id": chain[-2]}, headers=HUMAN)
+    assert ok.status_code == 200, ok.text
+
+
+def test_switching_a_smart_folder_to_manual_drops_the_query(env):
+    """**S20**: `kind` を `manual` に戻したら `smart_query` も落とす（条件が残らない）。
+
+    壊すと落ちる: `manual` に戻しても条件を残す（「manual なのに条件がある」行ができる）／
+    `kind='smart'` に戻すときに条件を要求しない。
+    """
+    client = env.client
+    got = client.post("/api/folders", json={
+        "name": "賢い", "kind": "smart",
+        "smart_query": {"all": [{"field": "tag", "op": "has", "value": "1girl"}]}}, headers=HUMAN)
+    assert got.status_code == 200, got.text
+    folder = got.json()["id"]
+    assert got.json()["smart_query"] is not None
+    manual = client.patch(f"/api/folders/{folder}", json={"kind": "manual"}, headers=HUMAN)
+    assert manual.status_code == 200, manual.text
+    assert manual.json()["kind"] == "manual"
+    assert manual.json()["smart_query"] is None, "manual に戻したのに条件が残った"
+    listed = client.get(f"/api/folders/{folder}/assets").json()
+    assert "smart" not in listed and "note" not in listed
+    # 戻すときは条件が要る（条件なしで smart にはできない）
+    assert client.patch(f"/api/folders/{folder}", json={"kind": "smart"},
+                        headers=HUMAN).status_code == 422
+
+
+def test_dry_run_writes_nothing(env):
+    """**S24**: `DELETE ?dry_run=true` は**行もファイルも 1 バイトも書かない**。
+
+    監査の S24 は「`dry_run` の道で 1 行書く」。`GET` の試験は `dry_run` の道を含まないので
+    生き残った。ここでは `GET` と同じ物差し（`_files` と全表の中身）で比べる。
+
+    壊すと落ちる: `dry_run` の道で `count_cache` を書く／`position` を直す／何かを INSERT する。
+    """
+    client = env.client
+    folder = _new(client, "乾いた道").json()["id"]
+    assert client.post(f"/api/folders/{folder}/members",
+                       json={"asset_ids": [env.ids["a"], env.ids["b"]]},
+                       headers=HUMAN).status_code == 200
+    before_files = _files(env.data)
+    with env.app.state.store.locked() as con:
+        before_rows = _rows_digest(con)
+    for _ in range(2):
+        got = client.delete(f"/api/folders/{folder}?dry_run=true", headers=HUMAN)
+        assert got.status_code == 200, got.text
+        assert got.json()["dry_run"] is True and got.json()["folders"] == 1
+        assert got.json()["members"] == 2
+    with env.app.state.store.locked() as con:
+        assert _rows_digest(con) == before_rows, "dry_run が行を書いた"
+    assert _files(env.data) == before_files, "dry_run がファイルを書いた"
+
+
+def test_the_folder_assets_limit_is_clamped(env):
+    """**S26**: `limit` は 1〜1,000 に丸める（5,000 をそのまま使わない）。
+
+    壊すと落ちる: `min(int(limit), 1000)` の丸めを外す（`limit=5000` が 5000 で返る）。
+    """
+    client = env.client
+    folder = _new(client, "丸める").json()["id"]
+    assert client.post(f"/api/folders/{folder}/members", json={"asset_ids": [env.ids["a"]]},
+                       headers=HUMAN).status_code == 200
+    assert client.get(f"/api/folders/{folder}/assets?limit=5000").json()["limit"] == 1000
+    assert client.get(f"/api/folders/{folder}/assets?limit=-5").json()["limit"] == 1
+    assert client.get(f"/api/folders/{folder}/assets?limit=0").json()["limit"] == 200
+    assert client.get(f"/api/folders/{folder}/assets?limit=2").json()["limit"] == 2
+
+
+def test_listing_all_assets_with_a_folder_is_refused(env):
+    """**E-2 / G-4**: `GET /api/assets?folder=` は**黙って全件を返さない**（422。P2-2 で実装）。
+
+    §6.1 は `?folder=` を書いているが、P2-1 の中身の口は `GET /api/folders/{id}/assets`。
+    知らないクエリを黙って無視すると、**絞れていない全件**を「フォルダの中身」と読み違える。
+
+    壊すと落ちる: `folder` を受け取って無視する（200 で全部を返す）。
+    """
+    client = env.client
+    folder = _new(client, "絞りの口").json()["id"]
+    got = client.get(f"/api/assets?folder={folder}")
+    assert got.status_code == 422, f"{got.status_code} {got.text[:200]}"
+    assert got.json()["code"] == "folder_filter_not_implemented"
+    assert client.get("/api/assets?limit=100").status_code == 200, "folder を付けなければ今までどおり"
+    # 中身はフォルダの口で取れる（案内どおり）
+    assert client.get(f"/api/folders/{folder}/assets").status_code == 200
+
+
+def test_a_v7_database_without_the_unique_index_is_repaired(tmp_path: Path):
+    """**Y6**: P2-0 の頃の v7（`ux_folder_name` が無い）を開くと、**早期 return でも索引を補う**。
+
+    監査の Y6 は `migrate()` の早期 return 側の `_top_up_v7` を外す変異。P2-0 の頃の v7 を開く
+    試験が無かったので生き残った。**P2-0 のコードで先に v7 になった DB** が、名前一意の索引を
+    持たないまま走ると「一意はサービス層だけ」になる。
+
+    壊すと落ちる: 早期 return の `_top_up_v7(con)` を外す（索引が無いまま返る）。
+    """
+    con = db.open_db(tmp_path)
+    try:
+        con.execute("DROP INDEX ux_folder_name")
+        assert con.execute("SELECT 1 FROM sqlite_master WHERE name = 'ux_folder_name'"
+                           ).fetchone() is None
+        con.execute("PRAGMA user_version = 7")
+    finally:
+        con.close()
+    again = db.open_db(tmp_path)
+    try:
+        row = again.execute("SELECT tbl_name, sql FROM sqlite_master WHERE type = 'index'"
+                            " AND name = 'ux_folder_name'").fetchone()
+        assert row is not None, "P2-0 の頃の v7 に索引を補わない（早期 return の _top_up_v7 が無い）"
+        assert row[0] == "folder"
+        got_sql = "".join(str(row[1] or "").split()).lower()
+        assert got_sql == WANT_INDEX_SQL, got_sql
+        assert again.execute("PRAGMA user_version").fetchone()[0] == 7
+    finally:
+        again.close()
